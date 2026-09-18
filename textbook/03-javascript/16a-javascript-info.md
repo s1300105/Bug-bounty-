@@ -184,6 +184,36 @@ g();
 
 第1節で見た「strict なしの未宣言変数への代入は新しいグローバル変数を作る」性質と、この「`var` はグローバルプロパティになる」性質が組み合わさると、ページに攻撃者が名前を注入できる状況で `window.<名前>` を上書きするガジェットになりうる。守る側は `"use strict"`（またはモジュール）を使い、グローバルへ置きたい値は `window.currentUser = {...}` のように明示的に書く。原文も「将来性と可読性のため、グローバルオブジェクトのプロパティは `window.x` として直接アクセスすべき」と述べている。
 
+### 2.4 IIFE（即時実行関数式）— 古いスクリプトで `var` を閉じ込める手法
+
+`var` にブロックスコープがなかった時代、擬似的にブロックスコープを作るために使われたのが IIFE（即時実行関数式, immediately-invoked function expressions）である。IIFE とは、関数を定義した直後にその場で呼び出して、内部で宣言した `var` を外へ漏らさないための書き方のこと。現代では使うべきでないが、古いコードを読むと今も出てくる。
+
+ここで初学者がつまずくのが「なぜ関数を括弧で囲むのか」だ。理由は次のとおり。エンジンはメインコードで `function` というキーワードを見ると、そこを Function Declaration（関数宣言）の開始だと解釈する。だが Function Declaration には名前が必須で、しかも定義した直後にそのまま `()` で呼び出すことは許されない。そこで関数全体を括弧で囲み「これは宣言ではなく式（Function Expression）だ」とエンジンに教える。式なら名前は省略でき、直後に `()` を付けて即時呼び出しできる。
+
+原文は括弧以外の起動方法も含め、4通りの生成コードを逐語で示している（`*!*` … `*/!*` は javascript.info 独自の強調表示マーカーで、サイト上では該当行がハイライトされるだけの飾りである。読むときは無視してよい）。
+
+```js run
+// Ways to create IIFE
+
+*!*(*/!*function() {
+  alert("Parentheses around the function");
+}*!*)*/!*();
+
+*!*(*/!*function() {
+  alert("Parentheses around the whole thing");
+}()*!*)*/!*;
+
+*!*!*/!*function() {
+  alert("Bitwise NOT operator starts the expression");
+}();
+
+*!*+*/!*function() {
+  alert("Unary plus starts the expression");
+}();
+```
+
+上から順に、(1) 関数だけを括弧で囲む、(2) 呼び出しまで含めて全体を括弧で囲む、(3) 先頭にビット NOT 演算子 `!` を置く、(4) 先頭に単項プラス `+` を置く、という4パターンだ。(3)(4) は「文の先頭が `function` でなくなれば、エンジンはそれを式と解釈する」ことを利用している。いずれも狙いは同じで「`function` を宣言ではなく式として始めさせる」ことにある。
+
 ---
 
 ## 3. `eval` と `new Function` — コード文字列を実行するシンク
@@ -223,6 +253,8 @@ func();
 - `let x = 5; eval("x = 10"); alert(x);` は `10`（外側変数を書き換えた）。
 
 ただし strict モードでは `eval` は自身のレキシカル環境を持つので、`eval` 内で宣言した変数・関数は外から見えない。`eval("let x = 5; function f() {}"); alert(typeof x);` は `undefined`。非 strict なら `x` と `f` が外から見える。
+
+`eval` はツールチェーンにも副作用を持つ。原文いわく、`eval` が使われると、そのコード文字列から外側のローカル変数がアクセスされうるため、minifier（ミニファイア。公開前にコードを圧縮し変数を短い名前に変えるツール）は `eval` から見える可能性のある全変数のリネームを避ける。結果として圧縮率が落ちる。第3.2節で見た `new Function` の minifier 整合と対になる話で、「文字列としてコードを扱う機能はツールの静的解析を無効にする」という同じ根がある。
 
 ### 3.4 どう守るのか
 
@@ -396,7 +428,31 @@ alert(Object.keys(chineseDictionary)); // hello,bye
 
 「通常の方法」で作ると全フラグ `true`。`Object.getOwnPropertyDescriptor(obj, name)` で記述子を得て、`Object.defineProperty(obj, name, descriptor)` で変更する。存在しないプロパティに `defineProperty` すると、供給されなかったフラグは `false` と見なされる。
 
-脆弱性検証で重要な注意点がある。**非 strict モードでは、non-writable プロパティへの書き込みなどでエラーは出ないが、操作も成功しない（黙って無視される）**。だから「攻撃が効いたか」をエラーの有無で判断してはいけない。
+### 7.1 実例で見るフラグの効果 — `Math.PI`
+
+具体例として `Math.PI` を見る。この値は `writable`／`enumerable`／`configurable` がすべて `false` で、記述子の実値は `3.141592653589793` である。フラグがすべて閉じているので、次のような操作はすべて弾かれる。
+
+- `Math.PI = 3;` は値を変更できない（non-writable）。
+- `delete Math.PI` は削除できない（non-configurable）。
+- `Object.defineProperty(Math, "PI", { writable: true })` も、`configurable: false` のためフラグ変更が拒否されエラーになる。
+
+ここで**非 strict モードの落とし穴**が効いてくる。`Math.PI = 3;` を非 strict のスクリプトで実行しても、**例外は投げられず、しかし値も変わらない（読み直すと依然 `3.141592653589793`）**。フラグ違反の操作は非 strict では黙って無視されるからだ。strict モードなら同じ代入が `TypeError` を投げる。
+
+`configurable: false` には1つだけ例外的な緩みがある。`configurable: false` でも `writable: true` のプロパティは、値の変更は許される。さらに `writable` については **`true` → `false` の一方向変更だけは `configurable: false` でも可能**である（一度読み取り専用にしたら二度と書き込み可能へは戻せない）。つまり「削除もフラグ変更も禁じつつ、値だけは書き換えられる／あるいは後から凍結だけできる」状態が作れる。
+
+### 7.2 記述子の一括操作とフラグ込みクローン
+
+複数のプロパティをフラグ付きで一気に定義するには `Object.defineProperties(obj, descriptors)` を使う。逆に全プロパティの記述子をまとめて取り出すには `Object.getOwnPropertyDescriptors(obj)` を使う。
+
+この2つを組み合わせると、**フラグまで含めた正確なクローン**が作れる。単純な `for..in` ＋代入ループでは、コピー先のフラグはすべて `true` になり、シンボルや non-enumerable なプロパティも落ちてしまう。`getOwnPropertyDescriptors` は `for..in` と違い、シンボリックなキーも non-enumerable なプロパティも含む**すべて**の記述子を返すので、これらが保たれる。
+
+```js
+let clone = Object.defineProperties({}, Object.getOwnPropertyDescriptors(obj));
+```
+
+〔補足〕診断上の要点：オブジェクトを「安全にコピーしたつもり」で `for..in` を使うと、元が読み取り専用にしていたプロパティがコピー先では書き換え可能になる。防御ロジックのレビューでは、この種の「フラグを落とすコピー」がガード解除になっていないか見る。
+
+脆弱性検証で重要な注意点がある。**非 strict モードでは、non-writable プロパティへの書き込みなどでエラーは出ないが、操作も成功しない（黙って無視される）**。だから「攻撃が効いたか」をエラーの有無で判断してはいけない。上の `Math.PI = 3;` がまさにその実例で、代入しても例外が出ず値も変わらない。
 
 オブジェクト全体を封じるメソッドは次の通り。
 
@@ -461,6 +517,8 @@ DOM XSS や競合状態（レース）の検証では「どのコードがいつ
 イベントループのアルゴリズムはこうだ。(1) タスクがある間、最も古いタスクから実行する。(2) タスクが現れるまでスリープし、1に戻る。タスクは macrotask queue（v8 用語）を作り、"first come – first served" で処理される。macrotask の例は、外部スクリプトのロード完了時の実行、`mousemove` のディスパッチ、`setTimeout` の期限到来時のコールバックなど。
 
 2つの追加事項が重要。**エンジンがタスクを実行している間、レンダリングは決して起こらない**。DOM への変更はタスク完了後にのみ描画される。だから重い処理は `setTimeout` で分割すると途中経過を描画できる。
+
+分割のときに知っておくべき具体的な数値がある。**ネストした `setTimeout`（コールバックの中でさらに `setTimeout` を呼ぶ形）には、ブラウザ側の最小遅延 4ms がある。`setTimeout(f, 0)` のように `0` を指定しても、実際には 4ms 以上待たされる。** そのため、重い処理を分割するときはスケジューリングを処理関数の先頭に置くほうが速く回る（この 4ms のオーバーヘッドが早く消化されるため）。CPU を占有しない分割処理や、タイミングを測る検証では、この 4ms が効いてくる。
 
 ### 9.3 microtask とその優先
 
@@ -545,12 +603,31 @@ getter を扱う Proxy では `receiver`（正しい `this`）を渡す必要が
 
 ### 10.3 攻撃・診断に効く制限（4つ）
 
-1. **組み込みオブジェクトの内部スロット**：`Map`、`Set`、`Date`、`Promise` はデータを内部スロット（`Map` なら `[[MapData]]`）に持ち、組み込みメソッドは `[[Get]]/[[Set]]` を経由せず直接アクセスする。だから `new Proxy(new Map(), {}).set('test', 1)` はエラー。回避は `get` trap で `value.bind(target)` を返すこと。**例外は `Array` で、内部スロットを使わないのでプロキシ化できる**。
+1. **組み込みオブジェクトの内部スロット**：`Map`、`Set`、`Date`、`Promise` はデータを内部スロット（`Map` なら `[[MapData]]`）に持ち、組み込みメソッドは `[[Get]]/[[Set]]` を経由せず直接アクセスする。だから `new Proxy(new Map(), {}).set('test', 1)` はエラー。回避は `get` trap で `value.bind(target)` を返すこと。**例外は `Array` で、内部スロットを使わないのでそのままプロキシ化できる**。なぜ `Array` だけ例外なのかというと、`Array` は言語の中でも登場が古く、内部スロットという設計が導入される前から存在するためである。歴史的な経緯でデータを内部スロットに隠していないので、プロキシの `get`/`set` trap がそのまま効く。
 2. **プライベートフィールド**も内部スロット実装なので同様に失敗する。
 3. **Proxy ≠ target**：厳密等価 `===` はインターセプトできない。「オブジェクトを等価比較するすべての操作と組み込みクラスは、オブジェクトとプロキシを区別する」。`Set` のキーに元オブジェクトを入れた後プロキシ化すると `has` が `false` になる。
 4. **パフォーマンス**：最も単純なプロキシでもプロパティアクセスが数倍遅い。
 
+### 10.4 各 trap の引数と挙動 — レビューで効く細部
+
+trap は単に呼ばれるだけでなく、決められた引数と戻り値の規約を持つ。防御コードの正しさを判定するとき、この規約を満たしているかが焦点になる。主要なものを原文にもとづき挙げる。
+
+- **`get(target, property, receiver)`**：`receiver` は、target のプロパティが getter だった場合にその getter で `this` として使われるオブジェクトのこと。通常は `proxy` 自身（またはプロキシを継承したオブジェクト）を指す。getter を持つオブジェクトを正しくラップするには、`get` trap の中で `return Reflect.get(target, prop, receiver);`（短くは `Reflect.get(...arguments)`）と書き、`receiver` を getter に渡す必要がある。これを怠ると `this` が target になり、継承先での getter がずれる。
+- **`set(target, property, value, receiver)`**：**成功時は `true`、失敗時は `false` を返さなければならない**。`false` を返すと代入は `TypeError` を引き起こす。戻り値を書き忘れたり falsy を返したりすると、意図せず `TypeError` になる。防御用の `set` trap を書くとき、この戻り値規約の抜けはよくあるバグである。
+- **`ownKeys(target)`**：`Object.keys`／`for..in`／`Object.getOwnPropertyNames` などが使う。ここで**オブジェクトに実在しないキーを返しても `Object.keys` はそれを列挙しない**。理由は、`Object.keys` は `enumerable` フラグの立ったプロパティだけを返す仕様で、各キーについて内部メソッド `[[GetOwnProperty]]`（trap 名 `getOwnPropertyDescriptor`）を呼んで記述子を取りにいくが、実在しないキーは記述子が空で `enumerable` フラグを持たないためスキップされるからだ。「`ownKeys` で偽のキーを足せば列挙に混ぜられる」と誤解しやすいので注意する。
+- **`apply(target, thisArg, args)`**：プロキシを関数として呼ぶ操作を処理する。**プロキシは通常のラッパー関数と違い、`length` や `name` などのプロパティの読み書きもすべて target へ転送する**。たとえば手書きのラッパー関数だと `wrapper.length` が `0` になってしまうが、プロキシなら target 関数の `length`（引数の数）がそのまま見える。
+
+### 10.5 撤回可能プロキシと `WeakMap` 保存パターン
+
 `Proxy.revocable(target, handler)` は `revoke()` で target への参照を切れる撤回可能プロキシを作る。
+
+```js
+let {proxy, revoke} = Proxy.revocable(target, handler)
+```
+
+`revoke()` を呼ぶと、プロキシから target への内部参照がすべて除去され、両者は切り離される。以後 `proxy.data` のようなアクセスは Error になる。`revoke` は `proxy` とは分離して受け取れるので、`proxy` を外部へ渡しつつ `revoke` は手元に残す、という使い方ができる。
+
+原文が示すのは、**プロキシをキー、対応する `revoke` を値として `WeakMap` に保存するパターン**である。`Map` ではなく `WeakMap` を使うのは、プロキシがどこからも参照されなくなったときにガベージコレクション（GC）をブロックしないためだ。プロキシが不要になれば `WeakMap` のエントリごと自動で回収される。
 
 〔補足〕`get` trap で `value.bind(target)` を返す解決策について、原文は「ラップされていないオブジェクトをメソッドに渡すと予期しない結果が生じうるので、どこでも使うべきではない」と警告している。防御コードのレビューで、この bind による横流しがガジェットを生んでいないか見る観点になる。
 
@@ -597,6 +674,10 @@ DOM ノードはクラス階層を持つ。ルートは `EventTarget`、それ�
 
 `<input>` は `HTMLInputElement` → `HTMLElement` → `Element` → `Node` → `EventTarget` → `Object` の順でプロパティを継承する。`console.dir(elem)` は要素を DOM オブジェクトとして表示し、プロパティ探索に向く。`nodeType` は `1`=要素、`3`=テキスト、`9`=document。タグ名は XML モード以外では常に大文字（HTML モードでは `<BoDy>` も `BODY`）。
 
+〔補足〕仕様上、DOM のこれらのクラスは JavaScript ではなく **IDL（Interface Description Language, インターフェース記述言語）** という言語で記述される。IDL とは、言語に依存しない形で「このオブジェクトはどんなプロパティやメソッドを持つか」を定義するための記法のこと。だから WHATWG DOM 仕様を読むと、見慣れない型注釈付きの定義が並ぶ。
+
+タグ名を取るプロパティには `nodeName` と `tagName` の2つがあり、違いを押さえておく。**`tagName` は `Element` ノードにのみ存在する**。一方 **`nodeName` は任意の `Node` に定義される**。要素に対してはどちらも同じ（`BODY` など）を返すが、要素以外のノードでは `nodeName` だけが機能し、ノード型を表す文字列を返す。たとえばコメントノードなら `#comment`、document ノードなら `#document`。DOM を走査していて「テキストやコメントも含めて種類を知りたい」なら `nodeName`、「要素のタグ名だけでよい」なら `tagName` を使う。
+
 ### 12.2 コンテンツ系プロパティ — シンク分類表
 
 ここが XSS 検証の中核だ。値を書き込むと「HTML として解釈されるか、テキストとして扱われるか」でシンクの危険度が決まる。
@@ -628,6 +709,23 @@ DOM ノードはクラス階層を持つ。ルートは `EventTarget`、それ�
 ```
 
 `elem1` は名前を HTML として受け取るのでタグが効いて太字になる（＝ユーザ入力に `<img src=x onerror=...>` を入れれば XSS）。`elem2` は文字どおり `<b>...</b>` が見える。原文いわく「ほとんどの場合、ユーザからのテキストはテキストとして扱いたい。`textContent` への代入はまさにそれを行う」。**守る側の基本は、ユーザ由来の値を出すなら `textContent`（や後述の `append`）を使うこと**である。
+
+### 12.3 DOM ノードは普通のオブジェクト — `Element.prototype` の改変が全要素に及ぶ
+
+DOM ノードは特別に見えるが、実体は通常の JavaScript オブジェクトである。だから独自プロパティや独自メソッドを足せる（`document.body.myData = {...}`、`document.body.sayTagName = function() {...}`）。
+
+さらに踏み込むと、第5.3節で見た「ネイティブプロトタイプの改変」がここでも効く。**組み込みプロトタイプ `Element.prototype` にメソッドを追加すると、そのメソッドは全 DOM 要素で使えるようになる**。
+
+```js run
+Element.prototype.sayHi = function() {
+  alert(`Hello, I'm ${this.tagName}`);
+};
+
+document.documentElement.sayHi(); // Hello, I'm HTML
+document.body.sayHi();            // Hello, I'm BODY
+```
+
+`Element.prototype` は `HTMLElement` 以下すべての要素の祖先プロトタイプなので、`document.body` でも `document.documentElement`（`<html>`）でも同じメソッドが呼べる。これは第5.3節の「ネイティブプロトタイプはグローバルなので衝突しやすく、変更はポリフィル以外では戒められる」という警告が、言語の組み込み型だけでなく DOM の要素にもそのまま当てはまることを示す具体例である。裏を返せば、プロトタイプ汚染が `Element.prototype` にまで及べば、ページ上の全要素の挙動を横断的に書き換えられるということでもある。
 
 ---
 
@@ -668,6 +766,25 @@ HTML 属性は名前が大文字小文字を区別せず、値は常に文字列
 | `node.remove()` | 削除 | — |
 
 原文いわく「文字列は `elem.textContent` がそうするように安全な方法で挿入される」。`div.before('<p>Hello</p>', ...)` の結果は `&lt;p&gt;Hello&lt;/p&gt;` になる。
+
+### 14.1 旧式の挿入/削除メソッド
+
+上の `append`／`before` などは新しい API で、実コードや古い解説記事では旧式のメソッドが今も多く登場する。XSS 解析でコードを読むときに必ず出てくるので押さえておく。これらは**ノード（文字列ではなく DOM ノード）**を対象に取る。
+
+| メソッド | 動作 |
+|---|---|
+| `parentElem.appendChild(node)` | `node` を `parentElem` の最後の子として追加 |
+| `parentElem.insertBefore(node, nextSibling)` | `node` を `parentElem` 内の `nextSibling` の前に挿入 |
+| `parentElem.replaceChild(node, oldChild)` | `parentElem` の子のうち `oldChild` を `node` で置換 |
+| `parentElem.removeChild(node)` | `parentElem` から `node` を削除（`node` がその子である前提） |
+
+これらはいずれも、挿入または削除したノードを戻り値として返す。新式の `append`／`replaceWith`／`remove` と機能はほぼ重なるが、旧式は文字列を直接受け取らずノードを要求する点が違う（だから旧式メソッド自体は HTML 文字列を解釈するシンクにはならない。危険なのはあくまで `innerHTML` や `insertAdjacentHTML` の側だ）。
+
+### 14.2 `DocumentFragment`
+
+`DocumentFragment` は、複数のノードをまとめて受け渡すためのラッパーとして機能する特別な DOM ノードのこと。`DocumentFragment` に子ノードを詰めておき、それをどこかへ挿入すると、ラッパー自体ではなく**中身のノード群が代わりに挿入される**（"blends in" する）。
+
+現代では明示的に使われることは稀で、配列を返して `...`（スプレッド）で `append` すれば足りる。ただし `<template>` 要素のような上位概念がこの `DocumentFragment` の仕組みの上に成り立っているため、名前と挙動は知っておくとよい。
 
 対して `insertAdjacentHTML(where, html)` は第2引数を**HTML として**挿入する＝危険なシンク。第1引数は位置指定。
 
@@ -731,6 +848,10 @@ HTML 属性は名前が大文字小文字を区別せず、値は常に文字列
 3. Bubbling phase（上る）
 
 `on<event>` プロパティ・HTML 属性・2引数の `addEventListener` はキャプチャを知らず、第2・第3フェーズでのみ走る。キャプチャで捕まえるには `{capture: true}`（略して `true`）を渡す。キャプチャ中に `stopPropagation()` を呼ぶとバブリングも起きない。
+
+いま自分がどのフェーズにいるかは `event.eventPhase` で分かる。**`event.eventPhase` は、そのハンドラが呼ばれたフェーズを表す番号を返す。値は capturing（下り）=`1`、target（到達）=`2`、bubbling（上り）=`3`** である。あとの「手を動かす」では、この 1／2／3 を出力してフェーズの進行順を目で確かめる。
+
+もう1つ、実装の予測可能性に効く保証がある。**同一要素・同一フェーズに複数のリスナを `addEventListener` で付けた場合、それらは設定した順（登録順）に実行されることが仕様で保証されている**。だから「先に登録したロギング用リスナは、後から登録した処理用リスナより必ず先に走る」と当てにできる（ただし `stopImmediatePropagation()` が挟まると後続は止まる）。
 
 ### 15.3 イベントデリゲーション
 
@@ -797,6 +918,13 @@ table.onclick = function(event) {
 ### 15.4 behavior パターンとデリゲーションの制限
 
 behavior パターンは (1) 要素に振る舞いを表すカスタム属性を付け、(2) ドキュメント全体のハンドラがそれを追跡してアクションを実行する。原文の警告：「**document レベルのハンドラには常に `addEventListener` を使え**。`document.on<event>` は衝突を起こす（新しいハンドラが古いものを上書きする）」。実プロジェクトでは異なるコードが `document` に多数のハンドラを付けるのが普通だからだ。
+
+原文は具体例を2つ挙げている。
+
+- **Counter（カウンタ）**：ボタンに `data-counter` 属性を付けておき、`document.addEventListener('click', ...)` の中で `event.target.dataset.counter != undefined` かどうかを判定する。属性を持つボタンがクリックされたら、その要素に紐づくカウントを増やす。「振る舞い（クリックで数える）」を属性で宣言し、実処理は document 上の1つのハンドラに集約する形だ。
+- **Toggler（トグラー）**：要素に `data-toggle-id` 属性で「切り替えたい対象要素の id」を書いておく。クリック時に document 上のハンドラが `document.getElementById(id)` でその対象を取り、`hidden` プロパティをトグルして表示/非表示を切り替える。
+
+どちらも共通して、「HTML 側に属性で意図を書き、JavaScript 側は document 上の1ハンドラでそれを解釈する」という構造をとる。ここが攻撃面でもあり、`data-*` 属性を HTML インジェクションで注入できれば、既存の behavior ハンドラを外部から起動する部品として使える点は前小節の `data-action` と同じ観察点になる。
 
 デリゲーションの制限は2つ。第一に**イベントはバブリングしなければならない**（バブルしないイベントや `stopPropagation` されたものは拾えない）。第二にコンテナレベルのハンドラが全イベントに反応するため CPU 負荷が増えうる（通常は無視できる）。
 
@@ -917,4 +1045,4 @@ behavior パターンは (1) 要素に振る舞いを表すカスタム属性を
 
 <!-- self-read: https://javascript.info/ | 組織のegressポリシーで javascript.info:443 への接続が403拒否。本文は公式GitHubミラーで取得済みだが、ライブ実行例・図版・課題解答はサイト上のみ -->
 <!-- sources: https://javascript.info/, https://github.com/javascript-tutorial/en.javascript.info, https://javascript.info/closure, https://javascript.info/var, https://javascript.info/global-object, https://javascript.info/new-function, https://javascript.info/eval, https://javascript.info/object-methods, https://javascript.info/bind, https://javascript.info/prototype-inheritance, https://javascript.info/native-prototypes, https://javascript.info/prototype-methods, https://javascript.info/property-descriptors, https://javascript.info/class, https://javascript.info/private-protected-properties-methods, https://javascript.info/microtask-queue, https://javascript.info/event-loop, https://javascript.info/async-await, https://javascript.info/proxy, https://javascript.info/browser-environment, https://javascript.info/basic-dom-node-properties, https://javascript.info/dom-attributes-and-properties, https://javascript.info/modifying-document, https://javascript.info/introduction-browser-events, https://javascript.info/bubbling-and-capturing, https://javascript.info/event-delegation -->
-<!-- terms: レキシカル環境, クロージャ, [[Environment]], ホイスティング, グローバルオブジェクト, globalThis, eval, new Function, this束縛, bind, 部分適用, プロトタイプ継承, [[Prototype]], __proto__, プロトタイプ汚染, Object.create(null), プロパティ記述子, writable, enumerable, configurable, Object.freeze, クラスフィールド, プライベートフィールド, microtask, macrotask, イベントループ, queueMicrotask, async/await, Proxy, Reflect, 内部スロット, DOM, BOM, CSSOM, innerHTML, outerHTML, textContent, insertAdjacentHTML, document.write, DOM属性とプロパティ, dataset, イベントバブリング, イベントキャプチャ, stopPropagation, イベントデリゲーション, data-action, behaviorパターン -->
+<!-- terms: レキシカル環境, クロージャ, [[Environment]], ホイスティング, グローバルオブジェクト, globalThis, eval, new Function, this束縛, bind, 部分適用, プロトタイプ継承, [[Prototype]], __proto__, プロトタイプ汚染, Object.create(null), プロパティ記述子, writable, enumerable, configurable, Object.freeze, クラスフィールド, プライベートフィールド, microtask, macrotask, イベントループ, queueMicrotask, async/await, Proxy, Reflect, 内部スロット, DOM, BOM, CSSOM, innerHTML, outerHTML, textContent, insertAdjacentHTML, document.write, DOM属性とプロパティ, dataset, イベントバブリング, イベントキャプチャ, stopPropagation, イベントデリゲーション, data-action, behaviorパターン, IIFE, DocumentFragment, appendChild, insertBefore, nodeName, tagName, IDL, eventPhase, Object.getOwnPropertyDescriptors, Object.defineProperties, Proxy.revocable, Math.PI -->

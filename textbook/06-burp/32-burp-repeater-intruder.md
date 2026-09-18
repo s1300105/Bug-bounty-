@@ -345,6 +345,15 @@ message editor は Burp 全体で HTTP/WebSocket メッセージを見る場所�
 | Render | HTML/画像を含む応答をブラウザ表示のように描画 |
 | GraphQL | GraphQL クエリを検出すると出現。Query と Variables を分離表示 |
 
+**Hex タブのコンテキストメニュー**（右クリック）では、バイト単位の細かい編集ができる。
+
+- **Insert byte** — 1バイト挿入する。
+- **Insert bytes** — 複数バイトをまとめて挿入する。
+- **Insert string** — 文字列を挿入する。
+- **Delete selected byte(s)** — 選択したバイトを削除する。
+
+**追加タブ（Additional tabs）**: message editor には Inspector と同じウィジェットをタブとして追加できる。**Headers / Query params / Body params / Cookies / Attributes** の5種で、ヘッダやパラメータを name-value の一覧として編集できる（Inspector の側パネルと同じ機能をタブ側に出したもの）。
+
 **Actions / コンテキストメニューの主な操作:**
 
 - **Scan / send to ...** — メッセージ全体または選択部分を他ツールへ送る。
@@ -353,7 +362,8 @@ message editor は Burp 全体で HTTP/WebSocket メッセージを見る場所�
 - **Change request method** — GET/POST を自動切替（入力フィルタ回避や XSS 攻撃の微調整に）。
 - **Change body encoding** — URL-encoded と multipart を切替。
 - **Convert selection**（Raw のみ）— 選択テキストをエンコード/デコード。URL（メタ文字のみ／全文字／全文字 2-byte Unicode `%u0041`＝A）、HTML（数値エンティティ `&#65;`＝A、hex エンティティ `&#x41;`＝A）、Base64、**Construct string**（選択文字列を動的構築するコードを JavaScript・SQL 各方言で生成。入力フィルタ回避に）。
-- **Copy as curl command** / **Copy URL** / **Save item**（XML 保存）。
+- **Copy as curl command** / **Copy URL** / **Copy to file** / **Paste from file** / **Save item**（XML 保存）。**Copy to file** は選択部分をファイルへ書き出し、**Paste from file** はファイルの内容をカーソル位置へ貼り付ける。
+- **URL-encode as you type**（Raw ビューのみ）— これを有効にすると、`&` や `=` のような文字を打ち込んだそばから自動で URL エンコードしてくれる。パラメータ値の中に区切り文字を含めたいときに、手で `%26` などと書かずに済む。
 
 ---
 
@@ -430,7 +440,13 @@ Intruder に送ると、次の場所に payload position が自動投入され�
 
 攻撃中、マーカーと囲まれたテキストの両方がペイロードで置換される。ペイロードが割り当てられない position では、囲まれたテキストは変わらずマーカーだけ除去される。
 
-**Target field** にも position を置ける。**Update Host header to match target** を解除すると target だけ変更でき、固定 target へ任意の Host ヘッダを送れる（**HTTP host header 攻撃**の作成）。補足（Note）: payload positions は Burp Scanner の insertion point としても使える（Intruder メニュー → **Scan defined insertion points**）。
+**Target field** にも position を置ける。target フィールド（リクエストの宛先）は次の3要素で構成される。
+
+- **Protocol** — HTTP か HTTPS。
+- **Host** — IP アドレスまたはホスト名。
+- **Port** — ポート番号。
+
+既定では **Update Host header to match target** が選択されており、target への変更が base request の Host 詳細に自動で反映される。これを解除すると target だけを変更でき、固定した target へ任意の Host ヘッダを送れる（**HTTP host header 攻撃**の作成に使う）。補足（Note）: payload positions は Burp Scanner の insertion point としても使える（Intruder メニュー → **Scan defined insertion points**）。
 
 ---
 
@@ -573,28 +589,65 @@ Syntax error converting the varchar value 'accounts' to a column of data type in
 
 - **Overlong UTF-8 encodings** — overlong エンコード使用（最大6バイト）。
 - **Illegal UTF-8 continuation bytes**（Do illegal UTF-8）— 通常 `10xxxxxx` の continuation byte を `00xxxxxx` `01xxxxxx` `11xxxxxx` に改変。
-- **Illegal hex characters**（Do illegal hex）— 一部デコーダは G を 16、H を 17 と解釈する（`0x1G` が 32 等）。
-- **Hex formatting** — Use lower case / Add % prefix（実質 URL エンコード）。
-- **Match / replace in list items** — Match character（ダミー `*` 等）と Replace with encodings of で不正エンコードを導出する文字を指定。
+- **Illegal hex characters**（Do illegal hex）— hex エンコードをわざと崩す。一部のデコーダは `G` を 16、`H` を 17 と解釈してしまうため、たとえば `0x1G` が 32 と読まれたり、`0xG1` が 257（あふれて 1）と読まれたりする。1つの正当な2桁 hex コードに対して 4〜6 通りの不正 hex 表現が作られる。
+- **Hex formatting** — Use lower case alpha characters（小文字を使う）/ Add % prefix before each byte（各バイトの前に `%` を付ける＝実質 URL エンコード）。
+- **Total encodings** — 生成されるエンコード数の推定を表示し、その上限を指定できる。組合せが膨大になりすぎないよう歯止めをかけるためのもの。
+- **Match / replace in list items** — Match character（各項目内で置換される文字。ダミーの `*` 等を使う）と Replace with encodings of（不正エンコードを導出する文字。ASCII 文字または2桁 hex で指定でき、非印字の ASCII を指定するのに便利）。
 
-### 15-5. Numbers / Dates
+### 15-5. Numbers
 
-Numbers は Type（sequentially / random）、From / To / Step（負値で降順）、Base（decimal / hexadecimal）、桁数指定を持つ。補足（Note）: 約12桁超の範囲では、markers で大きな数の一部だけをハイライトする方が信頼性が高い（Burp は倍精度浮動小数点を使うため）。
+指定した範囲・形式で数値のペイロードを生成する。設定は大きく「範囲（Number range）」と「形式（Number format）」の2つに分かれる。
 
-Dates はカスタム形式を組める。
+**Number range（どの数値を作るか）:**
+
+| 項目 | 意味 |
+| --- | --- |
+| Type | `sequentially`（連番）か `random`（ランダム）か |
+| From / To | 生成範囲の下限・上限 |
+| Step | 増分。**負値**にすると降順で生成する |
+| How many | ランダム生成する個数（重複が出ることがある） |
+
+**Number format（どんな見た目にするか）:**
+
+| 項目 | 意味 |
+| --- | --- |
+| Base | `decimal`（10進）か `hexadecimal`（16進） |
+| Min integer digits | 整数部の最小桁数。桁が足りないと**左をゼロで埋める**（例: `5` → `005`） |
+| Max integer digits | 整数部の最大桁数。多いと**最上位の桁が切り捨てられる** |
+| Min fraction digits | 小数部の最小桁数（**decimal のみ**）。足りないと右をゼロで埋める |
+| Max fraction digits | 小数部の最大桁数（**decimal のみ**）。多いと切り捨てる |
+
+各桁数フィールドは空欄にすると最小・最大を強制しない。補足（Note）: 総桁数が約12桁を超える範囲を巡回するなら、payload markers で大きな数の一部だけをハイライトして、桁数の少ない数値ペイロードを生成する方が信頼性が高い（Burp は倍精度浮動小数点を使うため、大きな/精密な数では精度が落ちる）。
+
+### 15-5b. Dates
+
+指定した範囲・形式で日付のペイロードを生成する。異なる日付の注文簿を収集するデータマイニングや、生年月日の総当たりに使う。
+
+| 項目 | 意味 |
+| --- | --- |
+| From / To | 生成範囲の開始日・終了日 |
+| Step | 増分。単位は **days / weeks / months / years** から選び、**正の値**を指定する |
+| Format | 既定の形式を選ぶか、カスタム形式を組む |
+
+カスタム形式は次の記号を組み合わせて作る（`/ . :` などのリテラル文字はそのまま出力される）。
 
 | 記号 | 例 |
 | --- | --- |
 | E | Sat |
 | EEEE | Saturday |
-| d / dd | 7 / 07 |
-| M / MM | 6 / 06 |
-| MMM / MMMM | Jun / June |
-| yy / yyyy | 03 / 2003 |
+| d | 7 |
+| dd | 07 |
+| M | 6 |
+| MM | 06 |
+| MMM | Jun |
+| MMMM | June |
+| yy | 03 |
+| yyyy | 2003 |
+| / . : | / . : |
 
 ### 15-6. Bit flipper（暗号トークン改変）
 
-各ビット位置を改変する。設定は **Operate on**（base 値か別文字列）/ **Format of original data**（リテラルか ASCII hex）/ **Select bits to flip**。base "ab" をリテラルで全ビットフリップした例。
+各ビット位置を改変する。設定は **Operate on**（base 値か別文字列）/ **Format of original data**（リテラルか ASCII hex）/ **Select bits to flip**。base "ab" をリテラルで全ビットフリップした例（各文字のビットを1つずつ反転させる）。
 
 ```
 `b
@@ -613,6 +666,19 @@ ar
 aB
 a"
 aâ
+```
+
+同じ "ab" を **ASCII hex として扱い**（Format of original data で hex を選んだ場合）、全ビットフリップした例。この場合は各バイトの hex 表現に対してビット反転が働く。
+
+```
+aa
+a9
+af
+a3
+bb
+8b
+eb
+2b
 ```
 
 **CBC モードのブロック暗号**で暗号化された意味のあるデータでは、前の暗号ブロックのビットを改変して復号データの一部を系統的に変えられる可能性がある。
@@ -646,6 +712,27 @@ peter.w
 ### 15-10. その他
 
 **Character frobber** は各文字の ASCII コードを1増やし、どのパラメータ部分が応答に影響するかを調べる。**Null payloads** は position 不要で base request を繰り返し、Cookie 収集やアプリ層 DoS に使う。**Copy other payload** は new password と confirm password のように「2値が常に同じ」制約を満たすのに使う。
+
+### 15-11. Character blocks と Brute forcer（設定の詳細）
+
+概観表では1行にまとめたが、この2つは長さを制御する設定項目を持つので、ここで補う。
+
+**Character blocks** は、指定した文字/文字列のブロックを長さを変えながら生成する。**バッファオーバーフロー**などの境界条件の脆弱性を探ったり、特定の長さの入力がフィルタを回避する/予期しないコードパスを踏むロジック欠陥を突いたりするのに使う。
+
+| 項目 | 意味 |
+| --- | --- |
+| Base string | 繰り返しの元にする文字列 |
+| Min length | base string をこの数だけ乗じた長さが最小ブロック |
+| Max length | 生成するブロックの最大長 |
+| Step | 各ブロック長の増分 |
+
+**Brute forcer** は、指定した文字セットの全順列を、指定した長さの範囲で生成する（真の総当たり）。文字数が増えると組合せは指数的に爆発するので、範囲は慎重に決める。
+
+| 項目 | 意味 |
+| --- | --- |
+| Character set | ペイロードに使う文字の集合。サイズで総数が指数的に増える |
+| Min length | 生成する文字列の最小長 |
+| Max length | 生成する文字列の最大長 |
 
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: Intruder payload types — `tools/intruder/configure-attack/payload-types.html`
@@ -705,6 +792,31 @@ Burp は組込みの payload リストを備える。使い方は、payload type
 
 **最終 URL エンコード**（Payload encoding の **URL-encode these characters**）は**処理ルール実行後に適用**される。これにより payload grep が反射ペイロードをチェックした後にエンコードをかけられる。
 
+### 16-3. Intruder のユーザ設定（Settings ダイアログの Intruder ページ）
+
+個々の攻撃タブの設定とは別に、Intruder 全体の振る舞いを決めるページが Settings ダイアログにある。**Settings → Tools → Intruder** から開き、ここの項目はすべて **user 設定**（＝そのマシン上のすべての Burp インストールに適用される）である。§13 で「Auto § がパラメータ値を置換するか追加するかは Settings で構成する」と触れたが、その本体がこのページである。
+
+**Automatic payload placement** — Auto § などで payload marker を自動配置するときの入れ方を決める。
+
+- **Replace base parameter value** — もとのパラメータ値を**置き換える**位置にマーカーを置く。
+- **Append to base parameter value** — もとのパラメータ値の**後ろに追加**する位置にマーカーを置く。
+
+**New tab configuration** — 新しい attack タブを開いたときの初期構成をどこから持ってくるか。
+
+- **Use default attack configuration** — 既定の攻撃構成を使う。
+- **Copy configuration from first tab** — 最初のタブの構成を複製する。
+- **Copy configuration from last tab** — 最後のタブの構成を複製する。
+
+**Behavior when closing result windows** — 攻撃結果ウィンドウを閉じたときの既定の応答（§20-5 の「Closing attacks」で問われるダイアログの既定値）。
+
+- 進行中の攻撃を閉じるとき: **Continue my attack in the background**（背後で続行）/ **Delete my attack**（破棄）/ **Ask me what to do each time**（毎回尋ねる）。
+- 完了した攻撃を閉じるとき: **Save my attack to the project file**（project file に保存）/ **Keep in memory**（メモリに保持）/ **Delete my attack**（破棄）/ **Ask me what to do each time**（毎回尋ねる）。
+
+**Payload list location** — payload list をどこから読むか。
+
+- **Use built-in lists** — Burp 内蔵のリストを使う。
+- **Load custom lists from directory** — 指定フォルダから独自リストを読み込む（**Select directory** でフォルダを選ぶ）。Burp の preconfigured payload list をすべてこのカスタムディレクトリへ書き出したいときは、カスタムディレクトリを読み込んだうえで **Copy** を選ぶ。
+
 ---
 
 ## 17. Attack settings — Grep が脆弱性検出の核
@@ -725,7 +837,7 @@ Settings タブで攻撃を構成する。多くは実行中も変更できる�
 
 > 「These settings extract information from responses.」
 
-**Extract the following items from responses** → **Add** で抽出項目の場所を定義する（Response extraction rules、次項）。**Maximum capture length** で各項目の最大長を決める。Harvesting useful data の中核。
+**Extract the following items from responses** → **Add** で抽出項目の場所を定義する（Response extraction rules、次項）。**Maximum capture length** で各項目の最大長を決める。Harvesting useful data の中核。補足（Note）: 同一の項目が応答内に複数回現れるとき、それらをまとめて抽出するには、同じ項目を**連続して複数回 Add する**。一意の prefix を持たない HTML の表から複数セルの値を取り出すような場合に使う。
 
 ### 17-3. Grep - payloads（XSS 等のリフレクション検出）★
 
@@ -838,6 +950,23 @@ Results タブの表には **Request / Position / Payload / Status / Time of day
 実行中の攻撃は **Attack** メニューで Pause / Resume / Restart できる。ただし**攻撃構造の根幹（attack type / payload positions / payload type）は修正不可**で、変えるには元の attack タブで新攻撃を開始する。補足（Note）: 構成修正前に一時停止を推奨する（実行中の変更はキー押下ごとに反映され、Numbers の To 桁を削ると攻撃が突然完了することがある）。
 
 保存は既定でされない。Pro では **Save** メニューで Results table / Server responses / Attack configuration / Project file に保存できる。**Load attack config** で構成を再利用できる。
+
+**攻撃ウィンドウを閉じるとき（Closing attacks）の挙動:**
+
+- **進行中**の攻撃ウィンドウを閉じると、「バックグラウンドで続行するか、破棄するか」を問われる。
+- **完了後**の攻撃を閉じると、「project file に保存するか（Pro の disk-based プロジェクトのみ）、メモリに保持するか」を選べる。
+- どちらの既定の応答も、Settings ダイアログの **Behavior when closing result windows** で指定する（後述の Intruder 設定を参照）。
+
+### 20-6. Intruder のタブ管理
+
+リクエストを Intruder に送ると、新しい attack タブが作られてリクエスト詳細が自動投入される。タブヘッダのコントロールは次のとおり。
+
+- **Create an attack tab** — add tab ボタンで新タブを作る。新タブの開始構成は Settings で決める（後述）。
+- **Rename tabs** — タブヘッダをダブルクリックして名前を入力する。
+- **Switch tab view** — 右クリック → Tab view settings で **Scrolling view** / **Wrapped view** を切り替える。
+- **Close tabs** — 単一タブを閉じるほか、**Close all tabs** / **Close other tabs** / **Close tabs to the left / right** / **Reopen closed tab**（Tabs options メニュー）が使える。
+
+補足（Note）: すでに Intruder にあるリクエストから、さらに Intruder に送ると、同一リクエストの別インスタンスが新タブとして作られる（テストの整理に便利）。
 
 ---
 

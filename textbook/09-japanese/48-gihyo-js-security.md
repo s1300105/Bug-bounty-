@@ -39,17 +39,21 @@
 > - DOM-based XSSの話をどこまでするか、どうするかの件 せめてリンクは出してあげたいが参考リンクがない
 > - @azu: 海外だとOWASP
 > - MDNも簡単な解説しかない
+> - [クロスサイトスクリプティング - 用語集 | MDN](https://developer.mozilla.org/ja/docs/Glossary/Cross-site_scripting)
 > - hasegawaさんが最近連載してる
 > - [JavaScriptセキュリティの基礎知識：連載｜gihyo.jp … 技術評論社](http://gihyo.jp/dev/serial/01/javascript-security)
 > - hasegawaさんが本とか書いてくれると…
-> …
+> - [安全なウェブサイトの作り方：IPA 独立行政法人 情報処理推進機構](https://www.ipa.go.jp/security/vuln/websecurity.html)
+>
 > ### 結論
 > - いいリンクを募集中」
 > （出典: js-primer リポジトリ `meetings/2016-07-29/README.md`）
 
+この議事録が挙げているのは **OWASP（英語）・MDN（用語集レベルの簡単な解説）・IPA「安全なウェブサイトの作り方」** の3つだけである。当時、日本語で DOM-based XSS をまとまって解説した資料が事実上存在しなかったことが、実在する一次資料からうかがえる。
+
 つまり当時、「DOM-based XSS の日本語の参考リンクが無い」「海外の OWASP を読むしかない」という状況で、その空白を埋める資料として、はせがわ氏の連載が挙げられていた。
 
-さらに、日本のプロの脆弱性診断士向けガイドライン（OWASP Japan × JNSA 共同ワーキンググループの「Webアプリケーション脆弱性診断ガイドライン」）は、この連載を「開発系」の推薦資料の第1項目に挙げ、次のように評している。
+さらに、日本のプロの脆弱性診断士向けガイドライン——**「Webアプリケーション脆弱性診断ガイドライン 第1.2版」**（OWASP Japan と JNSA〔日本ネットワークセキュリティ協会〕の共同ワーキンググループである脆弱性診断士スキルマッププロジェクト、代表: 上野宣）——は、この連載を「開発系」の推薦資料の第1項目に挙げ、次のように評している。
 
 > 「はせがわようすけさんがJavaScriptに関連するセキュリティ上の問題について解説されている記事です。… また、本連載の後半ではDOM-based XSSに関して深い解説をされており、脆弱性を生まないための実装方法などについても記載されています。」
 > （出典: `WebAppPentestGuidelines/WebAppPentestGuidelines` リポジトリの `README.md`）
@@ -121,11 +125,11 @@ source から出た「汚れ」が、エスケープ（浄化）されないま�
 
 | 区分 | 該当する API / プロパティ |
 | --- | --- |
-| source（攻撃者が制御しうる入力） | `location.hash`(第6/8回), `location.search`, `location.href`, `document.URL`, `document.referrer`, `window.name`, `postMessage` の `event.data`, `localStorage` / `sessionStorage`, Cookie, `XMLHttpRequest` / `fetch` のレスポンス(第8回) |
-| sink（HTML 生成系） | `innerHTML`(第6回), `outerHTML`, `insertAdjacentHTML`, `document.write` / `document.writeln`(第7回), `iframe.srcdoc` |
-| sink（コード実行系） | `eval`(第7回), `Function` コンストラクタ(第7回), `setTimeout` / `setInterval` の文字列引数(第7回) |
-| sink（URL 系） | `location` への代入(第6回), `a.href`, `iframe.src`, `script.src`, `window.open`（`javascript:` / `data:` スキームに注意） |
-| sink（jQuery） | `$()` / `jQuery()` の引数(第7回), `.html()`(第7回), `.append()`(第7回) |
+| source（攻撃者が制御しうる入力） | `location.hash`(第6/8回), `location.search`, `location.href`, `location.pathname`, `document.URL`, `document.documentURI`, `document.referrer`, `window.name`, `postMessage` の `event.data`, `localStorage` / `sessionStorage`, Cookie, `XMLHttpRequest` / `fetch` のレスポンス(第8回) |
+| sink（HTML 生成系） | `innerHTML`(第6回), `outerHTML`, `insertAdjacentHTML`, `document.write` / `document.writeln`(第7回), `iframe.srcdoc`, `Range.createContextualFragment`, `DOMParser.parseFromString` |
+| sink（コード実行系） | `eval`(第7回), `Function` コンストラクタ(第7回), `setTimeout` / `setInterval` の文字列引数(第7回), `setImmediate`, `execScript`（旧 IE） |
+| sink（URL 系） | `location` への代入(第6回), `location.href` / `location.assign` / `location.replace`, `a.href`, `iframe.src`, `script.src`, `form.action`, `window.open`（`javascript:` / `data:` スキームに注意） |
+| sink（jQuery） | `$()` / `jQuery()` の引数(第7回), `.html()`(第7回), `.append()`(第7回), `.prepend()` / `.after()` / `.before()` / `.replaceWith()` / `.wrap()`, `$.parseHTML()`, `$.globalEval()` |
 | 安全側の API | `textContent`(第6回), `createTextNode()`(第6回), `setAttribute`（属性名に注意）, jQuery `.text()`, `JSON.parse`(第7回) |
 
 ## 3. HTML エスケープの基本 —— サーバ側の対策を JavaScript で再現する
@@ -151,7 +155,7 @@ source から出た「汚れ」が、エスケープ（浄化）されないま�
 > "Encoding Mechanism: Convert `&` to `&amp;`, Convert `<` to `&lt;`, Convert `>` to `&gt;`, Convert `"` to `&quot;`, Convert `'` to `&#x27`"
 > （出典: OWASP Cross Site Scripting Prevention Cheat Sheet, Output Encoding Rules Summary）
 
-`'`（シングルクォート）を `&apos;` ではなく `&#x27;` に変換している点が実務上のポイントである（`&apos;` は一部の古い環境で正しく解釈されないため、数値文字参照の `&#x27;` が推奨される）。
+`'`（シングルクォート）を `&apos;` ではなく `&#x27;`（数値文字参照）に変換している点が実務上のポイントである。OWASP の公式テーブルは変換先を `&#x27;` と規定している（上記逐語のとおり）。〔補足・一般知識〕`&apos;` ではなく数値文字参照の `&#x27;` が使われる理由としては、`&apos;` が一部の古い環境で正しく解釈されないことがある——とよく言われるが、これは本節が典拠とする資料（OWASP／gihyo）には明記されていない一般知識であり、確実に言えるのは「OWASP が変換先を `&#x27;` と規定している」という事実の方である。
 
 ### 3-3. 実装（教科書独自のコード）
 
@@ -196,6 +200,25 @@ function htmlEscape(s) {
 
 つまり `eval` や `setTimeout` の中に値を入れる場合、HTML エスケープしても意味がない。これらの sink には「そもそも攻撃者制御の文字列を渡さない」しかない。これが第7回が各 sink で「渡さない」を結論にする根拠である。
 
+### 3-5. 〔補足〕エスケープは「文脈（コンテキスト）」ごとに変わる —— OWASP の枠組み
+
+「HTML エスケープ」と一口に言っても、値を埋め込む場所によって必要な処理は違う。OWASP の DOM based XSS Prevention Cheat Sheet は、これを **rendering context（HTML パーサ側の文脈）** と **execution context（JavaScript パーサ側の文脈）** に分け、さらに execution context の内部を4つの **サブコンテキスト（subcontext）** に分けて整理している。
+
+- **rendering context（レンダリングコンテキスト）**: ブラウザの HTML パーサが解釈する場所。ここへ信頼できない値を入れるなら、基本は HTML エスケープでよい。
+- **execution context（実行コンテキスト）**: JavaScript パーサが解釈する場所。ここへ入れる値は、埋め込み先のサブコンテキストに応じて追加のエスケープが要る。
+
+OWASP はサブコンテキストごとに RULE #1〜#5 を定めている。
+
+| ルール | サブコンテキスト | 必要な処理 |
+| --- | --- | --- |
+| RULE #1 | HTML（実行コンテキスト内の HTML） | HTML エスケープしてから JavaScript エスケープ |
+| RULE #2 | HTML 属性 | JavaScript エスケープ |
+| RULE #3 | イベントハンドラ／JavaScript コード | 原則として値を入れない（注意が必要） |
+| RULE #4 | CSS 属性 | JavaScript エスケープ |
+| RULE #5 | URL 属性 | URL エスケープしてから JavaScript エスケープ |
+
+この節で扱う「テキストノード用と属性値用でエスケープを考える」という第7回の話は、この枠組みの一部（RULE #1・#2）に対応する。重要なのは、**URL を入れる場所（`href` や `src`）は HTML エスケープだけでは足りず、RULE #5 のとおり URL エスケープ＋JavaScript エスケープが必要**で、CSS 値を入れる場所も別扱い（RULE #4）だということ。「HTML エスケープさえすれば全部安全」ではない。
+
 ## 4. 危険な sink（1）—— `document.write` / `document.writeln`
 
 ### 4-1. どう動くのか
@@ -235,7 +258,17 @@ el.textContent = value;   // innerHTML ではなく textContent
 document.getElementById('target').appendChild(el);
 ```
 
-〔補足・重要な落とし穴〕`setAttribute` は「どんな属性でも安全」ではない。OWASP は「`element.setAttribute` は限られた属性についてのみ安全」と明記し（GUIDELINE #3）、`onclick` や `onblur` のようなイベントハンドラ属性は危険だとしている。安全な属性名として `align`, `alt`, `class`, `height`, `href`（※後述の URL 系は別途注意）, `title`, `width` などが公式に列挙されている。「DOM API なら無条件に安全」と単純化してはいけない。
+〔補足・重要な落とし穴〕`setAttribute` は「どんな属性でも安全」ではない。OWASP は「`element.setAttribute` は限られた属性についてのみ安全」と明記し（GUIDELINE #3）、`onclick` や `onblur` のようなイベントハンドラ属性は危険だとしている。
+
+OWASP の「Safe Sinks」節は、`setAttribute` に安全に使える属性名を公式に列挙している（逐語の一部）。
+
+```text
+align, alt, bgcolor, border, cellpadding, cellspacing, class, color,
+cols, colspan, coords, dir, face, height, hspace, lang, rows, rowspan,
+span, tabindex, title, valign, value, vspace, width  …ほか
+```
+
+**注意すべきは、この安全属性リストに `href` は含まれていないこと。** `href`・`src`・`action` などの **URL 系属性は「安全側」ではない**。これらは 3-5 で述べた RULE #5 のとおり、URL エスケープ＋JavaScript エスケープが必要な別扱いの属性であり、`javascript:` スキームなどを入れられると XSS になりうる。したがって「安全属性」と「URL 系属性」は頭の中で分けて扱うこと。「DOM API なら無条件に安全」と単純化してはいけない。
 
 ## 5. 危険な sink（2）—— `eval`
 

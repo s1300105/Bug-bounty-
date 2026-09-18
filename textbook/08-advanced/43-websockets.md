@@ -157,7 +157,7 @@ Burp Proxy を使って次の手順で傍受・改変する。傍受（intercept
 3. Burp Proxy の Intercept タブで、傍受がオンになっていることを確認する。
 4. ブラウザまたはサーバから WebSocket メッセージが送られると Intercept タブに表示され、閲覧・改変できる。Forward ボタンでメッセージを転送する。
 
-原典の注記によれば、クライアント→サーバ方向とサーバ→クライアント方向のどちらのメッセージを傍受するかは Burp Proxy で設定できる。Settings ダイアログの **WebSocket interception rules** 設定で行う。
+原典の注記によれば、クライアント→サーバ方向とサーバ→クライアント方向のどちらのメッセージを傍受するかは Burp Proxy で設定できる。Settings ダイアログの **WebSocket interception rules** 設定で行う（設定項目の詳細は公式ドキュメント https://portswigger.net/burp/documentation/desktop/settings/tools/proxy#websocket-interception-rules を参照）。
 
 ### 4-2. 再送と新規メッセージ生成（Burp Repeater）
 
@@ -186,7 +186,7 @@ Burp Repeater でのハンドシェイク操作手順は次のとおり。
 3. クローンまたは再接続を選ぶと、ウィザードはハンドシェイクリクエストの全詳細を表示し、実行前に必要に応じて編集できる。
 4. 「Connect」をクリックすると、Burp は設定したハンドシェイクを実行して結果を表示する。成功すれば、その接続を使って Repeater で新規メッセージを送れる。
 
-```
+```text
 WebSocket テストのツール対応図
 ┌───────────────────────────────────────────────┐
 │ Burp Proxy                                     │
@@ -212,7 +212,7 @@ WebSocket に影響する入力起因の脆弱性の大半は、WebSocket メッ
 原理上、次のような脆弱性が生じ得る。
 
 - サーバに送られるユーザー供給入力が安全でない方法で処理され、SQL インジェクションや XXE インジェクションにつながる。
-- WebSocket 経由で到達するブラインド脆弱性の一部は、out-of-band（OAST）技法でしか検出できないことがある。OAST（帯域外アプリケーションセキュリティテスト）とは、攻撃対象からの通信を攻撃者側の外部サーバで受け取り、脆弱性の有無を確認する手法のこと。
+- WebSocket 経由で到達するブラインド脆弱性の一部は、out-of-band（OAST）技法でしか検出できないことがある。ブラインド脆弱性（blind vulnerability）とは、攻撃の成否がレスポンス本文に直接現れない脆弱性のこと。たとえば注入は成功しているのに結果が画面やレスポンスに返らないケースで、成否を「見て」判断できない。だからこそ OAST（帯域外アプリケーションセキュリティテスト）とは、攻撃対象からの通信を攻撃者側の外部サーバで受け取り、その外部への通信の有無で脆弱性を確認する手法のことで、ブラインドな状況でも検出の手がかりを得られる。
 - 攻撃者が制御するデータが WebSocket 経由で他の利用者へ伝送される場合、XSS その他のクライアントサイド脆弱性につながる。
 
 ### 5-2. XSS の PoC 例（どう動くか）
@@ -357,7 +357,7 @@ Upgrade: websocket
 </script>
 ```
 
-このスクリプトを exploit サーバに置いて配信すると、被害者ブラウザが同一オリジンの Cookie を自動付与してハンドシェイクを行う。`ws.onopen`（接続が開いた瞬間に走る関数）で `READY` を送信し、その応答としてサーバがチャット履歴（機密データ）を返す。`ws.onmessage`（メッセージを受信するたびに走る関数）で、受け取った本文 `event.data` を `fetch` で Burp Collaborator（`oastify.com`）へ送出する。Burp Collaborator とは、攻撃対象からの帯域外通信を受け取るための PortSwigger の公開サーバのこと。攻撃者は Collaborator の HTTP/DNS 相互作用ログから、たとえば別ユーザー（carlos）のパスワードを含むメッセージ本文を回収できる。
+このスクリプトを exploit サーバに置いて配信すると、被害者ブラウザが同一オリジンの Cookie を自動付与してハンドシェイクを行う。`ws.onopen`（接続が開いた瞬間に走る関数）で `READY` を送信し、その応答としてサーバがチャット履歴（機密データ）を返す。`ws.onmessage`（メッセージを受信するたびに走る関数）で、受け取った本文 `event.data` を `fetch` で Burp Collaborator（`oastify.com`）へ送出する。Burp Collaborator とは、攻撃対象からの帯域外通信を受け取るための PortSwigger の公開サーバのこと（機能の詳細は公式ドキュメント https://portswigger.net/burp/documentation/desktop/tools/collaborator を参照）。攻撃者は Collaborator の HTTP/DNS 相互作用ログから、たとえば別ユーザー（carlos）のパスワードを含むメッセージ本文を回収できる。
 
 ### 7-5. ラボ③: exploit サーバと Collaborator でチャット履歴を窃取
 
@@ -416,7 +416,9 @@ Upgrade: websocket
 
 `Origin` ヘッダとは、リクエストがどのサイト（オリジン）から発せられたかをブラウザが付ける値のこと。CSWSH が成立するのは、サーバがハンドシェイク時にこの `Origin` を検証していない（＝クロスオリジンからの接続を拒否しない）ためである。したがってサーバ側での `Origin` ヘッダ検証は CSWSH の主要な防御策の一つになる。
 
-ただし `Origin` は、ブラウザを介さない攻撃者制御下のサーバ間リクエストでは偽装され得る。よって `Origin` 検証だけに頼らず、CSRF トークン等の予測不能値をハンドシェイクに含めることが推奨される。
+ただし `Origin` は、ブラウザを介さない攻撃者制御下のサーバ間リクエストでは偽装され得る。ここが初学者にわかりにくい点なので補っておく。`Origin` ヘッダを「本当のオリジン」に強制的に付けるのはブラウザだけである。被害者のブラウザが攻撃者ページから接続する CSWSH の経路では、`Origin` は攻撃者オリジンになるので検証で弾ける。しかし攻撃者が自分のサーバから（curl や自作クライアントで）直接ハンドシェイクを送る場合、`Origin` の値は攻撃者が自由に書けるため、正規オリジンになりすませてしまう。RFC 6455（§4.1／§10.2）も、ブラウザ以外のクライアントは `Origin` 検証を回避し得ると明記している。よって `Origin` 検証だけに頼らず、CSRF トークン等の予測不能値をハンドシェイクに含めることが推奨される。
+
+CSWSH を含む WebSocket の防御・監査を体系的に確認したい場合は、攻撃者視点（PortSwigger）だけでなく、テスト観点を網羅したチェックリストにもあたっておくとよい。
 
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: WebSockets ラボ 3 種（要ログイン・要 Burp Suite） — https://portswigger.net/web-security/websockets （トピックトップから各ラボへ）
@@ -426,6 +428,16 @@ Upgrade: websocket
 > 2. ラボ②で Repeater の鉛筆アイコンからハンドシェイクを編集し、`X-Forwarded-For` を足して再接続する流れを体験する。
 > 3. ラボ③で exploit サーバと Burp Collaborator を連携させ、CSWSH で資格情報を窃取→ログインまで通す。
 > **代替手段**: OWASP Testing WebSockets（WSTG-CLNT-10 等）で、Origin 検証・認証認可・入力検証・TLS の体系的テスト観点を補える。
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: OWASP Web Security Testing Guide — Testing WebSockets（WSTG-CLNT-10 等） — https://owasp.org/www-project-web-security-testing-guide/
+> **なぜ**: 本教科書の執筆環境からは自動取得できなかった（理由: サイト側の egress 制限で到達できず）。以下はノートの参照案内にもとづく要約である。PortSwigger が攻撃者視点で説明するのに対し、OWASP WSTG は「テスト・監査でどこを確認すべきか」を防御側のチェックリストとして体系化している点が補完になる。
+> **読みどころ**:
+> 1. **Origin 検証**: サーバがハンドシェイクの `Origin` を検証しているか（CSWSH の一次防御）。本節 7-6 の裏取りに使う。
+> 2. **認証・認可**: WebSocket 接続とその後のメッセージが、正しくセッション・権限に紐づいて処理されているか（6 節のセッション処理欠陥に対応）。
+> 3. **入力検証**: 双方向のメッセージ本文が untrusted として検証・エスケープされているか（5 節の XSS／SQLi に対応）。
+> 4. **TLS**: `wss://` が使われ、機微データが暗号化されているか（8 節の指針 1 に対応）。
+> **代替手段**: なし（OWASP WSTG は無料公開。GitHub 版 https://github.com/OWASP/wstg でも同内容を読める）
 
 ---
 
@@ -542,9 +554,13 @@ Upgrade: websocket
 - https://portswigger.net/blog/oast-out-of-band-application-security-testing
 - https://www.rfc-editor.org/rfc/rfc6455
 - https://developer.mozilla.org/en-US/docs/Web/API/WebSocket
+- https://owasp.org/www-project-web-security-testing-guide/
+- https://portswigger.net/burp/documentation/desktop/tools/collaborator
+- https://portswigger.net/burp/documentation/desktop/settings/tools/proxy#websocket-interception-rules
 
-<!-- sources: https://portswigger.net/web-security/websockets, https://portswigger.net/web-security/websockets/what-are-websockets, https://portswigger.net/web-security/websockets/cross-site-websocket-hijacking, https://portswigger.net/web-security/websockets/lab-manipulating-messages-to-exploit-vulnerabilities, https://portswigger.net/web-security/websockets/lab-manipulating-handshake-to-exploit-vulnerabilities, https://portswigger.net/web-security/websockets/cross-site-websocket-hijacking/lab, https://www.rfc-editor.org/rfc/rfc6455, https://developer.mozilla.org/en-US/docs/Web/API/WebSocket -->
-<!-- terms: WebSocket, 全二重, ハンドシェイク, wss, ws, Sec-WebSocket-Key, Sec-WebSocket-Accept, Sec-WebSocket-Version, Upgrade, Burp Suite, Burp Proxy, Burp Repeater, WebSockets history, Intercept, Send to Repeater, Edit and resend, クロスサイトWebSocketハイジャック, CSWSH, cross-origin WebSocket hijacking, CSRF, CSRFトークン, XSS, 格納型XSS, SQLインジェクション, XXE, OAST, Burp Collaborator, oastify, X-Forwarded-For, Origin, onerror, onopen, onmessage, exploitサーバ, READY, RFC 6455, TLS -->
+<!-- sources: https://portswigger.net/web-security/websockets, https://portswigger.net/web-security/websockets/what-are-websockets, https://portswigger.net/web-security/websockets/cross-site-websocket-hijacking, https://portswigger.net/web-security/websockets/lab-manipulating-messages-to-exploit-vulnerabilities, https://portswigger.net/web-security/websockets/lab-manipulating-handshake-to-exploit-vulnerabilities, https://portswigger.net/web-security/websockets/cross-site-websocket-hijacking/lab, https://portswigger.net/web-security/csrf#how-does-csrf-work, https://portswigger.net/blog/oast-out-of-band-application-security-testing, https://www.rfc-editor.org/rfc/rfc6455, https://developer.mozilla.org/en-US/docs/Web/API/WebSocket, https://owasp.org/www-project-web-security-testing-guide/, https://portswigger.net/burp/documentation/desktop/tools/collaborator, https://portswigger.net/burp/documentation/desktop/settings/tools/proxy#websocket-interception-rules -->
+<!-- terms: WebSocket, 全二重, ハンドシェイク, wss, ws, Sec-WebSocket-Key, Sec-WebSocket-Accept, Sec-WebSocket-Version, Upgrade, Burp Suite, Burp Proxy, Burp Repeater, WebSockets history, Intercept, Send to Repeater, Edit and resend, クロスサイトWebSocketハイジャック, CSWSH, cross-origin WebSocket hijacking, CSRF, CSRFトークン, XSS, 格納型XSS, SQLインジェクション, XXE, OAST, Burp Collaborator, oastify, X-Forwarded-For, Origin, onerror, onopen, onmessage, exploitサーバ, READY, RFC 6455, TLS, ブラインド脆弱性, OWASP WSTG, WebSocket interception rules -->
 <!-- self-read: https://www.rfc-editor.org/rfc/rfc6455 | 一次規格でサイト側 egress 制限により未取得 -->
 <!-- self-read: https://developer.mozilla.org/en-US/docs/Web/API/WebSocket | サイト側の制限により未取得、実装リファレンス -->
 <!-- self-read: https://portswigger.net/web-security/websockets | ラボ環境は要ログインで未取得、実演習用 -->
+<!-- self-read: https://owasp.org/www-project-web-security-testing-guide/ | サイト側 egress 制限により未取得、WebSocket 防御・監査のテスト観点チェックリスト -->

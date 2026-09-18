@@ -29,6 +29,18 @@ JSファイル / URL / フォルダ / Burp XML
         └─► SecretFinder → 機密データ一覧（APIキー・トークン・鍵）
 ```
 
+### 0-1. ライセンスは3つが併存している（成果物に組み込む前に要確認）
+
+この2ツールを自分の診断で「使う」だけなら気にしなくてよいが、**コードやルールを自作ツール・社内スクリプト・配布物に組み込む**なら、ライセンスの違いを先に押さえておく必要がある。実は本節が扱うコード群は、**1つのライセンスではなく3つが併存**している。
+
+| 対象 | ライセンス | 要点 |
+|---|---|---|
+| LinkFinder（本体） | MIT | 制約が緩く、著作権表示さえ残せば組み込みやすい |
+| SecretFinder（本体、リポジトリ直下） | GPLv3 | **コピーレフト**。組み込んだ側のソースもGPLで公開する義務が生じうる |
+| SecretFinder の Burp拡張ディレクトリ（`BurpSuite-SecretFinder/`） | MIT | 同じリポジトリ内だが本体とは別ライセンス |
+
+ここで注意すべきは、**SecretFinder 本体（`SecretFinder.py`）は GPLv3** である点。GPLv3（GNU General Public License version 3）とは、そのコードを取り込んだ派生物にも同じGPLでのソース公開を求める「コピーレフト（copyleft）」型ライセンスのこと。つまり `_regex` 辞書や `parser_file` を自作の配布ツールにコピーして使うと、こちら側のコードもGPLで公開しなければならなくなる可能性がある。一方、LinkFinder（MIT）と Burp拡張ディレクトリ（MIT）は制約が緩い。**同じ話題の3つのコードでライセンスが違うので、成果物に組み込む前には「どの部分を、どのライセンスで取り込むのか」を必ず確認すること。**（単にツールとして実行して診断する分には、これらの義務は発生しない。）
+
 ---
 
 ## 1. SecretFinder の使い方（基本形）
@@ -296,6 +308,8 @@ _regex = {
 - **`Heroku API KEY`**: 任意のUUID（`8-4-4-4-12` の16進）にマッチする。JSバンドルにはUUIDが山ほど埋まっているため、ほぼ常にノイズを出す。
 - **`json_web_token`**: `ey` で始まる base64url 風文字列に広くマッチする。末尾に `$` があるため、複数行の扱いによって結果がぶれる。
 - **`authorization_api`** の `api[key|_key|\s+]+`: これは**文字クラス**であり、`a`,`p`,`i` の後に `k`,`e`,`y`,`|`,`_`,空白 のいずれかが1個以上続けばマッチしてしまう。作者が意図した「apikey または api_key」より広く当たる（文字クラス `[...]` と選択 `(?:key|_key)` の混同）。
+
+  〔補足〕正規表現の `[ ]`（文字クラス）とは「この中に書いた文字のいずれか1文字」を表す記法のこと。一方 `( | )`（選択）は「`|` で区切ったパターンのどれか」を表す。両者は見た目が似ているが意味が違う。`api[key|_key|\s+]+` では、`[ ]` の中に書いた `k`・`e`・`y`・`|`・`_`・空白（`\s`）が**すべて「そのいずれか1文字」の意味**になってしまう。そのため `api` の後に `k`/`e`/`y`/`|`/`_`/空白 のどれかが続けば当たり、作者が狙った「`apikey` または `api_key`」だけを拾うつもりが、はるかに広い文字列に反応する。狙いどおりにするには文字クラスではなく選択 `api(?:key|_key)` と書く必要があった、というわけである。
 - **`possible_Creds`**: `password:` のようなキー名だけの出現でも後続の非空白文字を拾うので、ライブラリのバリデーションメッセージなどを大量に拾う。
 - **`twilio_*`**: 2文字プレフィクス＋32文字なので、ハッシュ値に偶然マッチしうる。
 
@@ -578,18 +592,67 @@ _template = '''
 <head>
   <meta charset="UTF-8">
   <style>
-       h1 { font-family: sans-serif; }
-       ...
+       h1 {
+          font-family: sans-serif;
+       }
+       a {
+          color: #000;
+       }
+       .text {
+          font-size: 16px;
+          font-family: Helvetica, sans-serif;
+          color: #323232;
+          background-color: white;
+       }
+       .container {
+          background-color: #e9e9e9;
+          padding: 10px;
+          margin: 10px 0;
+          font-family: helvetica;
+          font-size: 13px;
+          border-width: 1px;
+          border-style: solid;
+          border-color: #8a8a8a;
+          color: #323232;
+          margin-bottom: 15px;
+       }
+       .button {
+          padding: 17px 60px;
+          margin: 10px 10px 10px 0;
+          display: inline-block;
+          background-color: #f4f4f4;
+          border-radius: .25rem;
+          text-decoration: none;
+          -webkit-transition: .15s ease-in-out;
+          transition: .15s ease-in-out;
+          color: #333;
+          position: relative;
+       }
+       .button:hover {
+          background-color: #eee;
+          text-decoration: none;
+       }
+       .github-icon {
+          line-height: 0;
+          position: absolute;
+          top: 14px;
+          left: 24px;
+          opacity: 0.7;
+       }
   </style>
   <title>LinkFinder Output</title>
 </head>
 <body contenteditable="true">
   $$content$$
-  ...
+
+  <a class='button' contenteditable='false' href='https://github.com/m4ll0k/SecretFinder/issues/new' rel='nofollow noopener noreferrer' target='_blank'><span class='github-icon'><svg height="24" viewbox="0 0 24 24" width="24" xmlns="http://www.w3.org/2000/svg">
+  <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22" fill="none" stroke="#000" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg></span> Report an issue.</a>
 </body>
 </html>
 '''
 ```
+
+CSS は LinkFinder の `template.html` とほぼ同一で、検出結果の1件1件を `.container`（薄いグレー背景 `#e9e9e9`＋灰色の枠線 `#8a8a8a`）で囲み、マッチした値の周辺コードを黄色（`background-color:yellow`）のスパンで強調する見た目である。末尾の `Report an issue.` ボタン（`.button`／GitHubアイコンのSVGパス）はSecretFinderのIssue投稿ページへのリンクになっている。
 
 HTMLを書き出す `html_save`（逐語・抜粋）。
 
@@ -618,6 +681,37 @@ def html_save(output):
 
 - 見出しは**ルール名の `_` を空白に置換したもの**（`google_api` → `google api`）。コンテキストは `<span style="background-color:yellow">` で黄色ハイライトされる。
 - **完了時にブラウザを自動起動する**（Linux は `xdg-open`）。CI やバッチで回すときは `-o cli` を使うのが安全である。
+
+`$$content$$` に埋め込む本文（`output`）を組み立てているループも読んでおく価値がある（逐語）。
+
+```python
+            output += '<h1>File: <a href="%s" target="_blank" rel="nofollow noopener noreferrer">%s</a></h1>'%(escape(url),escape(url))
+            for match in matched:
+                _matched = match.get('matched')
+                _named = match.get('name')
+                header = '<div class="text">%s'%(_named.replace('_',' '))
+                body = ''
+                # find same thing in multiple context
+                if match.get('multi_context'):
+                    # remove duplicate
+                    no_dup = []
+                    for context in match.get('context'):
+                        if context not in no_dup:
+                            body += '</a><div class="container">%s</div></div>'%(context)
+                            body = body.replace(
+                                context,'<span style="background-color:yellow">%s</span>'%context)
+                            no_dup.append(context)
+                        # --
+                else:
+                    body += '</a><div class="container">%s</div></div>'%(match.get('context')[0] if len(match.get('context'))>1 else match.get('context'))
+                    body = body.replace(
+                        match.get('context')[0] if len(match.get('context')) > 0 else ''.join(match.get('context')),
+                        '<span style="background-color:yellow">%s</span>'%(match.get('context') if len(match.get('context'))>1 else match.get('context'))
+                    )
+                output += header + body
+```
+
+〔補足〕この断片組み立ては実装が粗い。`multi_context`（同じ値が複数箇所に出た）のときは重複を除いた各コンテキストを `.container` で並べるが、`else`（1箇所だけ）の分岐は `match.get('context')[0] if len(match.get('context'))>1 else match.get('context')` のように**判定と取り出しがちぐはぐ**で、`len(...)>1` でないと `[0]` を取らず**リストそのもの**を文字列に埋め込む場面が生じる。つまり「コンテキストが1件だけのとき、`['...']` というリスト表記のまま黄色スパンに入りうる」ような壊れ方をしている。4-3で触れた `parser_file` の二重 `append` バグと同様、HTML出力側の断片組み立ても信頼しきれない。この意味でも**出力を鵜呑みにせず手で確認する**姿勢が要る。
 
 〔補足〕LinkFinder は `html.escape` をコンテキストにも適用するが、**SecretFinder はコンテキスト文字列を `escape()` せずにHTMLへ直接埋め込む**（`escape` を通すのはファイルURLのみ）。解析対象JSの中身がそのまま出力HTMLに入り、しかも `<body contenteditable="true">` なので、**生成した `output.html` をブラウザで開く行為自体に自己XSS（self-XSS）のリスクがある**。自己XSSとは、自分が生成・入力したデータによって自分のブラウザ上でスクリプトが実行されてしまう状態のこと。診断用ホストで開く、あるいは `-o cli` を使うのが安全である。
 
@@ -656,9 +750,68 @@ class BurpExtender(IBurpExtender, IScannerCheck):
 
 ### 8b-2. Burp版の正規表現は CLI版と別物（37エントリ）
 
-Burp版の辞書 `regexs` は CLI版（31件）とは中身が違い、37エントリある。CLI版との差分は次のとおり。
+Burp版の辞書 `regexs` は CLI版（31件）とは中身が違い、37エントリある。まず全文を逐語で示す。
 
-- **Burp版のみ**: `docs_file_exetension`（綴り原文どおり）, `bitcoin_address`, `slack_api_key`, `us_cn_zipcode`, `google_cloud_platform_auth`, `google_cloud_platform_api`, `amazon_secret_key`（`[0-9a-zA-Z/+]{40}` — 40文字のbase64風文字列すべてに当たる超広域ルール）, `gmail_auth_token`, `github_auth_token`（`[0-9a-fA-F]{40}` — SHA-1ハッシュ全部に当たる）, `Instagram_token`, `twitter_access_token`
+```python
+    # add your regex here
+    regexs = {
+        'google_api' : 'AIza[0-9A-Za-z-_]{35}',
+        'docs_file_exetension' : '^.*\.(xls|xlsx|doc|docx)$',
+        'bitcoin_address' : '([13][a-km-zA-HJ-NP-Z0-9]{26,33})',
+        'slack_api_key' : 'xox.-[0-9]{12}-[0-9]{12}-[0-9a-zA-Z]{24}',
+        'us_cn_zipcode' : '/(^\d{5}(-\d{4})?$)|(^[ABCEGHJKLMNPRSTVXY]{1}\d{1}[A-Z]{1} *\d{1}[A-Z]{1}\d{1}$)/',
+        'google_cloud_platform_auth' : '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
+        'google_cloud_platform_api' : '[A-Za-z0-9_]{21}--[A-Za-z0-9_]{8}',
+        'amazon_secret_key' : '[0-9a-zA-Z/+]{40}',
+        'gmail_auth_token' : '[0-9(+-[0-9A-Za-z_]{32}.apps.qooqleusercontent.com',
+        'github_auth_token' : '[0-9a-fA-F]{40}',
+        'Instagram_token' : '[0-9a-fA-F]{7}.[0-9a-fA-F]{32}',
+        'twitter_access_token' : '[1-9][ 0-9]+-(0-9a-zA-Z]{40}',
+        'firebase' : 'AAAA[A-Za-z0-9_-]{7}:[A-Za-z0-9_-]{140}',
+        'google_captcha' : '6L[0-9A-Za-z-_]{38}|^6[0-9a-zA-Z_-]{39}$',
+        'google_oauth' : 'ya29\.[0-9A-Za-z\-_]+',
+        'amazon_aws_access_key_id' : 'A[SK]IA[0-9A-Z]{16}',
+        'amazon_mws_auth_toke' : 'amzn\\.mws\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+        'amazon_aws_url' : 's3\.amazonaws.com[/]+|[a-zA-Z0-9_-]*\.s3\.amazonaws.com',
+        'facebook_access_token' : 'EAACEdEose0cBA[0-9A-Za-z]+',
+        'authorization_basic' : 'basic\s*[a-zA-Z0-9=:_\+\/-]+',
+        'authorization_bearer' : 'bearer\s*[a-zA-Z0-9_\-\.=:_\+\/]+',
+        'authorization_api' : 'api[key|\s*]+[a-zA-Z0-9_\-]+',
+        'mailgun_api_key' : 'key-[0-9a-zA-Z]{32}',
+        'twilio_api_key' : 'SK[0-9a-fA-F]{32}',
+        'twilio_account_sid' : 'AC[a-zA-Z0-9_\-]{32}',
+        'twilio_app_sid' : 'AP[a-zA-Z0-9_\-]{32}',
+        'paypal_braintree_access_token' : 'access_token\$production\$[0-9a-z]{16}\$[0-9a-f]{32}',
+        'square_oauth_secret' : 'sq0csp-[ 0-9A-Za-z\-_]{43}|sq0[a-z]{3}-[0-9A-Za-z\-_]{22,43}',
+        'square_access_token' : 'sqOatp-[0-9A-Za-z\-_]{22}|EAAA[a-zA-Z0-9]{60}',
+        'stripe_standard_api' : 'sk_live_[0-9a-zA-Z]{24}',
+        'stripe_restricted_api' : 'rk_live_[0-9a-zA-Z]{24}',
+        'github_access_token' : '[a-zA-Z0-9_-]*:[a-zA-Z0-9_\-]+@github\.com*',
+        'rsa_private_key' : '-----BEGIN RSA PRIVATE KEY-----',
+        'ssh_dsa_private_key' : '-----BEGIN DSA PRIVATE KEY-----',
+        'ssh_dc_private_key' : '-----BEGIN EC PRIVATE KEY-----',
+        'pgp_private_block' : '-----BEGIN PGP PRIVATE KEY BLOCK-----',
+        'json_web_token' : 'ey[A-Za-z0-9_-]*\.[A-Za-z0-9._-]*|ey[A-Za-z0-9_\/+-]*\.[A-Za-z0-9._\/+-]*'
+    }
+```
+
+CLI版との差分は次のとおり。
+
+- **Burp版のみ**（各ルールの正規表現と狙い）:
+
+| ルール名 | 正規表現（逐語） | 狙い |
+|---|---|---|
+| `docs_file_exetension`（綴り原文どおり） | `^.*\.(xls\|xlsx\|doc\|docx)$` | Office文書のファイル名／パス |
+| `bitcoin_address` | `([13][a-km-zA-HJ-NP-Z0-9]{26,33})` | ビットコインアドレス（`1`/`3` 始まり） |
+| `slack_api_key` | `xox.-[0-9]{12}-[0-9]{12}-[0-9a-zA-Z]{24}` | Slack APIキー（`xox?-` ＋数字ブロック） |
+| `us_cn_zipcode` | `/(^\d{5}(-\d{4})?$)\|(^[ABCEGHJKLMNPRSTVXY]{1}\d{1}[A-Z]{1} *\d{1}[A-Z]{1}\d{1}$)/` | 米国ZIP／カナダ郵便番号 |
+| `google_cloud_platform_auth` | `[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}` | GCP 認証識別子（16進のブロック） |
+| `google_cloud_platform_api` | `[A-Za-z0-9_]{21}--[A-Za-z0-9_]{8}` | GCP APIキー（21文字＋`--`＋8文字） |
+| `amazon_secret_key` | `[0-9a-zA-Z/+]{40}` | AWSシークレットキー（**40文字のbase64風文字列すべてに当たる超広域ルール**） |
+| `gmail_auth_token` | `[0-9(+-[0-9A-Za-z_]{32}.apps.qooqleusercontent.com` | Gmail/Google OAuth クライアント（※後述のとおり壊れている） |
+| `github_auth_token` | `[0-9a-fA-F]{40}` | GitHub トークン（**任意のSHA-1ハッシュ全部に当たる**） |
+| `Instagram_token` | `[0-9a-fA-F]{7}.[0-9a-fA-F]{32}` | Instagram トークン（16進7文字＋任意1文字＋16進32文字） |
+| `twitter_access_token` | `[1-9][ 0-9]+-(0-9a-zA-Z]{40}` | Twitter アクセストークン（※後述のとおり壊れている） |
 - **CLI版のみ**: `amazon_aws_url2`, `slack_token`（JSON形）, `SSH_privKey`, `Heroku API KEY`, `possible_Creds`
 - `authorization_basic`/`bearer`/`api` は Burp版が**長さ上限なしの README 版と同じ書き方**
 - `json_web_token` は Burp版が別定義（末尾 `$` なし）
@@ -681,6 +834,8 @@ Burp版は各ルールをそのまま当てるのではなく、前後がデリ�
 - **Issue名は `SecretFinder: <名前>`**。名前は `google_api` → `Google Api` のように整形される。
 - **Severity は `Information` 固定、Confidence は `Tentative` 固定**（`getConfidence` が `return "Tentative"`）。
 - Issue詳細には毎回「一部は誤検出の可能性があり手動レビューを推奨する」という注意書きが付く。
+
+〔運用上の落とし穴〕Severity が `Information` 固定ということは、**Burpの Issue 一覧を重要度（High → Low → Information）で並べると、SecretFinderの検出結果は常に最下段に押し込まれて埋もれる**。他の重要度の高いIssueに紛れて見落としやすい。そのため実務では、重要度順で眺めるのではなく、**Extender → Output タブの逐次出力を追うか、Issue 一覧を Issue 名 `SecretFinder:` でフィルタして絞り込む運用**が必要になる。「重要な発見だから上に出る」わけではない、という前提で見に行く癖をつけるとよい。
 
 ### 8b-4. Passive でも全ルールが走る
 
@@ -724,13 +879,14 @@ Burp版は各ルールをそのまま当てるのではなく、前後がデリ�
         return (scan_issues)
 ```
 
+- **`findRegEx` の冒頭で `print(self._mime_type)` を呼び、さらに `if '.js' in str(self._requestResponse.getUrl()):` が真のとき、もう一度 MIME タイプとそのURLを `print` する**。つまり `.js` を含むURLを処理するたびに MIME タイプとURLが Output タブに出る仕組みになっている。
 - **`isInScope()` により Burp のターゲットスコープ内のURLだけを検査する**。運用上、まずスコープ設定を正しく入れることが前提になる。
 - レスポンスは Base64 の往復を経て `xml.sax.saxutils.unescape` でXML実体参照を戻してから照合する（`&amp;quot;` 等でエスケープされたJSON中のトークンも拾う狙い）。
 - `re.compile(regex, re.VERBOSE)` — **CLI版と違い `re.I` は付かないので、Burp版は大文字小文字を区別する**。
 - `applyMarkers(...)` により、Issue画面でレスポンス中の該当箇所がハイライトされる。
 - `print(...)` が複数あり、**Extender → Output タブに MIME タイプや `.js` のURL、`<ルール名> : <マッチ値>` が逐次出る**。
 
-`ScanIssue` は `IScanIssue` の実装で、`getIssueType()` は `0`、`getConfidence()` は `"Tentative"` を返す。
+`ScanIssue` は `IScanIssue` の実装で、`getIssueType()` は `0`、`getConfidence()` は `"Tentative"` を返す。さらに `getRemediationDetail()`（修正方法の詳細）、`getIssueBackground()`（脆弱性の背景説明）、`getRemediationBackground()`（修正の背景説明）は**いずれも `None` を返す**。つまりIssueには「対策の手引き」や「背景解説」が一切付かず、`getIssueDetail()` の "Potential Secret Find: ..." と手動レビュー推奨の注意書きだけが表示される。
 
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: BurpSuite-SecretFinder（README の3枚の画像。追記箇所 `LBtfhkt.png`、検出例 `unM06Hg.png`、インストール手順GIF `nIPR037.gif`）— https://github.com/m4ll0k/SecretFinder/tree/master/BurpSuite-SecretFinder
@@ -870,7 +1026,7 @@ cd SecretFinder && pip3 install -r requirements.txt && cd ..
 cat > test.js <<'EOF'
 var cfg = {
   gmap: "AIza_REDACTED_EXAMPLE",
-  stripe: "sk_live_REDACTED_EXAMPLE_KEY_EXAMPLE_KEY",
+  stripe: "sk_live_REDACTED_EXAMPLE_KEY_EXAMPLE_KEY_EXAMPLE_KEY",
   token: "eyJ.REDACTED_EXAMPLE_JWT"
 };
 EOF
@@ -922,7 +1078,9 @@ python3 SecretFinder.py -i http://localhost:8080/ -e -o cli -p 127.0.0.1:8080
 - **`verify=False`**。TLS検証をしないので、MITM検出には使えず、改竄されたJSを解析する可能性もある。
 - **誤検出の多いルールを鵜呑みにしない**。`Heroku API KEY`（任意のUUID）、Burp版の `github_auth_token`（任意のSHA-1）・`amazon_secret_key`（任意の40文字）は特にノイズが多い。
 - **Burp版の正規表現には壊れたものがある**（`gmail_auth_token`, `twitter_access_token`）。使う前に読んで直す前提。
+- **Burp拡張のIssueは Severity=`Information` 固定**なので、重要度順に並べると常に最下段に埋もれる。Output タブか Issue 名 `SecretFinder:` でフィルタして見に行く運用が必要。
 - **1MB超のJSは整形されない**ため、コンテキストが `;`・`,` で切った断片になり読みづらい。
+- **ライセンスは3つ併存**（LinkFinder=MIT、SecretFinder本体=GPLv3、Burp拡張ディレクトリ=MIT）。ツールとして実行する分にはよいが、コードやルールを自作の配布物に組み込むなら、特に GPLv3 の本体を取り込むと自分側もGPL公開義務が生じうるので**組み込む前に要確認**。
 
 ---
 

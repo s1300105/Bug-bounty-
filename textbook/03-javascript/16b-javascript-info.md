@@ -23,9 +23,12 @@
 > **資料**: javascript.info（The Modern JavaScript Tutorial）— https://javascript.info/
 > **なぜ**: 本教科書の執筆環境からはサイト本体を自動取得できなかった（理由: 組織の egress ポリシーにより `javascript.info:443` への接続が 403 で拒否された）。ただし全記事の本文は公式リポジトリ `javascript-tutorial/en.javascript.info` に同一内容の Markdown として存在するため、以下の記述はその一次ソースの逐語読解にもとづく。失われているのは、サイト上でのみ動く「実行可能なライブデモ」「図版（SVG）」「各記事末尾の課題と解答」だけである。
 > **読みどころ**:
-> 1. `/clickjacking` と `/cross-window-communication` の `codetabs` 埋め込みデモ。半透明 iframe のクリックジャッキング、`postMessage` の往復、`sandbox` iframe で何が動かないかを、実際に触って体感できる。
-> 2. `/fetch-crossorigin` の CORS preflight シーケンス図（`xhr-preflight.svg`）。ヘッダの往復は図のほうが速く理解できる。
-> 3. `/cookie` の XSRF/サードパーティ Cookie 図（`cookie-xsrf.svg`、`cookie-third-party.svg`）。
+> 1. **トップページ `https://javascript.info/` の Part 分けラベルと各章カードの1行要約**。本ノートでは「Part 3（追加記事）」のグルーピングだけがサイト表示上未確認なので、ここは実物で確認する価値がある。
+> 2. **各記事末尾の「Tasks（課題）」と `solution.md`**。リポジトリには課題と解答が合計 500 ファイル以上あり本文とは別枠。とくに `/closure`・`/prototype-inheritance`・`/bubbling-and-capturing`・`/event-delegation` の課題は、スコープ解決・プロトタイプ探索・イベント伝播の順序を自力で追う訓練になる（サイト上では解答が折りたたみで、実行可能）。
+> 3. **`run` / `autorun` マーカー付きのライブ実行コード例**。`/event-loop` の `setTimeout`/`queueMicrotask` による描画タイミング差、`/regexp-catastrophic-backtracking` のハングするパターン（V8 8.8+ ではハングしない）は、実際に動かさないと体感できない。
+> 4. **図版（SVG 一覧）**。プロトタイプ汚染（`object-prototype-2.svg`）、CORS の preflight シーケンス（`xhr-preflight.svg`）、XSRF/サードパーティ Cookie（`cookie-xsrf.svg`、`cookie-third-party.svg`）、イベントフロー・イベントループ図などは、文章より図のほうが速い。
+> 5. **`/clickjacking` と `/cross-window-communication` の `codetabs` 埋め込みデモ**。半透明 iframe のクリックジャッキング、`postMessage` の往復、`sandbox` iframe で何が動かないかを、実際に触って体感できる。
+> 6. **`/manuals-specifications`（仕様の索引）**。ECMA-262・MDN・compat テーブルなど一次資料の引き方の指針そのものがここにある。
 > **代替手段**: サイトがブロックされている環境では、公式リポジトリの Markdown を直接取得できる。
 > ```bash
 > git clone --depth 1 --filter=blob:none --sparse https://github.com/javascript-tutorial/en.javascript.info.git
@@ -91,6 +94,7 @@ let event = new Event(type[, options]);
 | `mousedown` | 選択を開始する |
 | `click`（`<input type="checkbox">`） | チェック/アンチェック |
 | `submit` | フォームを送信する |
+| `keydown` | キー押下がフィールドへの文字追加や他のアクションにつながる |
 | `contextmenu` | ブラウザのコンテキストメニュー表示 |
 | リンクのクリック | その URL へのナビゲーション |
 
@@ -98,6 +102,25 @@ let event = new Event(type[, options]);
 - `on<event>` で割り当てたハンドラなら `return false` でも同じ効果。**ただしハンドラの返り値が意味を持つのはこの `on<event>` からの `return false` だけ**で、それ以外の返り値は無視される。
 - `event.stopPropagation()`（伝播を止める）と `event.preventDefault()`（デフォルトを止める）は**互いに無関係な別物**である。
 - `event.defaultPrevented` でデフォルトが防がれたか確認できる。`stopPropagation()` の乱用は「右クリック情報へのアクセスを、統計カウンタを含むあらゆる外部コードから永久に奪う」ため賢明でないと原典は警告する。
+
+### 1.7 後続イベント（follow-up events）— 因果の連鎖
+
+イベントには、**あるイベントが別のイベントに流れ込む**ものがある。この場合、最初のイベントを `preventDefault()` で防ぐと、後続のイベントも起こらない。
+
+典型例が `<input>` へのマウス操作である。`<input>` 上の `mousedown` は、フォーカスの獲得と `focus` イベントの発火につながっている。したがって:
+
+- `mousedown` を `preventDefault()` で防ぐと、その入力欄は**フォーカスされない**（`focus` イベントも起きない）。
+- ただしこれはマウスクリック経由の話で、**`Tab` キーで移動すれば依然フォーカスできる**。
+
+この連鎖を知らないと、「クリックしても入力欄が反応しない」バグの原因を見誤る。逆に防御的には、望まないデフォルト動作を根元のイベントで断てるという意味でもある。
+
+### 1.8 `passive` オプション — スクロールの遅延を避ける
+
+`addEventListener` の任意オプション `passive: true` は、**そのハンドラが `preventDefault()` を呼ばないことをブラウザに前もって知らせる**仕組みである。
+
+なぜ必要かというと、モバイルの `touchmove` などはデフォルトでスクロールを起こすが、ハンドラ内の `preventDefault()` でそれを止められる。そのためブラウザは、イベントを検出したらまず全ハンドラを走らせ、どこでも `preventDefault()` が呼ばれなかったことを確認してからスクロールに進む。これがスクロールの**不要な遅延**と UI の「ジッタ（jitter、がくつき）」を生む。`passive: true` を付けておけば、ブラウザは `preventDefault()` を待たずに即スクロールできる。
+
+- **Firefox・Chrome では、`touchstart` と `touchmove` イベントに対して `passive` はデフォルトで `true`** になっている（明示しなくても passive 扱い）。
 
 ---
 
@@ -108,8 +131,31 @@ let event = new Event(type[, options]);
 - Shadow DOM 内で発生したイベントは、コンポーネントの外で捕捉されたとき **host 要素を `target` とする**。内部の `<button>` をクリックしても、外側の `document` ハンドラには `target = <user-card>`（ホスト）として見える。
 - ただし light DOM に物理的に存在する slotted 要素（`<span slot="username">`）でイベントが起きた場合は retargeting されず、両側で `target` はその要素のまま。
 - 元のイベントターゲットへの完全なパスは `event.composedPath()` で得られる。ただし **`{mode:'open'}` のツリーでのみ内部が見え、`{mode:'closed'}` では host から上しか見えない**。
-- Shadow 境界を越えるイベント（`composed: true`）には `click`, `focus`, `keydown`, `input`, すべての touch/pointer イベントなどがある。越えないもの（`composed: false`）には `mouseenter/leave`, `load`, `select`, `slotchange` などがある。
+- 元のイベントターゲットへの完全なパスは `event.composedPath()` で得られる。例として、slotted な `<span slot="username">` をクリックすると `[span, slot, div, shadow-root, user-card, body, html, document, window]` という配列が返る（flattened DOM 上の親チェーンそのもの）。
+
+境界を越えるかどうかは `event.composed` の値で決まる。ハンティングでは「どのイベントが shadow 境界を越えて外から観測できるか」が情報漏洩の判定材料になるので、以下は**代表例ではなく完全な一覧**を挙げる。
+
+**shadow 境界を越える（`composed: true`）イベント**:
+
+| 分類 | イベント |
+|---|---|
+| フォーカス | `blur`, `focus`, `focusin`, `focusout` |
+| マウス | `click`, `dblclick`, `mousedown`, `mouseup`, `mousemove`, `mouseout`, `mouseover` |
+| ホイール | `wheel` |
+| 入力・キー | `beforeinput`, `input`, `keydown`, `keyup` |
+| touch / pointer | **すべての touch イベントと pointer イベント** |
+
+**shadow 境界を越えない（`composed: false`）イベント**（同一 DOM 内でしか捕捉できない）:
+
+| 分類 | イベント |
+|---|---|
+| マウス（バブルもしない） | `mouseenter`, `mouseleave` |
+| リソース系 | `load`, `unload`, `abort`, `error` |
+| 選択 | `select` |
+| スロット | `slotchange` |
+
 - カスタムイベントをコンポーネント外へ届けたいなら `bubbles` と `composed` の**両方**を `true` にする必要がある。
+- ネストしたコンポーネント（shadow DOM の中に別の shadow DOM）では、`composed: true` のイベントは**すべての shadow 境界を越えて**バブルする。直近の囲むコンポーネントだけに届けたいなら、shadow host 上でディスパッチして `composed: false` にすればよい。
 
 この境界は、コンポーネント内部の入力を外から観測できるか（＝情報が漏れるか）を判断する材料になる。closed shadow tree は内部を隠す方向に働く。
 
@@ -138,7 +184,30 @@ SOP が具体的に何を許すか:
 - 別ウィンドウ（`window.open` のポップアップや `<iframe>` 内）への参照があり、それが**同一オリジン**なら、そのウィンドウへ完全なアクセスができる。
 - **別オリジン**なら、変数も document も読めない。**唯一の例外が `location`** で、これは**書き込みは可能（＝ユーザをリダイレクトできる）だが読み取りは不可能**（今どこにいるかは見えない）。
 
-### 3.3 iframe での実際
+### 3.3 window の階層ナビゲーション — `top` / `parent` / `frames`
+
+フレーム（`<iframe>`）はページの中に別のページを埋め込む。埋め込む側・埋め込まれる側の `window` オブジェクトは、次のプロパティで互いを行き来できる。**後述の framebusting コード（節5.2）や covering div（節5.4）に出てくる `top` はこれである**ため、先に定義しておく。
+
+| プロパティ | 指すもの |
+|---|---|
+| `window.frames[0]` | ドキュメント内の最初のフレームの window（番号指定） |
+| `window.frames.iframeName` | `name="iframeName"` のフレームの window（名前指定） |
+| `window.parent` | 一つ外側（親）のウィンドウ |
+| `window.top` | 最上位（一番外）のウィンドウ |
+
+`window.top` は、何段ネストしていても必ず一番外側のウィンドウを指す。だから「自分は今フレームの中にいるか？」は次で判定できる。
+
+```js
+if (window == top) {
+  // 自分がトップウィンドウ（フレーム内ではない）
+} else {
+  // 自分は誰かのフレームの中にいる
+}
+```
+
+同一オリジンなら親子で自由にアクセスできるが、**別オリジンのフレーム間では 3.2 の SOP がそのまま効く**（`location` の書き込みだけ可、読み取り不可）。
+
+### 3.4 iframe での実際
 
 | 操作（別オリジンの iframe に対して） | 結果 |
 |---|---|
@@ -149,17 +218,17 @@ SOP が具体的に何を許すか:
 
 同一オリジンなら `iframe.contentDocument.body.prepend("...")` のように何でもできる。別オリジンの iframe では `iframe.contentWindow.onload` にアクセスできないので、代わりに `iframe.onload` を使う。
 
-### 3.4 `document.domain` — 非推奨の緩和策
+### 3.5 `document.domain` — 非推奨の緩和策
 
 同じ2次レベルドメインを共有する `john.site.com` と `peter.site.com` は、両方で `document.domain = 'site.com';` を実行すればクロスウィンドウ通信の目的で「same origin」扱いになる。ただし原典は明確に警告している。
 
 > 非推奨だがまだ動く。`document.domain` プロパティは仕様から除去される過程にある。クロスウィンドウメッセージング（`postMessage`）が推奨される代替。
 
-### 3.5 iframe の「間違った document」の落とし穴
+### 3.6 iframe の「間違った document」の落とし穴
 
 **iframe は生成時に即座に document を持つが、その document は後からロードされるものとは別物である**。だから生成直後に document へ手を加えると失われる。正しい document が確実にある時点は `iframe.onload` がトリガされたとき（ただし全リソースがロードされたときにのみ発火）。より早く捉えたいなら `setInterval` で `iframe.contentDocument` が新しくなったか監視する。
 
-### 3.6 `sandbox` 属性 — iframe を強制的に「別オリジン」にする
+### 3.7 `sandbox` 属性 — iframe を強制的に「別オリジン」にする
 
 `sandbox` 属性は、信頼できないコードを iframe で走らせるとき、特定のアクションを禁じる仕組みである。**空の `sandbox` が最も厳しく**、緩和したい制限だけをスペース区切りで足す。
 
@@ -175,7 +244,7 @@ SOP が具体的に何を許すか:
 
 > `sandbox` 属性の目的は制限を追加することのみである。制限を除去することはできない。特に、iframe が別オリジンから来ている場合に same-origin 制限を緩和することはできない。
 
-### 3.7 `postMessage` — 合意の上でオリジンを越える
+### 3.8 `postMessage` — 合意の上でオリジンを越える
 
 `postMessage` は、オリジンが違うウィンドウ同士でも、**双方が同意して対応する関数を呼ぶ場合に限り**通信を可能にするインターフェースである。だからユーザにとって安全だとされる。
 
@@ -238,8 +307,26 @@ button.onclick = () => {
 ### 4.3 `window.open(url, name, params)` の要点
 
 - `name` は新ウィンドウの名前。**同名のウィンドウが既にあればそこに URL がロードされ、なければ新規に開く**。
-- `params` はカンマ区切りの設定文字列で**スペースを含んではならない**（`width=200,height=100`）。画面外への配置や不可視ウィンドウの作成は制限されている。
-- `params` を与えて一部の `yes/no` 機能を省略すると、その機能は `no` とみなされる。
+- `params` はカンマ区切りの設定文字列で**スペースを含んではならない**（`width=200,height=100`）。
+
+`params` に書ける主な設定は次のとおり。位置・サイズと、ウィンドウ機能の `yes/no` 群に分かれる。
+
+| 設定 | 値 | 意味・注記 |
+|---|---|---|
+| `left` / `top` | 数値 | 画面上の左上隅の座標。**画面外には配置できない**制限がある |
+| `width` / `height` | 数値 | 幅と高さ。**最小サイズに制限があり、不可視ウィンドウは作れない** |
+| `menubar` | yes/no | ブラウザメニューの表示/非表示 |
+| `toolbar` | yes/no | ナビゲーションバー（戻る・進む・リロード等）の表示/非表示 |
+| `location` | yes/no | URL フィールドの表示/非表示。**FF と IE はデフォルトで非表示にすることを許さない** |
+| `status` | yes/no | ステータスバーの表示/非表示。**ほとんどのブラウザは強制的に表示する** |
+| `resizable` | yes/no | リサイズの可否。**無効化は非推奨** |
+| `scrollbars` | yes/no | スクロールバーの可否。**無効化は非推奨** |
+
+省略時の規則:
+
+- 第3引数が無い／空なら、デフォルトのウィンドウパラメータが使われる。
+- **`params` 文字列があって一部の `yes/no` 機能を省略すると、省略した機能は `no` とみなされる**。そのため `params` を指定するなら、必要な機能はすべて明示的に `yes` にする。
+- `left/top` が無ければ最後に開いたウィンドウの近くに、`width/height` が無ければ最後と同じサイズで開かれる。
 
 ### 4.4 opener との双方向性と悪用防止の歴史
 
@@ -300,6 +387,8 @@ if (top != window) {
   top.location = window.location;
 }
 ```
+
+ここで `top`（＝`window.top`、節3.3）は**最上位ウィンドウ**を指す。「自分がトップでない＝誰かのフレームに埋め込まれている」なら、トップの `location` を自分の URL に書き換えて、自分をフレームから飛び出させる、という発想である。
 
 これは信頼できない。回避方法が複数ある。
 
@@ -566,7 +655,7 @@ let promise = fetch(url, {
 ### 8.3 `credentials` / `cache` / `redirect`
 
 - `credentials`: `"same-origin"`（デフォルト、クロスオリジンには送らない）/ `"include"`（常に送る）/ `"omit"`（同一オリジンにすら送らない）。
-- `cache`: `"default"` / `"no-store"` / `"reload"` / `"no-cache"` / `"force-cache"` / `"only-if-cached"`（`only-if-cached` は `mode: "same-origin"` のときのみ動く）。
+- `cache`: `"default"` / `"no-store"` / `"reload"` / `"no-cache"` / `"force-cache"` / `"only-if-cached"`（`only-if-cached` は `mode: "same-origin"` のときのみ動く）。`"no-store"` は HTTP キャッシュを完全に無視するモードで、**`If-Modified-Since` / `If-None-Match` / `If-Unmodified-Since` / `If-Match` / `If-Range` のいずれかのヘッダを自分で設定すると、この `no-store` が自動的にデフォルトになる**（条件付きリクエストとキャッシュの二重管理を避けるため）。
 - `redirect`: `"follow"`（デフォルト）/ `"error"` / `"manual"`（`response.type="opaqueredirect"` の特別 response を得る）。
 
 ### 8.4 `integrity`（Subresource Integrity）
@@ -641,6 +730,8 @@ encodeURI('Rock&Roll');          // Rock&Roll（& をエンコードしない）
 
 `error`/`abort`/`timeout`/`load` は互いに排他的で、1つだけ起きる。アップロード追跡は `xhr.upload` で同じイベントを listen する。
 
+〔補足〕古いコードでは進行状況の監視に `readystatechange` イベント（`xhr.readyState` の変化を追う）がよく使われた。これは仕様が固まる前の**歴史的な**仕組みで、上記の `load`/`error`/`progress` がある**今は使う必要がない**。既存コードを読むとき用に名前だけ覚えておけばよい。
+
 ### 10.3 同期リクエストとクロスオリジン
 
 `open` の第3引数 `async` を `false` にすると同期リクエストになり、ページ内 JavaScript がブロックされる。**同期では別ドメインへのリクエストやタイムアウト指定などの高度機能は使えない**。クロスオリジンは `fetch` と同じ CORS ポリシーで行い、Cookie を送るには `xhr.withCredentials = true;` を設定する。
@@ -663,7 +754,7 @@ Cookie とは、ブラウザに保存される小さなデータ文字列のこ�
 
 | 属性 | 書式 | 意味 |
 |---|---|---|
-| `domain` | `domain=site.com` | Cookie がアクセス可能な場所を定義。**別の2次レベルドメインからはアクセスできない**（`other.com` は `site.com` の Cookie を受け取れない）。デフォルトでは設定したドメインのみで、サブドメインとも共有しない。共有には `domain=site.com` を明示する |
+| `domain` | `domain=site.com` | Cookie がアクセス可能な場所を定義。**別の2次レベルドメインからはアクセスできない**（`other.com` は `site.com` の Cookie を受け取れない）。デフォルトでは設定したドメインのみで、サブドメインとも共有しない。共有には `domain=site.com` を明示する。**レガシー構文**: 歴史的には先頭にドットを付けた `domain=.site.com` が同じ動作をした。**この先頭ドットは現在は無視される**が、一部のブラウザはドット付きの Cookie 設定を拒否しうるので使わない |
 | `path` | `path=/mypath` | 絶対パス。`path=/admin` なら `/admin` と `/admin/something` で可視、`/home` や `/` では不可視。通常は `path=/` |
 | `expires` | `expires=Tue, 19 Jan 2038 03:14:07 GMT` | 有効期限。GMT でこの形式。過去日で削除。`date.toUTCString` で得られる |
 | `max-age` | `max-age=3600` | 現在からの秒数。ゼロ/負で削除。**両方あれば `max-age` 優先** |
@@ -703,7 +794,9 @@ XSRF（Cross-Site Request Forgery、クロスサイトリクエストフォー�
 
 - Cookie は、ユーザが見ているページ以外のドメインが置いた場合「サードパーティ」と呼ぶ。`<img src="https://ads.com/banner.png">` に伴い `ads.com` が Cookie を設定すると、その Cookie は `ads.com` のもので、サイトをまたいだユーザ追跡に使える。Safari は一切許可せず、Firefox はブラックリストでブロックする。
 - **重要な区別**: サードパーティドメインの**スクリプト**（`<script src="https://google-analytics.com/analytics.js">`）が `document.cookie` で設定した Cookie は**サードパーティではない**。スクリプトがどこから来ても、その Cookie は現在のページのドメインに属する。
-- GDPR は追跡/識別/認可 Cookie にユーザの明示的同意を要求する（ただ情報を保存するだけの Cookie は自由）。
+- GDPR は追跡/識別/認可 Cookie にユーザの明示的同意を要求する（ただ情報を保存するだけで追跡も識別もしない Cookie は自由）。原典が挙げる準拠の2パターン:
+  1. **認証済みユーザにだけ追跡 Cookie を置く場合** — 登録フォームに「プライバシーポリシーに同意する」チェックボックスを置き、チェックされたら認証 Cookie を設定する。
+  2. **全員に追跡 Cookie を置く場合** — 新規訪問者にモーダルの「スプラッシュスクリーン」を出し、Cookie への同意を得てから設定する。
 
 ### 11.8 Cookie ユーティリティ関数（原典の逐語）
 
@@ -752,6 +845,8 @@ API は `setItem` / `getItem` / `removeItem` / `clear` / `key(index)` / `length`
 | `url` | 更新が起きたドキュメントの url |
 | `storageArea` | 対象の storage オブジェクト |
 
+〔補足〕同一オリジンのウィンドウ間通信には、`storage` イベントを使う方法のほかに、専用の **Broadcast Channel API**（同一オリジンのウィンドウ間通信のためだけの API）もモダンブラウザにある。より機能豊富だがサポートは相対的に少なく、**`localStorage` をベースにこの API を polyfill（未対応環境で同等機能を補うライブラリ）する実装があり、どこでも使えるようにできる**。
+
 **攻撃者はどこを突くか**: `localStorage` にセッショントークンを置くと、`httpOnly` Cookie と違い XSS から `localStorage.getItem` で盗める。ここに機密を置くかどうかは診断ポイントになる。
 
 ---
@@ -764,7 +859,10 @@ API は `setItem` / `getItem` / `removeItem` / `clear` / `key(index)` / `length`
 - **モジュールごとに独立したトップレベルスコープ**。各 `<script type="module">` は互いのトップレベル変数を見ない。明示的に `window.user = "John"` とすればグローバルにできるが「避けるように」と原典は言う。
 - **初回 import 時に一度だけ評価**。同じモジュールを複数箇所が import しても実行は1回で、同一のエクスポートオブジェクトが共有される（1箇所の変更が全体に見える＝設定の共有に使える）。
 - **モジュール内では `this` は `undefined`**（非モジュールでは `window`）。
-- ブラウザでは**モジュールスクリプトは常に deferred**（HTML パースをブロックせず、ページ完成後に順序を保って実行）。
+- **`import.meta`** は、現在のモジュールについての情報を持つオブジェクトである。内容は実行環境に依存し、**ブラウザではそのスクリプトの URL（HTML 内のインラインモジュールなら現在のウェブページの URL）を含む**。実行中のスクリプト自身の位置を知る手掛かりになる。
+- ブラウザでは**モジュールスクリプトは常に deferred**（HTML パースをブロックせず、ページ完成後に順序を保って実行）。副作用として、モジュールスクリプトは常に完全にロード済みの HTML ページ（自分より下の要素も含む）を「見る」。
+- **`async` 属性がインラインスクリプトにも効く**。非モジュールでは `async` は外部スクリプトにしか効かないが、モジュールではインラインの `<script type="module" async>` にも効く（何にも依存しないカウンタ・広告・イベントリスナ登録などに向く）。
+- **`nomodule` によるフォールバック**。古いブラウザは `type="module"` を理解できず、未知の type のスクリプトを単に無視する。そこで `nomodule` 属性を付けた別スクリプトを併置すれば、モジュール対応ブラウザはそれを無視し、非対応ブラウザだけがフォールバックを実行する。
 - **別オリジンから取得する外部モジュールスクリプトは CORS ヘッダを要する**。リモートは `Access-Control-Allow-Origin` を返さねば実行されない。
 
 ```html

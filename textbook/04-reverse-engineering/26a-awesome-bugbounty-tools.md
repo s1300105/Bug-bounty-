@@ -66,7 +66,7 @@ awesome-list が README 1枚という形を取るのには理由がある。第�
 
 ライセンスは **CC0-1.0** である。CC0 とは、著作権を可能な限り放棄して作品をパブリックドメイン（誰でも自由に使える公有状態）に近づけるライセンスのこと。READMEには逐語で次の宣言がある。
 
-```
+```text
 To the extent possible under law, vavkamil has waived all copyright and
 related or neighboring rights to this work.
 ```
@@ -77,7 +77,7 @@ related or neighboring rights to this work.
 
 READMEの `## Contents`（目次）節を読むと、カタログは大きく3つの分類と1つの未分類ブロックに分かれている。逐語のアンカー付き目次のうち、大分類の骨格は次の通りである。
 
-```
+```text
 - Recon（偵察）
 - Exploitation（攻撃・悪用）
 - Miscellaneous（雑多）
@@ -86,7 +86,7 @@ READMEの `## Contents`（目次）節を読むと、カタログは大きく3�
 
 この3分類は、そのまま**バグバウンティ作業のメンタルモデル**として使える。
 
-```
+```text
 攻撃対象を見つける          → Recon（偵察）
 見つけた穴を突く            → Exploitation（悪用）
 その他の道具・後工程・雑務  → Miscellaneous（雑多）
@@ -105,6 +105,27 @@ READMEの `## Contents`（目次）節を読むと、カタログは大きく3�
 | **総計** | **412**（ユニークURL 400） | |
 
 〔補足〕目次と本文の見出しには一部ずれがある（たとえば SSTI Injection は本文にあるが目次の並びには明示されていない、など）。原文がそういう構造なので、本節では**本文側で実際に見出しが立っている**サブカテゴリを正として扱う。
+
+### 「412件だがユニークURLは400件」— 12件の差は意図的なクロスリストである
+
+先ほどから「412件（ユニークURLは400件）」と2つの数を併記してきた。この **12件の差は誤植ではなく、原文が同じツールを複数のサブカテゴリに意図的に載せている（クロスリスト＝相互掲載）** ために生じる。1つのツールが複数の脆弱性クラスに効く場合、原文はそれぞれの該当カテゴリに再掲する方針を採っているのである。
+
+たとえば `ground-control` は「SSRF・Blind XSS・XXE のデバッグ用サーバスクリプト集」なので、SSRF・XSS・XXE の3カテゴリに計3回登場する。同様に、カタログ全体で重複しているエントリは次の通りである（ノートの照合結果）。
+
+| ツール | 掲載回数 | 掲載されるカテゴリ |
+|--------|----------|--------------------|
+| `ground-control` | 3 | SSRF / XSS / XXE |
+| `B-XSSRF` | 3 | SSRF / XSS / XXE |
+| `Injectus` | 2 | CRLF Injection / Open Redirect |
+| `httprebind` | 2 | SSRF内で2回（後述） |
+| `retire.js` | 2 | Technologies ほか |
+| `docem` | 2 | XSS / XXE |
+| `altdns` | 2 | Subdomain Enumeration ほか |
+| `SSTImap` | 2 | SSTI ほか |
+| `cariddi` | 2 | （後編カテゴリ） |
+| `zaproxy` | 2 | （後編カテゴリ） |
+
+この表を知っていれば、後続の一覧で「同じツールが2回出てくる」場面に出くわしても、転記ミスではなく**原文どおりの相互掲載**だと分かる。読者が自分でユニーク件数を数え直すときも、この12件を1件に畳めば400件に一致する。
 
 ## 4. 収録数は「労力配分の一次データ」
 
@@ -214,6 +235,8 @@ ProjectDiscovery という組織が作る一連の Go 製ツール群。いず�
 | `related-domains` | https://github.com/gwen001/related-domains | Find related domains of a given domain. this tool search for domains that have been registered by the same peoples/companies. |
 | `hakip2host` | https://github.com/hakluke/hakip2host | hakip2host takes a list of IP addresses via stdin, then does a series of checks to return associated domain names. |
 
+〔補足〕上の表の `crt.go` は、表示名（`crt.go`）とリンク先URL（`https://github.com/TaurusOmar/crt.sh`）が食い違っている（リポジトリ名は `crt.sh` だが、ツール名としては `crt.go` と表記されている）。原文がこの食い違いを含んだまま掲載しているため逐語で再現しているが、混乱しないよう注記しておく。実体は crt.sh（証明書透明性ログの検索サイト）の出力を扱う Go スクリプトである。
+
 `csprecon` に注目したい。これは **Content Security Policy（コンテンツ・セキュリティ・ポリシー, CSP）** を手がかりに新しい対象ドメインを発見する。CSP とは、ブラウザに「このページはどこのスクリプトや画像を読み込んでよいか」を宣言する HTTP ヘッダのこと。CSP に列挙された許可ドメインを逆手に取れば、同じ組織が持つ別のホストが見つかる。**クライアントサイドのセキュリティ設定（CSP）が、そのまま recon の入力になる**という、クライアントサイド視点で覚えておく価値のある例である。
 
 ### 6.2 Port Scanning（ポートスキャン・8件）
@@ -305,7 +328,7 @@ ProjectDiscovery という組織が作る一連の Go 製ツール群。いず�
 > **資料**: katana（次世代クロール／スパイダリング基盤） — https://github.com/projectdiscovery/katana
 > **なぜ**: 本教科書の執筆環境ではカタログの1行説明までしか自動取得していない。ヘッドレス/JSクロールの具体的なオプションや、SPAでのエンドポイント抽出の実例は個別リポジトリを開かないと分からない。以下の記述は検索結果の一般知識とカタログの説明にもとづく要約である。
 > **読みどころ**:
-> 1. ヘッドレスクロールと JS クロールを有効にするオプション（READMEのUsage節）を読む。SPA相手に「静的クロールでは何が取りこぼされるか」を理解する。
+> 1. ヘッドレスクロールと JS クロールを有効にするオプションを読む。具体的には JS クロールを有効にする `-jc` と、ヘッドレスブラウザで動かす `-headless` の2フラグが要点。SPA相手に「静的クロールでは何が取りこぼされるか」を、この2フラグの有無で比べて理解する。
 > 2. 出力を他のツール（httpxなど）へパイプする例を読む。パイプライン型 recon の一部として katana をどう挟むかを掴む。
 > **代替手段**: 同じ枠の `hakrawler`（https://github.com/hakluke/hakrawler）はより軽量で、まず「クロールでエンドポイントが出てくる」体験をするのに向く。
 
@@ -320,6 +343,22 @@ ProjectDiscovery という組織が作る一連の Go 製ツール群。いず�
 ### 6.7 Links（JSからのリンク抽出・17件）※クライアントサイド最重点
 
 Links サブカテゴリは、**JavaScript ファイルの中に書かれたエンドポイント・パス・URL を抽出する**ツール群である。クライアントサイド脆弱性ハンティングの一次索引として、まずここを開くとよい。近代的な Web アプリは、API のパスや隠れた機能への呼び出しを JavaScript の中に持っている。そこを機械的に掘り出せば、HTML には現れない攻撃面が手に入る。
+
+#### JavaScript 攻撃面を「段階」に分解して考える
+
+Links の各ツールをただ並べても使い分けが見えない。JavaScript を起点とする攻撃面探索は、次の段階（フェーズ）に分解すると整理できる。この分解を頭に入れておくと、「今どのツールを使う場面か」が判断できる。
+
+```text
+(A) JSファイル収集    … サイトが読み込む .js を集める      → getJS が起点
+(B) エンドポイント抽出 … 集めたJSからURL/パスを掘り出す     → LinkFinder / jsluice / xnLinkFinder
+(D) クロール基盤      … JSを実行して動的に出るURLも拾う     → katana（6.5）
+(E) 脆弱ライブラリ検出 … 使われているJSライブラリの既知脆弱性 → retire.js（6.4）
+```
+
+（C にあたる「シークレット抽出」は後編の Secrets サブカテゴリで扱う。）この段階で見ると、Links の中の各ツールは役割が違う。
+
+- **`getJS`（003random）は (A) の起点である。** 原文の説明は「JavaScript のソース／ファイルを高速に全部集めるツール」。まずここで対象が読み込む `.js` を残らず集め、その出力を (B) の抽出ツールへ渡す、という流れになる。
+- **`xnLinkFinder`（xnl-h4ck3r）は (B) の中でも特に強力である。** 原文の説明は「エンドポイント、**潜在的なパラメータ**、そして**そのターゲット固有のワードリスト**を発見する Python ツール」。つまり単にエンドポイントを出すだけでなく、隠しパラメータの候補や、その標的専用のワードリスト（後段のファジングの燃料）まで生成する。1本で (B) から後工程の入力作りまでこなす点が、単純なリンク抽出ツールとの差である。
 
 | ツール | URL | 原文の説明（逐語・英語のまま） |
 |--------|-----|--------------------------------|
@@ -364,7 +403,7 @@ Links サブカテゴリは、**JavaScript ファイルの中に書かれたエ�
 | `ParamSpider` | https://github.com/devanshbatham/ParamSpider | Mining parameters from dark corners of Web Archives. |
 | `x8` | https://github.com/Sh1Yo/x8 | Hidden parameters discovery suite written in Rust. |
 
-### 6.9 Fuzzing（ファジング・9件）
+〔補足〕`param-miner` の原文説明にある「finding **web alterx poisoning** vulnerabilities」という語は、**原文の誤記**である。「web alterx poisoning」という脆弱性クラスは実在せず、調べても何も出てこない。文脈から、一般に **web cache poisoning（Webキャッシュ・ポイズニング）** を指すとみられる（param-miner は隠しパラメータや隠しヘッダを発見でき、キャッシュ・ポイズニングの調査でよく使われる）。上の表は原文を逐語で引用しているため誤記もそのまま残しているが、読者が実在しない用語だと誤認しないよう、ここで訂正を添えておく。Webキャッシュ・ポイズニングを扱うツールとしては、後掲 7.19 の `toxicache`（web cache poisoning スキャナ）が該当する。
 
 ファジングとは、入力欄やパスに大量のパターンを機械的に投げ込み、異常な応答（エラー・クラッシュ・想定外の挙動）から脆弱性の手がかりを探す手法のこと。
 
@@ -513,7 +552,7 @@ CORS（Cross-Origin Resource Sharing, オリジン間リソース共有）とは
 | `tiscripts` | https://github.com/defparam/tiscripts | These scripts I use to create Request Smuggling Desync payloads for CLTE and TECL style attacks. |
 | `smugglex` | github.com/hahwul/smugglex | Rust-powered HTTP Request Smuggling Scanner. |
 
-### 7.14 Server Side Request Forgery（SSRF・21件）
+〔補足〕上の表の `smugglex` のURLは、原文では `https://` が欠けた `github.com/hahwul/smugglex` になっている（原文の Markdown リンクが壊れている）。逐語再現のため欠けたまま載せているが、そのままコピーしてもブラウザで開けないことがある。正しくは **https://github.com/hahwul/smugglex** である。URLをコピーする際は先頭に `https://` を補うこと。
 
 SSRF は「サーバ側」の脆弱性だが、DNS リバインディング（ブラウザ経由で内部ネットワークを攻撃する手法）系のツールが多く含まれ、クライアントサイドと接点がある。件数が21と厚いので、そのまま全件を掲げる。
 
@@ -540,6 +579,8 @@ SSRF は「サーバ側」の脆弱性だが、DNS リバインディング（�
 | `httprebind` | https://github.com/daeken/httprebind | Automatic tool for DNS rebinding-based SSRF attacks |
 | `dnsFookup` | https://github.com/makuga01/dnsFookup | DNS rebinding toolkit |
 | `surf` | https://github.com/assetnote/surf | Escalate your SSRF vulnerabilities on Modern Cloud Environments. `surf` allows you to filter a list of hosts, returning a list of viable SSRF candidates. |
+
+〔補足〕上の表で `httprebind`（https://github.com/daeken/httprebind）が2回並んでいる（DNS リバインディング系の並びの中で行が重複している）が、これは転記ミスではない。前述のとおり原文の SSRF カテゴリ内で同一エントリが二重掲載されており、それをそのまま逐語再現している。カタログ全体でユニークURLが400件（総エントリ412件）になる12件の差のうちの1件がこれである。
 
 `dns-rebind-toolkit` の説明にある「front-end JavaScript toolkit」に注目。DNS リバインディングは、被害者のブラウザ（＝クライアントサイド）を経由して、外部からは届かない内部ネットワークへリクエストを飛ばす攻撃であり、まさにクライアントサイドとサーバサイドの境界を突く手法である。
 
@@ -612,6 +653,16 @@ XSS（Cross-Site Scripting, クロスサイト・スクリプティング）と�
 | `CSPBypass` | https://github.com/renniepak/CSPBypass | a tool designed to help bypass restrictive Content Security Policies (CSP) and exploit XSS (Cross-Site Scripting) vulnerabilities on sites where injections are blocked by CSPs that only allow certain whitelisted domains. |
 
 **source/sink 追跡ツールに注目**。`tracy`（nccgroup製）の説明は「Web アプリの全ての sink と source を見つけ、消化しやすい形で結果を表示する」。DOM XSS を理解するには、**source（攻撃者が制御できる入力、たとえば `location.hash`）** から **sink（実行につながる危険な出力、たとえば `innerHTML`）** への流れを追う必要がある。tracy はこの理論を実務に落とし込む道具である。`domdig` は SPA 向けの DOM XSS スキャナで、近代的な JS アプリを対象にできる。
+
+DOM XSS を理解する主役として `tracy` を強調したが、その **UI（結果の見せ方）と出力形式**は言葉だけでは伝わりにくい。ここも一次ソースを開いて確認してほしい。
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: tracy（source/sink 追跡ツール, nccgroup） — https://github.com/nccgroup/tracy
+> **なぜ**: 本教科書の執筆環境ではカタログの1行説明までしか自動取得していない。tracy の UI（sink/source を「消化しやすい形」で表示する画面）と出力形式は、スクリーンショットや実操作を見ないと具体像がつかめない。以下の記述はカタログの説明にもとづく要約である。
+> **読みどころ**:
+> 1. source（攻撃者が制御できる入力）と sink（実行につながる危険な出力）を、tracy がどんな画面・形式で対応づけて見せるかを読む。DOM XSS の「入力→出力の追跡」という抽象概念が、具体的な表示に落ちる様子を掴む。
+> 2. ブラウザ拡張／プロキシとしての組み込み方と、追跡結果の出力（どのソースがどのシンクへ流れたか）の形式を読む。手作業の DOM 追跡をどこまで自動化できるかを見積もる。
+> **代替手段**: source/sink の考え方だけなら、同じ XSS 枠のブラウザ拡張 `dom-based-xss-finder`（https://github.com/AsaiKen/dom-based-xss-finder）を自分のブラウザに入れ、検証用サイトで DOM XSS を検出させる体験から入るとよい。
 
 ### 7.17 XXE Injection（9件）
 
@@ -730,10 +781,14 @@ WAF（Web Application Firewall, Webアプリケーション・ファイアウォ
 - https://github.com/BishopFox/jsluice
 - https://github.com/GerbenJavado/LinkFinder
 - https://github.com/AliasIO/wappalyzer
+- https://github.com/nccgroup/tracy
+- https://github.com/003random/getJS
+- https://github.com/xnl-h4ck3r/xnLinkFinder
 
 <!-- self-read: https://github.com/RetireJS/retire.js | 個別リポジトリの使い方・DB形式・3形態の使い分けは自動取得しておらず、一次ソースを開く必要がある -->
-<!-- self-read: https://github.com/projectdiscovery/katana | ヘッドレス/JSクロールの具体オプションやSPAでの抽出例は自動取得しておらず、一次ソースを開く必要がある -->
+<!-- self-read: https://github.com/projectdiscovery/katana | ヘッドレス/JSクロールの具体オプション(-jc/-headless)やSPAでの抽出例は自動取得しておらず、一次ソースを開く必要がある -->
 <!-- self-read: https://github.com/BishopFox/jsluice | サブコマンドの実挙動と正規表現ベースとの精度差は自動取得しておらず、一次ソースを開く必要がある -->
+<!-- self-read: https://github.com/nccgroup/tracy | source/sink追跡のUI・出力形式は自動取得しておらず、一次ソースを開く必要がある -->
 
-<!-- sources: https://github.com/vavkamil/awesome-bugbounty-tools, https://github.com/RetireJS/retire.js, https://github.com/projectdiscovery/katana, https://github.com/BishopFox/jsluice, https://github.com/GerbenJavado/LinkFinder, https://github.com/AliasIO/wappalyzer -->
-<!-- terms: awesome-list, キュレーション, 同一オリジンポリシー, CORS, CSP, XSS, DOM XSS, source, sink, SSRF, DNSリバインディング, サブドメイン列挙, コンテンツ探索, ファジング, パイプライン型recon, ProjectDiscovery, tomnomnom, AST, ヘッドレスブラウザ, SPA, retire.js, jsluice, katana, WAF, オープンリダイレクト, CC0 -->
+<!-- sources: https://github.com/vavkamil/awesome-bugbounty-tools, https://github.com/RetireJS/retire.js, https://github.com/projectdiscovery/katana, https://github.com/BishopFox/jsluice, https://github.com/GerbenJavado/LinkFinder, https://github.com/AliasIO/wappalyzer, https://github.com/nccgroup/tracy, https://github.com/003random/getJS, https://github.com/xnl-h4ck3r/xnLinkFinder -->
+<!-- terms: awesome-list, キュレーション, 同一オリジンポリシー, CORS, CSP, XSS, DOM XSS, source, sink, SSRF, DNSリバインディング, サブドメイン列挙, コンテンツ探索, ファジング, パイプライン型recon, ProjectDiscovery, tomnomnom, AST, ヘッドレスブラウザ, SPA, retire.js, jsluice, katana, getJS, xnLinkFinder, tracy, クロスリスト, Webキャッシュポイズニング, WAF, オープンリダイレクト, CC0 -->

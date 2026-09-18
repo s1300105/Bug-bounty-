@@ -23,7 +23,15 @@
 - Part 1〜3 で**約1000行**のコードのブラウザを構築する。演習をやると倍になる。
 - 平均して**1章あたり4〜6時間**（数年のプログラミング経験者が読み・実装し・デバッグする時間）。
 - Part 4 まで含めた最終形は**約3000行**。
-- 設計原則は「あなたのブラウザは各ステップで『動く』し、各章は前章の上に積み上がる」。章ごとに動くブラウザが残る（`src/lab1.py` 〜 `lab16.py`）。
+- 設計原則は「あなたのブラウザは各ステップで『動く』し、各章は前章の上に積み上がる」。章ごとに動くブラウザが残る（`src/lab1.py` 〜 `lab16.py`）。このアイデアは J. R. Wilcox 由来で、複雑なソフトウェアを少しずつ育てて改善する練習にもなる。
+
+### 何で作られているか（手を動かす前提）
+
+診断の練習として自分でコードを動かすなら、前提として次の技術スタックを押さえておくとよい。ノートに実在した記述をそのまま挙げる。
+
+- **言語**は Python 3。コマンドラインでは `python3` を使う。依存は最小化しており、他言語でも読み替えられるように書かれている。
+- 使うライブラリは3種類だけだ。**TLS 接続**は Python 標準ライブラリ、**グラフィックス**は Tk・Skia・SDL、**JavaScript の評価**は **DukPy**（Python から JavaScript を実行する組み込みエンジン）を使う。
+- 動作確認済みの環境について、原典は複数の食い違う記述を持つ。`README.md` は「Python **3.9.10** で動作確認（それより古くてもたぶん動く）」と書き、`book/porting.md` は「Python 3.14、Skia 138、Tk 8.6.14、DukPy 0.3.0、PySDL2 0.9.15」と書き、`requirements.txt` はさらに `dukpy==0.5.0` / `skia-python==144.0.post1` などを固定する。**この3つは一致しない。**〔補足〕実際にビルド・実行するなら、ビルドが参照する `requirements.txt` を正とするのが妥当だ。`README.md` の 3.9.10 は最も古い記述で、現行コードの前提ではない可能性が高い。「動作確認済みバージョン」は資料によって食い違うので、自分の環境で通ったバージョンを必ず記録しておくこと。
 
 ### この教材ブラウザを「どこまで信用してよいか」
 
@@ -192,6 +200,8 @@ def handle_connection(conx):
 
 〔補足〕Cookie という名前に意味は無い。原文の further ボックスによれば、元の仕様（`https://curl.se/rfc/cookie_spec.html`）は「no compelling reason（これといった理由もなく）」でこう呼んだと書いており、不透明な識別子を "magic cookie" と呼ぶ用法は少なくとも1979年、Web 以前の X11 認証（`https://en.wikipedia.org/wiki/X_Window_authorization`）まで遡る。
 
+〔補足〕Cookie 仕様には「整理」の失敗談もある。原文の further ボックスによれば、かつて **RFC 2965**（`https://datatracker.ietf.org/doc/html/rfc2965`）で cookie 仕様を「クリーンアップ」しようとし、人間が読める cookie の説明や特定ポートへの限定を導入した。そのために **`Cookie2` / `Set-Cookie2`** という新ヘッダが必要になったが、これらは不人気で、現在は **RFC 6265**（`https://datatracker.ietf.org/doc/html/rfc6265`）によって obsolete（廃止済み）になっている。診断で古い資料を読むとき、`Cookie2` 系のヘッダが出てきても現行仕様ではない、と知っておくとよい。
+
 ---
 
 ## 4. ログインシステム ― サーバ側に潜む定番の穴
@@ -232,6 +242,10 @@ def do_login(session, params):
 > Note that the session data (including the `user` key) is **stored on the server, so users can't modify it directly**.
 
 正しいパスワードを出したときだけ `user` を立てられる。もしこれをブラウザ側（Cookie）に置いていたら、ユーザが自分で `user=admin` と書き換えられてしまう。**「認証の結果はサーバ側に持つ」**という原則がここに現れている。
+
+〔補足〕ログインフォームの入力欄について、原文は2つの限界を正直に注記している。1つは、パスワード欄に `type=password` を付けているが、**実ブラウザなら入力内容を星やドットで隠すところ、本書のブラウザはそれをせず、そのまま文字を表示してしまう**こと（演習 10-1 でこの隠し表示を実装する）。もう1つは、**このフォームには `<label>` 要素が無く、アクセシブルな HTML ではない**こと。診断では「見た目のマスク（星表示）は画面の話であって、通信路やメモリ上でパスワードが平文であることとは別問題」と切り分けて考える癖をつけたい。
+
+〔補足〕コメント投稿を処理する `add_entry` には、原典コードの時点で `len(params['guest']) <= 100` という**投稿長の制限**（100 文字以下のみ受け付ける）が入っている。本節では XSS の説明を優先してこの制限を省いたコードを示しているが、実際の完成コードでは投稿がこの上限で切られる点を覚えておくとよい。
 
 〔補足〕プリロードされているコメントとユーザ名（`crashoverride` / `cerealkiller` や "HACK THE PLANET!!!"）は、1995年の映画 *Hackers* への目配せである。診断とは関係ないが、原典のコードをそのまま動かすと出てくる。
 
@@ -338,6 +352,8 @@ Cookie はサイト固有なので、あるサーバの Cookie が別のサー�
 
 `XMLHttpRequest` とは、**ページの再読み込みなしに JavaScript から HTTP リクエストを送るための API** のこと。原文は意義をこう説明する。
 
+〔補足〕名前が奇妙なことに原文自身が脚注で触れている。「なぜ `XML` は大文字なのに `Http` はそうでないのか。しかも XML 専用でもないのに」。この命名は歴史的なもので、Microsoft の Exchange Server 2000 向け機能「Outlook Web Access」まで遡る（`https://en.wikipedia.org/wiki/XMLHttpRequest#History`）。今日ではより新しい `fetch` API（後述）が同じ役割を担う。
+
 > With `XMLHttpRequest`, a web page can make HTTP requests in response to user actions ... This API, and newer analogs like [`fetch`][mdn-fetch], are how websites allow you to **like a post, see hover previews, or submit a form without reloading**.
 
 利用例（原文）。
@@ -349,7 +365,7 @@ x.send();
 // use x.responseText
 ```
 
-本書は実装を単純にするため**同期版のみ**を作る。ブラウザ側の JS ランタイムとサーバ橋渡しは次の通り。
+本書は実装を単純にするため**同期版のみ**を作る。原文はこの選択に注記を付けている。**同期版の `XMLHttpRequest` は、非推奨（deprecation）から廃止（obsolescence）へと段階的に向かっているが、実装が容易なので本書ではあえて使う**。非同期版は第12章で実装する予定だ、という。診断でも、まだ同期 XHR を使うレガシーなページに出くわすことはある。ブラウザ側の JS ランタイムとサーバ橋渡しは次の通り。
 
 ```javascript
 XMLHttpRequest.prototype.open = function(method, url, is_async) {
@@ -367,6 +383,8 @@ class JSContext:
         return out
 ```
 
+〔補足〕この `XMLHttpRequest_send` は、受け取った `method` 引数を**無視する**。`request` が「payload が渡されたか否か」だけでメソッド（GET か POST か）を決めてしまうためだ。原文はこれを**標準に合致しない実装だと明記している**――標準は payload の無い `POST` を許すのに、この実装ではそれが表現できない。教材としての簡略化だが、「メソッドはコードのどこで決まっているか」を追う診断的な読み方の練習材料になる。
+
 ### 攻撃者はどこを突くか
 
 `XMLHttpRequest` で送る HTTP リクエストには**Cookie が含まれる**。これは設計上そうなっている（「いいね」を押すにはアカウントに紐づける必要があるから）。だが同時に、**XHR が私的データにアクセスできてしまう**ことを意味する。この時点で、防御が必要になった。
@@ -378,6 +396,17 @@ class JSContext:
 | 禁止リクエストヘッダ名 | `https://developer.mozilla.org/en-US/docs/Glossary/Forbidden_header_name` |
 | 禁止レスポンスヘッダ名 | `https://developer.mozilla.org/en-US/docs/Glossary/Forbidden_response_header_name` |
 | `fetch` | `https://developer.mozilla.org/en-US/docs/Web/API/fetch` |
+
+### ここまでの防御が守れないもの ― ネットワーク層の脅威
+
+本節が扱う同一オリジンポリシーや Cookie の仕組みは、**ブラウザとサーバの間の通信路（ネットワーク）そのものが安全**であることを暗黙の前提にしている。原文はこの前提が成り立たない攻撃を、脚注で明示的に列挙している（「Security is very hard」と締めくくって）。診断でスコープを考えるときに効くので、そのまま押さえておく。
+
+- **通信が暗号化されていない場合、オープン Wi-Fi 経由で第三者が盗聴できる。** 通信内容（Cookie を含む）を横から読まれる。ただし「別のサーバ」からは読めない。だから TLS の有無が決定的に効く。
+- **別のサーバが DNS をハイジャックする。** ホスト名を別の IP アドレスに向け替えて、あなたの Cookie を盗み取る攻撃。**DNS（Domain Name System）とは、`example.com` のようなホスト名を IP アドレスに変換する仕組みのこと。**
+- **ISP（インターネットサービスプロバイダ）によっては DNSSEC でこれを防げるが、全部ではない。** **DNSSEC とは、DNS の応答に署名を付けて改ざんを検出できるようにする拡張のこと。** 対応は一様でないので「DNSSEC があるから安全」とは言えない。
+- **国家級の攻撃者は、不正な BGP（Border Gateway Protocol）経路を広告できる。** **BGP とは、インターネット上でどの経路にパケットを流すかを決める、ネットワーク間の経路制御プロトコルのこと。** 不正な経路を広告されると、**正しい IP アドレスに宛てても、パケットが別の物理計算機へ届いてしまう**。
+
+要点は、**ブラウザ内の防御（SOP・Cookie 属性・CSP）は、経路が乗っ取られている前提までは面倒を見ない**ということだ。バグバウンティで「Cookie が盗める」と主張するとき、それがアプリのバグ（XSS など）なのか、経路の問題（TLS 未使用など運用側の話）なのかを切り分けられると、報告の質が上がる。
 
 ---
 
@@ -451,6 +480,24 @@ class URL:
 
 〔補足〕further ボックスは `<canvas>` の taint（汚染）も挙げている。`drawImage` は他オリジンの画像も canvas に描けるが、それを `getImageData` で読み戻せないよう、**クロスオリジン画像を書き込むと canvas は taint され、読み取りメソッドがブロックされる**（`https://developer.mozilla.org/en-US/docs/Web/HTML/CORS_enabled_image`）。
 
+### 〔発展〕CORS ― サーバがクロスオリジンを明示的に許可する仕組み（演習 10-5）
+
+同一オリジンポリシーは既定でクロスオリジン XHR のレスポンスを読ませない。だが、正当な理由でクロスオリジンのデータ取得が必要な場合もある。そこでサーバ側が **opt in（明示的に許可）** できる仕組みが **CORS（Cross-Origin Resource Sharing、クロスオリジンリソース共有）** だ。原典では演習 10-5 の題材になっており、機構はこう動く。
+
+```
+1. スクリプトがクロスオリジンへ XHR を出す
+2. ブラウザは要求を実際に送る。その際、要求元オリジンを表す
+   Origin ヘッダを付け、送信先オリジン向けの Cookie も含める
+3. 同一オリジンポリシーを満たすため、ブラウザはいったんレスポンスを捨てる
+4. だがサーバが Access-Control-Allow-Origin ヘッダを返し、その値が
+   「要求元オリジン」または特殊値 `*` なら、
+   ブラウザはレスポンスをスクリプトに渡す
+```
+
+ここで診断上決定的なのは、**同一オリジンポリシーが止めるのは「レスポンスの読み取り」であって、「リクエストの送出」ではない**という点だ。上の手順2で、要求は Cookie 付きで実際にサーバへ届いている。だから副作用（サーバ側の状態変化）は SOP では止まらない。本書のブラウザに使う要求は、CORS 標準がいう "simple requests"（単純リクエスト）にあたる。関連 URL は `https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS`。
+
+〔補足〕`Access-Control-Allow-Origin` の値を要求元オリジンではなく無条件に `*` にしていたり、`Origin` ヘッダを検証せずそのまま反射（echo）しているサーバは、CORS 設定ミスの典型的な狙い目になる。バグバウンティでは、この「誰にレスポンスを返してよいか」の判定ロジックをまず疑うとよい。
+
 ---
 
 ## 8. CSRF ― 同一オリジンポリシーの穴
@@ -462,6 +509,8 @@ class URL:
 > the same-origin policy doesn't apply to normal browser actions like clicking a link or filling out a form. This enables an exploit called *cross-site request forgery*, often shortened to CSRF.
 
 **リンクのクリックやフォーム送信という「普通のブラウザ操作」には SOP が効かない**。これが **CSRF（Cross-Site Request Forgery、クロスサイトリクエストフォージェリ）** ―― 攻撃者が用意した仕掛けで、被害者のブラウザに意図しないリクエストを送らせる攻撃 ―― を生む。
+
+〔補足〕そもそもなぜフォーム送信に同一オリジンポリシーを適用「できない」のか。原文の脚注は正当なクロスサイト POST の例を挙げる。**多くのサイトの検索フォームは、自前の検索エンジンを持たないので Google に submit する**。つまりクロスサイトのフォーム送信は日常的に必要とされており、一律に禁止すると Web が壊れてしまう。だから「フォーム送信には SOP を効かせない」という設計が残り、その隙を突くのが CSRF なのだ。
 
 ### どう動くか
 
@@ -607,6 +656,18 @@ def handle_connection(conx):
 
 〔本ノート筆者の観察（原典コードに基づく）〕判定は `self.host == referrer.host` の**ホスト名完全一致のみ**で、scheme も port も、サブドメインの親子関係も見ていない。これは次に述べるブラウザ差の簡略版である。
 
+### referrer をどう決めるか（本書の設計）
+
+上の判定コードには `referrer`（リファラ）という引数が出てくる。**referrer とは、いまのリクエストを「参照させた（referred）」元のページの URL のこと。** SameSite は「送信先と referrer が同じサイトか」で Cookie の送信可否を決めるので、この referrer を**どこから取るか**が実装の要になる。本書はリソースの種類ごとに referrer を変えている。
+
+| リクエストの種類 | referrer に何を使うか | 補足 |
+| --- | --- | --- |
+| ページ遷移（`Tab.load` の先頭） | `self.url`（遷移元ページの URL） | **`self.url` が新しい URL に更新される前に**呼ばないと、正しい遷移元が取れない |
+| スクリプト・スタイルシートの読み込み | 新しく読み込むページの URL（`url`） | それらのリソースを要求させたのは新しいページなので、どれが同一サイトかは新ページが決める |
+| `XMLHttpRequest` | `self.tab.url` | XHR を出したタブの現在の URL |
+
+もう1つ落とし穴がある。**新しいタブで最初のページを読むときは、参照元が存在しないので referrer が無い。** だから判定コードは `if referrer and ...` のように、まず referrer があるかを確かめてから使う必要がある（前掲の送信可否コードが `if referrer and params.get("samesite", ...)` としているのはこのためだ）。referrer が無いのに `referrer.host` を読もうとすればエラーになる。
+
 ### 攻撃者はどこを突くか ― 「同一サイト」判定のブラウザ差
 
 ここが、クライアントサイド診断で最も価値のある知識だ。**「同一サイト」の定義はブラウザによって違う**（原文）。
@@ -624,9 +685,16 @@ def handle_connection(conx):
 | デフォルト値 | Chrome は `Lax` が既定、Firefox / Safari はそうではない |
 | scheme を見るか | Chrome は scheme を「サイト」の一部とみなす（schemeful same-site）、他は見ないことがある |
 | サブドメイン | `www.foo.com` と `login.foo.com` を「同一サイト」とみなすブラウザがある |
-| 判定の基準 | 仕様上は referrer ではなく "top-level site" を使うべき（本書は簡略化して referrer を使用） |
 
 **同じ攻撃が、あるブラウザでは防がれ別のブラウザでは通る**ことがある。診断では「どのブラウザで検証したか」を必ず記録すべき理由がここにある。
+
+### 判定の基準 ― referrer と top-level site の違い
+
+本書は判定に referrer（このリクエストを参照させた1つ前のページ）を使っている。だが原文は、**SameSite Cookie の仕様が本来使うべきなのは referrer ではなく "top-level site" だ**と注記している。
+
+**top-level site とは、いまブラウザのアドレスバーに表示されている最上位のページのサイトのこと。** たとえば「A というページに埋め込まれた iframe の中の B というページが、C へリクエストを出す」場面を考えると、そのリクエストの referrer は B だが、top-level site は最上位の A になる。つまり**「1つ前のページ」と「最上位のページ」は必ずしも一致しない**。仕様が top-level site を基準にするのは、この入れ子の状況でも一貫して「ユーザが実際に訪れているサイト」を基準に判定するためだ。
+
+本書は「両者の差は微妙なので、簡略化のため referrer（`referrer.host`）で近似する」と明言している。実ブラウザの挙動を厳密に再現したいときは、この差を意識する必要がある――というのが、初学者がここでつまずかないための注意点だ。
 
 〔補足〕SameSite の仕様は原稿執筆時点でまだドラフト段階で、著者自身が「この節は古くなるかもしれない」と注記している。**最新の状況は MDN（`https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Set-Cookie/SameSite`）で確認する**のが安全だ。
 
@@ -680,7 +748,7 @@ Hi! <script src="http://my-server/evil.js"></script>
 
 **データであるべきユーザコメントを、ブラウザがコードとして解釈してしまう**。これが **XSS（Cross-Site Scripting、クロスサイトスクリプティング）**。データをコードと誤解するのは、あらゆるプログラムに共通する脆弱性のパターンだ。
 
-〔補足〕原文の脚注は、Cookie を盗む具体手段にも触れている。`document.cookie` API（`https://developer.mozilla.org/en-US/docs/Web/API/Document/cookie`）でサイトの Cookie が読める。本書の限定的なブラウザでは、`evil.js` は**ページ全体を、トークン値を URL に含んだリンクに置き換える**といった素朴な手も使える。「続けるにはクリック」画面を、ユーザは何も考えずクリックする――というわけだ。
+〔補足〕原文の脚注は、Cookie を盗む具体手段にも触れている。`document.cookie` API（`https://developer.mozilla.org/en-US/docs/Web/API/Document/cookie`）でサイトの Cookie が読める。ここで押さえたいのは、**盗んだ Cookie を「受け取る」側は攻撃者のサーバ**だという点だ。前節の CORS で見たとおりクロスオリジンのやりとりはサーバ側の opt in が要るが、**攻撃者は自分のサーバを opt in させて、盗み取った Cookie を受信できる**。本書の限定的なブラウザでは、`evil.js` は**ページ全体を、トークン値を URL に含んだリンクに置き換える**といった素朴な手も使える。「続けるにはクリック」画面を、ユーザは何も考えずクリックする――というわけだ。実ブラウザなら、`evil.js` はページに画像やスクリプトを追加して追加のリクエストを発生させる、といった手も取れる。
 
 ### どう守るか（1）― エスケープ
 
@@ -848,13 +916,38 @@ def show_comments(session):
 
 原典の演習は、そのまま診断者の練習課題になる。clone した環境（`git clone https://github.com/browserengineering/book`）を前提に、自分で立てた検証環境で試すこと。
 
-1. **ゲストブックを立てる。** `cd src/` して `python3 server10.py` を実行する。別の端末で `python3 lab10.py http://localhost:8000/` のようにブラウザ側を動かす（実行にはリポジトリの README の依存が要る）。
+1. **ゲストブックを立てる。** README の逐語手順に従い、`cd src/` してから `python3 server10.py` でゲストブックサーバ（ポート8000）を起動する。次に**別の端末で**ブラウザ側を起動する。README に載っている逐語の実行例は `python3 lab3.py https://browser.engineering`（ブラウザ）と `python3 server8.py`（サーバ）という形で、**`lab10.py` に渡す URL 引数の具体値そのものは原典に明示されていない**。本ノート筆者は文脈から `python3 lab10.py http://localhost:8000/` と補って動かしているが、正確な起動引数は clone した `README.md` と `src/lab10.py` の冒頭で必ず確認すること（実行にはリポジトリ README が挙げる依存ライブラリが要る）。
 2. **Cookie の往復を観察する。** ログイン前後で送られる `Cookie` ヘッダ、サーバが返す `Set-Cookie` ヘッダを確認する。トークンが `random.random()` 由来である（53ビット）ことを、コードで裏取りする。
 3. **同一オリジンポリシーを体感する。** 別ポート（例: `http://localhost:9000`）で攻撃者役のページを立て、そこから `XMLHttpRequest` でゲストブックを読もうとし、`Cross-origin XHR request not allowed` で止まることを確認する。
 4. **CSRF を再現する。** 攻撃者ページに `action="http://localhost:8000/add"` のフォームを置いて submit し、nonce 検証を外した状態では通ること、nonce を有効にすると弾かれることを比べる。
 5. **SameSite の効果を見る。** サーバ側の `Set-Cookie` に `; SameSite=Lax` を付け、クロスサイト POST で Cookie が落ちることを確認する。**注意**: 原典サイトのウィジェットはサンドボックスの都合でクロスオリジンを作れないため、この確認は**ローカルで別ポートの攻撃者役を自分で立てて**行う必要がある。
 6. **XSS と CSP を試す。** `html.escape` を外した状態でコメントに `<script>` を入れて実行されることを見たあと、エスケープを戻す。さらにサーバに `Content-Security-Policy: default-src http://localhost:8000` を送らせ、`example.com` のスクリプトが `Blocked script ... due to CSP` になることをコンソールで確認する。
-7. **章末演習に挑む。** 特に **10-3**（`document.cookie` と `HttpOnly` の実装）、**10-5**（CORS: `Origin` ヘッダと `Access-Control-Allow-Origin` の往復）、**10-6**（`Referer` と `Referrer-Policy` の `no-referrer` / `same-origin`）は、実 Web の挙動理解に直結する。
+7. **章末演習に挑む。** 原典の第10章末には演習が6問あり、そのすべてが診断者の練習課題になる。名前だけでなく、何を実装するのかまで押さえておく。
+
+   | 演習 | テーマ | 実装すること（原文の要旨） |
+   | --- | --- | --- |
+   | 10-1 | New inputs | hidden 入力（表示も場所も取らない）と password 入力（内容を文字でなく星で表示）を実装する |
+   | 10-2 | Certificate errors | `badssl.com`（各種の不正証明書をテスト用にホストしている）で HTTPS の不正証明書を扱う。`wrap_socket` が投げる証明書エラーを捕捉して警告を表示し、それ以外の正常な HTTPS ページではアドレスバーに南京錠（`\N{lock}`）を描く |
+   | 10-3 | Script access | `document.cookie` JavaScript API を実装する（読み取りで `Cookie` ヘッダ風の文字列、書き込みで `Set-Cookie` 相当の更新）。さらに `HttpOnly` 属性（付いた Cookie は JS から読み書き不可）を実装する |
+   | 10-4 | Cookie expiration | `Set-Cookie` の有効期限（expiration）に対応する。同じ Cookie がより新しい日付で再設定されれば上書きされる。サーバ側では有効期限を `SESSIONS` に保存し、期限切れの古いセッションを削除してメモリを節約する |
+   | 10-5 | CORS | サーバがクロスオリジン XHR を opt in で許可する仕組み（`Origin` ヘッダと `Access-Control-Allow-Origin` の往復。§7「〔発展〕CORS」参照） |
+   | 10-6 | `Referer` | 遷移元 URL を載せる `Referer` ヘッダを実装する。個人データ漏洩を防ぐ `Referrer-Policy`（`no-referrer` / `same-origin`）の2値も実装する |
+
+   特に **10-2 の証明書エラー処理**、**10-3 の `document.cookie` / `HttpOnly`**、**10-5 の CORS**、**10-6 の `Referrer-Policy`** は、実 Web の挙動理解に直結する。
+
+8. **章末 Outline を生成して攻撃面を関数単位で俯瞰する。** 原典には、その章時点のブラウザ／サーバの全クラス・関数・メソッド一覧を自動生成する「Outline」節がある。生成コマンドは原文中にそのまま載っている。
+
+   ```bash
+   python3 infra/outlines.py --html src/lab10.py --template book/outline.txt
+   ```
+   ```bash
+   python3 infra/outlines.py src/lab10.py --template book/outline.txt
+   ```
+   ```bash
+   python3 infra/outlines.py --html src/server10.py
+   ```
+
+   1つ目は HTML 出力（Web 版）、2つ目はプレーンテキスト出力（印刷版）、3つ目はサーバ側 `server10.py` の一覧だ。関数の一覧は、そのままアタックサーフェス（attack surface、攻撃可能な入口の総体）の見取り図になる。
 
 ---
 
@@ -867,6 +960,9 @@ def show_comments(session):
 - **エスケープすれば XSS は完全に防げると考える。** 1箇所忘れれば穴が開く。だから CSP という追加層がある。逆に CSP があってもエスケープを怠ってよいわけではない。
 - **本書のブラウザを「安全な実装の手本」と受け取る。** 著者自身が「悪意ある入力に堅牢ではない」と明言している。乱数は53ビット、複数 `Set-Cookie` 非対応、SameSite は host 完全一致のみ、など簡略化が多い。**骨格を学ぶ教材**として読む。
 - **nonce を入れたら SameSite は不要（またはその逆）と考える。** 原文は明確に両方残せと言う。古いブラウザと複数ドメイン対応のため。これが多層防御。
+- **「同一オリジンポリシーがあるからリクエストは飛ばない」と誤解する。** SOP が止めるのは**レスポンスの読み取り**であって、**リクエストの送出**ではない（CORS の単純リクエストや CSRF がその証拠）。だから Cookie 付きの要求は届き、サーバ側の副作用は起こりうる。
+- **ブラウザ内の防御だけで Cookie は守れると思う。** 通信路が平文なら盗聴、DNS ハイジャック、不正 BGP 経路など**ネットワーク層の脅威**は SOP/CSP の管轄外。TLS の有無や経路の問題と、アプリのバグ（XSS 等）は切り分ける。
+- **referrer が常に存在すると思い込む。** 新しいタブの最初のページには referrer が無い。実装は `if referrer` で有無を確かめてから使う。また仕様が本来使うべきは referrer ではなく top-level site である。
 
 ---
 
@@ -886,6 +982,9 @@ def show_comments(session):
 - `SameSite=Lax` はクロスサイト POST で Cookie を落とす。だが**デフォルト値・schemeful same-site・サブドメインの扱いはブラウザで異なる**ため、検証ブラウザの記録が必須。
 - **XSS の本質は「データであるべきものがコードとして解釈される」こと**。対策は**エスケープ**（基本）と **CSP**（追加層）。エスケープは1箇所の忘れが穴になるので CSP で受ける。
 - CSP は「列挙オリジン以外のリソースを読ませない」ヘッダ。ブロック時、スタイル/スクリプトは**無視**、XHR は**例外**（catch できるから）。
+- CORS は、サーバが `Access-Control-Allow-Origin` に要求元オリジンか `*` を返すことで**クロスオリジン読み取りを opt in で許可**する仕組み。SOP はレスポンスの読み取りを止めるだけで、Cookie 付きのリクエスト送出は止めない。
+- **ネットワーク層の脅威**（平文通信の盗聴、DNS ハイジャック、不正 BGP 経路）は、SOP・Cookie 属性・CSP では守れない。DNSSEC は DNS 改ざんを一部防ぐが全 ISP が対応しているわけではない。
+- SameSite の判定に使う referrer は、リソース種別ごとに決め方が違い（遷移は遷移元 URL、スクリプト/CSS は新ページの URL、XHR はタブの URL）、新規タブの初回は referrer が無い。仕様が本来使うべきは referrer ではなく top-level site。
 - 一貫する原理は「**能力が増えるたびに、データを守る責任が増える**」。診断では「最近増えた機能」に新しい攻撃面を探す。
 
 ---
@@ -922,6 +1021,12 @@ def show_comments(session):
 10. この章を貫く一般原理は何か。診断にどう活かせるか。
     ▶ 答え: 「ブラウザの能力が増えるたびに、ユーザデータを守る責任も増える」。診断では「対象アプリが最近どんな機能（能力）を足したか」を問い、そこに生まれた新しい攻撃面を探す指針になる。
 
+11. CORS で、サーバがクロスオリジンのレスポンス読み取りを許可する具体的な手順を述べよ。同一オリジンポリシーは「何を」止めているか。
+    ▶ 答え: ブラウザはクロスオリジン XHR で、要求元オリジンを示す `Origin` ヘッダ（と送信先向け Cookie）を付けて**要求を実際に送る**。同一オリジンポリシーを満たすため、ブラウザはいったんレスポンスを捨てる。だがサーバが `Access-Control-Allow-Origin` に要求元オリジンか特殊値 `*` を返せば、ブラウザはレスポンスをスクリプトに渡す。つまり SOP が止めているのは**レスポンスの読み取り**であって、**リクエストの送出（と副作用）ではない**。
+
+12. ブラウザ内の防御（SOP・Cookie 属性・CSP）でも守れない「ネットワーク層の脅威」を2つ挙げよ。
+    ▶ 答え: （例）通信が暗号化されていなければオープン Wi-Fi で盗聴される、別サーバによる DNS ハイジャックでホスト名を別 IP に向けられ Cookie を盗まれる、国家級攻撃者が不正な BGP 経路を広告し正しい IP でも別の物理計算機へパケットが届く、など。DNSSEC で DNS ハイジャックを一部防げるが、対応する ISP は全部ではない。
+
 ---
 
 ## 出典
@@ -938,8 +1043,13 @@ def show_comments(session):
 - CORS（MDN）https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
 - Clickjacking（OWASP）https://owasp.org/www-community/attacks/Clickjacking
 - Timing attack（Wikipedia）https://en.wikipedia.org/wiki/Timing_attack
+- RFC 2965（cookie 仕様の失敗した整理）https://datatracker.ietf.org/doc/html/rfc2965
+- RFC 6265（現行の cookie 仕様。2965 を obsolete 化）https://datatracker.ietf.org/doc/html/rfc6265
+- XMLHttpRequest の歴史（Wikipedia）https://en.wikipedia.org/wiki/XMLHttpRequest#History
+- badssl.com（不正証明書テスト。演習10-2）https://badssl.com
+- fetch（MDN）https://developer.mozilla.org/en-US/docs/Web/API/fetch
 
-<!-- sources: https://browser.engineering/security.html, https://browser.engineering/, https://browser.engineering/preface.html, https://browser.engineering/intro.html, https://github.com/browserengineering/book, https://www.oreilly.co.jp/books/9784814401574/, https://developer.mozilla.org/en-US/docs/Web/Security/Same-origin_policy, https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Set-Cookie/SameSite, https://developer.mozilla.org/en-US/docs/Web/API/Document/cookie, https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS, https://owasp.org/www-community/attacks/Clickjacking -->
-<!-- terms: Cookie, Set-Cookieヘッダ, Cookieヘッダ, オリジン, 同一オリジンポリシー, cookie jar, XMLHttpRequest, CSRF, nonce, SameSite Cookie, schemeful same-site, XSS, エスケープ, Content-Security-Policy, default-src, タイミングサイドチャネル, 定数時間比較, ブラウザフィンガープリンティング, クリックジャッキング, CORS, HttpOnly, CSPRNG, 多層防御, forbidden header name, Cross-Origin Read Blocking -->
+<!-- sources: https://browser.engineering/security.html, https://browser.engineering/, https://browser.engineering/preface.html, https://browser.engineering/intro.html, https://github.com/browserengineering/book, https://www.oreilly.co.jp/books/9784814401574/, https://developer.mozilla.org/en-US/docs/Web/Security/Same-origin_policy, https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Set-Cookie/SameSite, https://developer.mozilla.org/en-US/docs/Web/API/Document/cookie, https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS, https://owasp.org/www-community/attacks/Clickjacking, https://datatracker.ietf.org/doc/html/rfc2965, https://datatracker.ietf.org/doc/html/rfc6265, https://en.wikipedia.org/wiki/XMLHttpRequest#History, https://badssl.com, https://developer.mozilla.org/en-US/docs/Web/API/fetch -->
+<!-- terms: Cookie, Set-Cookieヘッダ, Cookieヘッダ, オリジン, 同一オリジンポリシー, cookie jar, XMLHttpRequest, CSRF, nonce, SameSite Cookie, schemeful same-site, XSS, エスケープ, Content-Security-Policy, default-src, タイミングサイドチャネル, 定数時間比較, ブラウザフィンガープリンティング, クリックジャッキング, CORS, Access-Control-Allow-Origin, Originヘッダ, HttpOnly, CSPRNG, 多層防御, forbidden header name, Cross-Origin Read Blocking, DNS, DNSSEC, BGP, referrer, top-level site, DukPy, fetch, RFC 6265 -->
 <!-- self-read: https://browser.engineering/security.html | サイト側のegress制限で403拒否。原稿ソースは取得できたがレンダリング済みページ・図・ウィジェットは要現地確認 -->
 <!-- self-read: https://browser.engineering/security.html | アニメーションGIF(security-cookies-2.gif, security-spa-2.gif)の動きはソースから確定できず要現地確認 -->

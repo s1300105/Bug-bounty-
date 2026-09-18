@@ -179,6 +179,28 @@ ENTRYPOINT ["/linkfinder/linkfinder.py"]
 ベースは `python:3.7.3-alpine3.9`。
 非rootユーザ `linkfinder`（シェルは `/sbin/nologin`）で動き、ENTRYPOINTが `linkfinder.py` なので `docker run <image> -i ... -o ...` のようにオプションだけを渡す設計になっている。
 
+### 3-4. ライセンスと原典メモ
+
+LinkFinderは **MITライセンス**（Copyright (c) 2019 Gerben Janssen van Doorn）で公開されている。MITライセンスとは、著作権表示を残せば改変・再配布・商用利用も自由という、制約のゆるいオープンソースライセンスのこと。
+このゆるさが、後述のSecretFinderのように**派生ツールを作り替えて公開すること**を法的に容易にしている。
+
+READMEの末尾（Final remarks）には作者の言葉が残っている。原文の要点は次のとおり。
+
+- これは作者が**初めて公開したツール**であり、貢献（Contributions）を歓迎する。
+- LinkFinderは前掲のMITライセンスで公開されている。
+- フィードバックをくれた [@jackhcable](https://twitter.com/jackhcable) への謝辞。
+- プロジェクトをずっと綺麗で良いものにしてくれた [@edoverflow](https://twitter.com/edoverflow) への特別な感謝。
+
+〔補足〕本教科書の執筆時に実際にクローンして確認した原典の実測情報は次のとおり。教科書本文の理解には不要だが、「どの時点のコードを読んだか」を明確にするために記録しておく。
+
+| 項目 | 値 |
+|---|---|
+| デフォルトブランチ | `master` |
+| ブランチ一覧 | `master`, `chrome_extension`（前者が本体、後者が節12のChrome拡張） |
+| 取得時点の最終コミット | `1debac5dace4724fd6187c06f133578dae51c86f`（2024-04-13） |
+
+なおSecretFinder側は本体がGPLv3、同梱のBurp拡張ディレクトリだけがMITという二重ライセンスになっているが、その詳細は続く節（25b）で扱う。
+
 ---
 
 ## 4. CLIオプション（READMEと実装の差を押さえる）
@@ -366,7 +388,7 @@ JS中で文字列連結（`"/api/" + ver + "/user"`）やテンプレートリ�
 内側は次の5つの選択肢に分かれている。
 
 1. **スキーム付きURL** … `(?:[a-zA-Z]{1,10}://|//)` はスキーム名が英字1〜10文字、または**プロトコル相対の `//`**。`http`/`https` 限定ではない点が重要で、テストには `smb://example.com` も入っている。
-2. **絶対パス／ドット相対パス** … `(?:/|\.\./|\./)` で始まる。直後の1文字は `>` `<` `,` `;` `|` 空白 `*` `(` `)` `%` `$` `^` `/` `\` `[` `]` を除外する。**この「次の1文字で `/` を禁止」が、`//`（プロトコル相対URL）をただのパスとして誤検出しないための仕掛け**である。
+2. **絶対パス／ドット相対パス** … `(?:/|\.\./|\./)` で始まる。直後の1文字は `>` `<` `,` `;` `|` 空白 `*` `(` `)` `%` `$` `^` `/` `\` `[` `]` を除外する。これらの記号やスラッシュを直後に許さないことで、`//` のようなプロトコル相対の断片や `</div>` のようなHTMLタグの断片を「パス」と勘違いする誤検出を避けている。とくに**この「次の1文字で `/` を禁止」が、`//`（プロトコル相対URL）をただのパスとして誤検出しないための仕掛け**である。
 3. **スラッシュを含む相対エンドポイント＋拡張子** … 拡張子は**英字1〜4文字、または `action`**（Struts等の `.action` を意識）。末尾で `?`/`#` 以降のパラメータを任意で取り込む。
 4. **拡張子なしのREST API** … コメントは「まともなRESTエンドポイントは通常3文字以上」。`api/user`, `v1/create`, `api/v1/user/2` が拾える。
 5. **スラッシュなしのファイル名** … 拡張子は `php|asp|aspx|jsp|json|action|html|js|txt|xml` の**10種のホワイトリスト**に限定。だから `UserModel.name` は拾われず、`main.js` や `robots.txt` は拾われる。
@@ -486,6 +508,9 @@ def send_request(url):
 
 〔補足〕`try`/`except` の中身が同一なので、事実上「1回リトライするだけ」の構造になっている。
 `ssl.create_default_context()` を使っているので**証明書検証は有効**であり、自己署名証明書のステージング環境ではSSLエラーで落ちる（この点は後述のSecretFinderと対照的）。
+
+〔補足〕`deflate` 分岐の `data = response.read().read()` は**そのままでは動かないバグ**である。`response.read()` は `bytes`（バイト列）を返すのに、その戻り値にもう一度 `.read()` を呼んでいるためで、`bytes` に `.read()` メソッドは存在しない。
+ただしこのコードは `Accept-Encoding: gzip` しか送らない設計になっているため、サーバが `Content-Encoding: deflate` を返すことは通常なく、この分岐には**実際には到達しない**。だから表面上は問題が起きないだけで、コード自体は成立していない、という典型例である。
 
 ### 8-2. 1MB閾値と整形
 
@@ -700,6 +725,10 @@ def html_save(html):
 - `string.Template` を使い、テンプレート中の `$content` を差し込む。テンプレートは `sys.path[0]` 直下（＝スクリプトと同じディレクトリ）の `template.html`。**`template.html` が無いと出力に失敗する**。
 - 完了時に `URL to access output: file://<絶対パス>` を表示し、**自動でブラウザを開く**（Linuxは `xdg-open`、それ以外は `webbrowser.open`）。
 - `os.dup(1)` / `os.close(1)` などは、ブラウザ起動時の余計な標準出力を一時的に `/dev/null` へ捨てる仕掛け。
+
+〔補足〕`linkfinder.py` のファイル先頭には `os.environ["BROWSER"] = "open"` という1行があり、コメントに `Fix webbrowser bug for MacOS` と付いている。
+これはmacOSで `webbrowser.open` が正しく動かない不具合への回避策で、ブラウザ起動コマンドを `open`（macOSの標準コマンド）に固定している。
+まったく同じ行は後述するSecretFinder側の冒頭にも出てくる（節13-1のコード）ので、両ツールが同じ出自であることを示す小さな痕跡として見比べるとよい。
 
 ### 10-2. 黄色ハイライトの組み立て
 
@@ -962,7 +991,15 @@ asp
 swf
 ```
 
-〔補足〕Troubleshootingには「Chromeは同時に3件までしか通知を表示できない」ため、キーワードは最重要のものに絞る必要があるとある。
+READMEのTroubleshooting節には、運用でつまずきやすい3点への対処が書かれている。実際に動かすと高確率で当たるので押さえておく。
+
+| 症状 | 原因 | 対処 |
+|---|---|---|
+| 通知が全部来ない | Chromeは同時に3件までしか通知を表示できない（他の方法は現状なし） | キーワードは最重要のものに絞る（登録自体は無制限にできる） |
+| ブラウジングしてもターミナルに何も出ない | (1) スコープを現在のターゲットに変更し忘れている (2) HTTPサーバに接続できず拡張がオフになっている | まず `http-server.py` を起動し、そのあとで拡張アイコン → settingsタブ → Extensionスイッチをオンにする（サーバが起動していないとスイッチは数秒後に再びオフに戻る） |
+| `http-server.py` が `linkfinder.py` を見つけられない | 拡張ブランチには `linkfinder.py` が入っておらず、別途用意する必要がある | mainブランチから `linkfinder.py` をクローンし、`http-server.py` のパス変数（`path_linkfinder`）を設定するか、`linkfinder.py` をExtensionフォルダに置く |
+
+とくに2番目（出力が出ない）は「サーバ起動 → スイッチON」の順番を守るのが肝で、順番を逆にするとスイッチが勝手にオフへ戻る。
 
 ### 12-3. `http-server.py` はPython 2系で、外部公開してはいけない
 
@@ -1042,6 +1079,13 @@ run()
 **攻撃者はどこを突くか**: このサーバをローカル限定でない環境に置くと、外部から任意のURLを送り込んでコマンドを実行させられる恐れがある。
 **どう守るか**: 自分の解析用ツールは外部公開しない、という原則の実例である。ローカルホストに限定し、外に晒さないこと。
 
+### 12-4. READMEの Upcoming Features と Final Notes
+
+拡張のREADMEは末尾に、開発状況を示す2つの節を置いている。
+
+- **Upcoming Features** … 「`8080` 以外のポートでのリッスン」が今後の予定として挙がっている。ただしこれは記述と実装が食い違っている例で、`http-server.py` にはすでに `--port` 引数（既定 `8080`）が実装されており、ポート変更は現時点でも可能である。READMEが実装に追いついていない典型なので、ツールを使うときは**READMEより実装（argparse定義）を信じる**という前節（節4）の教訓がここでも効く。
+- **Final Notes** … 「まだ開発段階なのでバグや不完全さがあるかもしれない。見つけたら遠慮なく issue を出してほしい」という趣旨の断り書きがある。つまり拡張は実験的な位置づけで、動作が不安定でも織り込み済みだということ。
+
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: LinkFinder Chrome拡張の実装（`chrome_extension` ブランチ） — https://github.com/GerbenJavado/LinkFinder/tree/chrome_extension
 > **なぜ**: 本ノートでは README と `http-server.py` を全文収録したが、拡張側（`popup/popup.js`, `background.js`）のスコープ判定・通知・グラフ描画の実装は未収録である（理由: サイト側のディレクトリ構成が深く、自動取得の対象外）。
@@ -1073,6 +1117,11 @@ APIキー（apikey）とは、サービスを呼び出す際の認証用の文�
 
 実現方法はLinkFinderと同じで「python向け jsbeautifier と、かなり大きな正規表現の組み合わせ」。
 出力もHTMLかプレーンテキストである。
+
+派生元の痕跡はREADMEの文面にも残っている。SecretFinderのREADMEは**LinkFinderの文言をそのまま引き継いで**、「正規表現は4つの小さな正規表現から構成され、それらがJSファイル上の任意のものを見つけ・検索する責務を持つ」と書いている。
+だが実際のSecretFinderは後述のとおり31個の名前付き正規表現で「秘密」を探すツールに作り替えられており、この「4つの小さな正規表現」という説明は**LinkFinder時代の名残**で、SecretFinderの実装とは合っていない。READMEを鵜呑みにせず実装を読む、という姿勢がここでも要る。
+なおSecretFinderのREADMEにも動作画面のスクリーンショット（`https://i.imgur.com/D7MT2KL.png`）が埋め込まれている。
+
 ヘッダコメント（`SecretFinder.py` 冒頭、逐語）にも派生元が明記されている。
 
 ```python
@@ -1295,7 +1344,7 @@ LinkFinderが標準ライブラリ `urllib` だけで済ませているのに対
 - https://github.com/beautify-web/js-beautify
 
 <!-- sources: https://github.com/GerbenJavado/LinkFinder, https://raw.githubusercontent.com/GerbenJavado/LinkFinder/master/linkfinder.py, https://raw.githubusercontent.com/GerbenJavado/LinkFinder/master/template.html, https://raw.githubusercontent.com/GerbenJavado/LinkFinder/master/test_parser.py, https://github.com/GerbenJavado/LinkFinder/tree/chrome_extension, https://github.com/m4ll0k/SecretFinder, https://raw.githubusercontent.com/m4ll0k/SecretFinder/master/SecretFinder.py, https://github.com/beautify-web/js-beautify -->
-<!-- terms: LinkFinder, SecretFinder, エンドポイント, 攻撃対象領域, jsbeautifier, 正規表現, プロトコル相対URL, テンプレートリテラル, 拡張子ホワイトリスト, コンテキスト, ドメインモード, Burp Save selected items, base64, contenteditable, APIキー, アクセストークン, JWT, 機密データ, xdg-open -->
+<!-- terms: LinkFinder, SecretFinder, エンドポイント, 攻撃対象領域, jsbeautifier, 正規表現, プロトコル相対URL, テンプレートリテラル, 拡張子ホワイトリスト, コンテキスト, ドメインモード, Burp Save selected items, base64, contenteditable, APIキー, アクセストークン, JWT, 機密データ, xdg-open, MITライセンス, Content-Encoding -->
 
 <!-- self-read: https://github.com/GerbenJavado/LinkFinder | スライド画像/スクリーンショット（HTML出力の見た目は画像でしか分からない） -->
 <!-- self-read: https://github.com/GerbenJavado/LinkFinder/tree/chrome_extension | サイト側のディレクトリが深く拡張本体の実装が未収録 -->

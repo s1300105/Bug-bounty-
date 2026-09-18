@@ -67,6 +67,8 @@ Burp のメニュー **Settings > Tools > Proxy** を開くと、Proxy に関す
 
 特殊なアプリや、ブラウザ以外の HTTP クライアントを扱うときにだけ、リスナーを追加・設定する必要が出てくる。**Add** / **Edit** ボタンで **Add a new proxy listener** ダイアログを開き、タブごとに設定する。
 
+公式ドキュメントは、この Proxy listeners の説明に関連ページとして **Penetration testing workflow**（Burp を使った診断作業の全体フロー）と **Configuring Burp to work with an external browser**（内蔵ブラウザではなく外部ブラウザを Burp に通す設定手順）を挙げている。リスナーを触る前後で、この 2 ページを開くと「自分がいまワークフローのどこにいるか」「外部ブラウザを使うなら何を設定すべきか」が掴める。
+
 ### 3-2. Binding（どこにバインドするか）— 事故の源
 
 「These settings control how Burp binds the proxy listener to a local network interface:」
@@ -83,6 +85,30 @@ Burp のメニュー **Settings > Tools > Proxy** を開くと、Proxy に関す
 つまり **all interfaces や非 loopback インターフェースにバインドすると、他のコンピュータからリスナーに接続できてしまう**。これは、意図せず「誰でも使えるオープンプロキシ」を作ってしまう危険を意味する。攻撃者から見れば、診断者のマシンで開きっぱなしのリスナーは格好の踏み台になる。
 
 **どう守るか**: 原則として loopback のみにバインドする。all interfaces が必要になるのはモバイル端末や thick client を実機で通すときだけであり、そのときも診断ネットワークを隔離し、終わったら必ず戻す。診断環境の衛生としてノートに残しておくべき点である。
+
+このバインド先の選択と、次章で扱う TLS pass through（第 7 節）は、実機のモバイル端末を診断するときにセットで効いてくる。モバイル端末は「自分自身（loopback）」ではないので、端末から Burp に届かせるにはリスナーを loopback 以外（all interfaces など）にバインドせざるを得ず、上の危険を承知のうえで扱う必要がある。その具体手順は公式の端末別ページにあるが、本教科書の執筆環境からは取得できなかった。実機診断をする読者は必ず開いてほしい。
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: Configuring an iOS device to work with Burp / Configuring an Android device to work with Burp — https://portswigger.net/burp/documentation/desktop/mobile/config-ios-device と https://portswigger.net/burp/documentation/desktop/mobile/config-android-device
+> **なぜ**: 本教科書の執筆環境からは自動取得できなかった（理由: サイト側の egress 制限。加えて担当 URL の直接配下ではないため今回の取得対象に含めなかった）。以下の記述は目次・二次情報にもとづく要約である。
+> **読みどころ**:
+> 1. 端末の Wi-Fi プロキシ設定（Burp を動かすマシンの IP アドレスとポート）を、端末側にどう入力するか。
+> 2. リスナーを loopback 以外（**all interfaces**）にバインドする必要性と、その危険（他マシンから接続され得る）。第 3-2 節の警告と直結する核心事項。
+> 3. 端末上での CA 証明書のダウンロードとトラストストア登録。とくに iOS は「証明書信頼設定」での明示的な有効化が別手順になる。
+> 4. アプリが証明書ピンニングを行う場合の **TLS pass through**（第 7 節）との併用。ピンニングされたホストは復号できないので、素通しに切り替える判断が要る。
+> **代替手段**: なし（実機の端末別 UI 手順は公式ページでしか正確に追えない）。
+
+listener がそもそも起動しない・HTTPS が開けないといったトラブルの切り分けについても、公式にまとまったページがある。導入で行き詰まったときの一次資料として押さえておくとよい。
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: Troubleshooting — https://portswigger.net/burp/documentation/desktop/troubleshooting/troubleshooting
+> **なぜ**: 本教科書の執筆環境からは自動取得できなかった（理由: サイト側の egress 制限。担当 URL の直接配下ではないため取得対象に含めなかった）。以下は目次・二次情報にもとづく要約である。
+> **読みどころ**:
+> 1. **listener が起動しないとき**の切り分け（ポートが他アプリに使われていないか等。第 3-2 節の「空きポートを使う」と対応）。
+> 2. Burp's browser が起動しないときの Health check。
+> 3. プロジェクトファイルの破損・容量問題。
+> 4. 「ブラウザで HTTPS が開けない」ときの CA 証明書再インストール手順（第 3-4 節・Installing Burp's CA certificate と対応）。
+> **代替手段**: なし。
 
 ### 3-3. Request handling（転送先の制御）
 
@@ -120,9 +146,16 @@ Burp のメニュー **Settings > Tools > Proxy** を開くと、Proxy に関す
 | **Use a self-signed certificate** | 自己署名証明書を提示する。「This always causes a TLS alert.」＝常に TLS 警告が出る。 |
 | **Generate CA-signed per-host certificates** | **既定**。「Burp creates a unique, self-signed Certificate Authority (CA) certificate on installation.」インストール時に一意の CA 証明書を作り、接続ごとにホスト用の証明書を CA で署名して生成する。 |
 | **Generate a CA-signed certificate with a specific hostname** | 指定ホスト名の単一証明書を全 TLS 接続に使う。「Use this option if you perform invisible proxying, as the client does not send a CONNECT request, so Burp can't identify the required hostname prior to the TLS negotiation.」不可視プロキシで使う。 |
-| **Use a custom certificate** | 特定の証明書を読み込む。「the certificate must be in PKCS#12 format with a `.p12` file extension」＝PKCS#12 形式（`.p12`）が必須。 |
+| **Use a custom certificate** | 提示する特定の証明書を読み込む。「the certificate must be in in PKCS#12 format with a `.p12` file extension; certificates in `.psx` format are not supported.」＝**PKCS#12 形式（`.p12` 拡張子）が必須で、`.psx` 形式の証明書は非対応**。用途（逐語）: 「Use this option if the application uses a client that requires a specific server certificate with, for example, a given serial number or certification chain.」＝クライアントが特定のシリアル番号や証明書チェーンを持つサーバ証明書を要求する場合に使う。 |
 
 既定が per-host 生成であることを押さえておこう。これは「ホストごとに、CA が署名した本物らしい証明書をその場で作る」方式で、ブラウザに CA を信頼させておけば警告なく HTTPS を復号できる。
+
+〔補足〕**Use a custom certificate** は特殊な状況向けだ。たとえば、標的アプリのクライアントが「サーバ証明書のシリアル番号や証明書チェーンが決め打ちの値であること」を確認してから通信するように作られている場合、Burp の生成した証明書では弾かれてしまう。そこで、その条件を満たす証明書を `.p12` ファイルとして用意し、リスナーに読み込ませる。`.psx` は使えないので、手元の証明書が別形式なら `.p12` へ変換してから読み込むこと。
+
+CA 証明書そのものをブラウザ／OS に信頼させる手順や、CA の書き出し・再生成・自作については、公式の次の 2 ページに詳しい。導入でつまずいたら必ず参照してほしい。
+
+- **Installing Burp's CA certificate** — Burp の CA 証明書を各ブラウザ・OS のトラストストアに登録する手順。
+- **Managing CA certificates** — CA 証明書の書き出し・再生成、OpenSSL による自作 CA など。
 
 ### 3-5. TLS Protocols / HTTP（プロトコル制御）
 
@@ -239,7 +272,7 @@ WebSocket（ウェブソケット）とは、ブラウザとサーバが接続�
 「The **HTTP match and replace rules** and **WebSocket match and replace rules** settings automatically replace parts of messages as they pass through the Proxy.」＝Proxy を通過するメッセージの一部を自動で置換する。
 
 - HTTP のマッチ＆リプレースには **predefined rules**（定義済みルール）がいくつか含まれ、有効化すると定番作業を助ける。「These are disabled by default.」＝既定では無効。
-- 「To only apply match and replace rules to items that are in the project scope, select **Only apply to in-scope items**.」＝スコープ内の項目だけに適用するオプションがある。
+- 「To only apply match and replace rules to items that are in the project scope, select **Only apply to in-scope items**.」＝スコープ内の項目だけに適用するオプションがある。ここでいう「スコープ（project scope）」とは、そのプロジェクトで診断対象とみなす URL の範囲のこと。何を in-scope とするかの定義方法は公式の **Scope settings - Target scope**（`Settings > Project > Scope`）に詳しい。**Only apply to in-scope items** を使う前に、まずこのスコープ設定で対象範囲を正しく定義しておく必要がある。
 
 ### 6-1. ルールの追加手順
 
@@ -794,11 +827,16 @@ HTTPS の場合（逐語）: 「If you use HTTPS with a proxy, clients send a **
 
 ## 16. TLS settings（クライアント証明書・上流 TLS）
 
-「configure the TLS negotiation, Client TLS certificates, Server TLS certificates, and Java TLS settings.」の 4 領域。
+**TLS settings**（Settings > Network > TLS）では、次の 4 領域を設定できる。
+
+- TLS negotiation
+- Client TLS certificates
+- Server TLS certificates
+- Java TLS settings
 
 ### 16-1. TLS negotiation
 
-上流サーバとの TLS ネゴシエーションで使うプロトコル・暗号を制御する。**Verify upstream TLS** で選ぶ。選択肢は「Java が対応する全プロトコルと暗号を使う」「Java の既定を使う」「カスタムを使う」。さらに **Allow unsafe renegotiation**（一部のクライアント証明書や TLS 問題の回避に必要になることがある）と **Disable TLS session resume**（接続の再利用をキャッシュ・再利用するか。効率化に効くが状況によっては問題を起こす）がある。
+上流サーバ（宛先サーバ）との TLS ネゴシエーションで使うプロトコル・暗号を制御する。**Verify upstream TLS** をクリックすると、使用するプロトコルと暗号スイート（cipher suite、TLS で使う暗号方式の組み合わせ）を選ぶ画面が開く。選択肢は「Java が対応する全プロトコルと暗号を使う」「Java の既定を使う」「カスタムを使う」の 3 つで、カスタムを選ぶと個別のプロトコル・暗号スイートにチェックを付けて絞り込める。さらに **Allow unsafe renegotiation**（一部のクライアント証明書や TLS 問題の回避に必要になることがある）と **Disable TLS session resume**（接続の再利用をキャッシュ・再利用するか。効率化に効くが状況によっては問題を起こす）がある。
 
 ### 16-2. Client TLS certificates
 
@@ -917,6 +955,9 @@ HTTPS の場合（逐語）: 「If you use HTTPS with a proxy, clients send a **
 - TLS settings: https://portswigger.net/burp/documentation/desktop/settings/network/tls
 
 <!-- self-read: https://portswigger.net/burp/documentation/desktop/settings/tools/proxy | サイト側の egress 制限で自動取得できず、predefined match and replace rules の実際の一覧は UI でしか確認できない -->
+<!-- self-read: https://portswigger.net/burp/documentation/desktop/mobile/config-ios-device | サイト側の egress 制限＋担当URL配下外で自動取得できず、実機モバイル端末の loopback以外へのバインドと TLS pass through 併用の手順は公式ページでしか正確に追えない -->
+<!-- self-read: https://portswigger.net/burp/documentation/desktop/mobile/config-android-device | サイト側の egress 制限＋担当URL配下外で自動取得できず、Android 端末のプロキシ設定・CA登録・ピンニング時の TLS passthrough 併用は公式ページでしか正確に追えない -->
+<!-- self-read: https://portswigger.net/burp/documentation/desktop/troubleshooting/troubleshooting | サイト側の egress 制限＋担当URL配下外で自動取得できず、listener が起動しない/HTTPS が開けない時の切り分けは公式ページでしか正確に追えない -->
 
 <!-- sources: https://portswigger.net/burp/documentation/desktop/tools/proxy, https://portswigger.net/burp/documentation/desktop/settings/tools/proxy, https://portswigger.net/burp/documentation/desktop/tools/proxy/http-history, https://portswigger.net/burp/documentation/desktop/tools/proxy/http-history/filter-settings, https://portswigger.net/burp/documentation/desktop/tools/proxy/http-history/bambdas, https://portswigger.net/burp/documentation/desktop/tools/proxy/websockets-history, https://portswigger.net/burp/documentation/desktop/tools/proxy/invisible, https://portswigger.net/burp/documentation/desktop/settings/network/connections, https://portswigger.net/burp/documentation/desktop/settings/network/tls -->
-<!-- terms: Burp Proxy, Proxy listener, loopback, project settings, user settings, Response modification rules, match and replace, TLS pass through, TLS フィンガープリント, 証明書ピンニング, HTTP history, WebSockets history, Bambda, Montoya API, Invisible proxying, SNI, Host ヘッダ, sslstrip, HSTS, Upstream proxy, Hostname resolution overrides, SOCKS proxy, PKCS#12, PKCS#11, Interception rules -->
+<!-- terms: Burp Proxy, Proxy listener, loopback, project settings, user settings, Response modification rules, match and replace, TLS pass through, TLS フィンガープリント, 証明書ピンニング, HTTP history, WebSockets history, Bambda, Montoya API, Invisible proxying, SNI, Host ヘッダ, sslstrip, HSTS, Upstream proxy, Hostname resolution overrides, SOCKS proxy, PKCS#12, PKCS#11, Interception rules, 暗号スイート, target scope, mTLS -->

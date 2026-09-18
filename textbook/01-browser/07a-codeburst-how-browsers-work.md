@@ -34,6 +34,41 @@
 
 つまり「ブラウザ内部を学ぶことが、より良い判断と、開発ベストプラクティスの根拠の理解につながる」ということ。バグバウンティにおいても、脆弱性の多くはブラウザ内部の仕様や実装のクセを突くものなので、この土台は避けて通れない。
 
+### 0.1 原典のメタ情報
+
+本節が拠って立つ原典の書誌情報を整理しておく。二次情報の断片ではなく、原典（Garsiel & Irish 全文）から直接取れた事実である。
+
+| 項目 | 内容 |
+|---|---|
+| タイトル | How browsers work: behind the scenes of modern web browsers |
+| 著者 | Tali Garsiel & Paul Irish |
+| 初出 | 2011 年 8 月 5 日（Originally published Aug. 5, 2011） |
+| 由来 | HTML5Rocks 記事の再掲（WebPlatform Docs 側の attribution に `Portions of this content come from HTML5Rocks!` と明記） |
+
+この記事は、イスラエルの開発者 **Tali Garsiel** が数年かけてブラウザ内部の公開資料を精査し、ブラウザのソースコードそのものを読み込んだ研究成果である。Paul Irish（当時 Chrome の Developer Relations）が序文を寄せ、その中で Garsiel の言葉を次のように引用している（逐語）。
+
+> In the years of IE 90% dominance there was nothing much to do but regard the browser as a "black box", but now, with open source browsers having more than half of the usage share, it's a good time to take a peek under the engine's hood and see what's inside a web browser. Well, what's inside are millions of C++ lines...
+
+大意は「IE が 90% を占めていた時代はブラウザを『ブラックボックス』として扱うしかなかったが、いまやオープンソースのブラウザが利用シェアの過半を占め、エンジンのフードを開けて中をのぞく好機である。中身はといえば、数百万行の C++ コードである」。この「ブラックボックスをこじ開ける」という姿勢こそ、脆弱性ハンティングの出発点そのものである。
+
+#### 翻訳版と講演
+
+原典には、コミュニティによる**韓国語訳**と、HTML5Rocks 公式による**ドイツ語／スペイン語／日本語／ポルトガル語／ロシア語／簡体中国語**版が存在する旨が記載されている。日本語版を探せば、本節の原典を母語で通読できる。加えて、**Vimeo に Tali Garsiel 本人の講演動画**があることも原典に記されている。
+
+#### 対象ブラウザ
+
+原典が説明対象としたのは、執筆当時（2011 年 8 月）の 5 大ブラウザである。
+
+| ブラウザ | オープンソースか | 原典での扱い |
+|---|---|---|
+| Internet Explorer | × | 対象外（ソース非公開） |
+| Firefox | ○ | 例として説明 |
+| Safari | ○ | 例として説明 |
+| Chrome | ○ | 例として説明 |
+| Opera | × | 対象外 |
+
+つまり原典は、ソースが読める **Firefox・Chrome・Safari** の 3 つを具体例に選んでいる。原典によれば、2011 年 8 月時点で Firefox+Safari+Chrome の合計利用シェアは**約 60%**（StatCounter による）だった。IE 独占の時代が終わり、内部を検証できるブラウザが多数派になったからこそ、こうした解説記事が書けるようになったわけである。
+
 > 〔補足〕原典は 2011 年の記述である。Blink の登場（2013）、Chrome の Site Isolation、コンポジタスレッドの分離、`requestAnimationFrame` を含む現代のレンダリングフレームライフサイクル、Stylo（Firefox の並列 CSS エンジン）などは扱っていない。ここでは「古典として押さえる骨格」を学び、現代的な補足は後編（07b）や公式ドキュメントで埋める。
 
 ---
@@ -109,7 +144,7 @@ HTML と CSS の解釈・表示方法の仕様は **W3C（World Wide Web Consort
 | Internet Explorer | Trident |
 | Edge | Blink (EdgeHTML if < v79) |
 
-Blink は WebKit のフォーク（分岐）として 2013 年に生まれたエンジンで、現在は Chrome・Opera・新しい Edge が採用している。脆弱性ハンティングでは「どのブラウザがどのエンジンを使うか」を知っておくと、あるバグが Chromium 系だけに効くのか、Gecko でも効くのかを見分けられる。
+Blink は WebKit のフォーク（分岐。既存コードを枝分かれさせて別プロジェクトにすること）として生まれたエンジンで、現在は Chrome・Opera・新しい Edge が採用している（〔補足・一般知識〕フォークは 2013 年 4 月。ノートの対応表には「Blink (a fork of WebKit)」とだけあり、年号は原典・二次資料には無い一般知識である）。脆弱性ハンティングでは「どのブラウザがどのエンジンを使うか」を知っておくと、あるバグが Chromium 系だけに効くのか、Gecko でも効くのかを見分けられる。
 
 ---
 
@@ -175,7 +210,9 @@ Blink は WebKit のフォーク（分岐）として 2013 年に生まれたエ
 
 このプロセス全体の最終出力が、そのページの **DOM（Document Object Model）** であり、ブラウザはページのその後のすべての処理でこれを用いる。DOM とは、HTML 文書をオブジェクトの木として表現したもので、JavaScript から HTML を読み書きする際の窓口になる。
 
-二次資料の計測例では、HTML バイト列のチャンクを DOM ツリーに変換するのに **約 5ms** かかる。ページが大きければ大幅に長くなり、大量の HTML を処理する場合これがボトルネックになり得る。Chrome DevTools の timeline で実際の所要時間を確認できる。
+この一連の流れを二次資料は図 `full-process.png`（**DOM Construction Process**、上記 4 段の全体像）で示している。
+
+二次資料の計測例では、HTML バイト列のチャンクを DOM ツリーに変換するのに **約 5ms** かかる。ページが大きければ大幅に長くなり、大量の HTML を処理する場合これがボトルネックになり得る。Chrome DevTools の timeline で実際の所要時間を確認できる（二次資料はこの計測を図 `dom-timeline.png` として、DevTools で DOM 構築をトレースした様子で示している）。
 
 > 〔補足〕現在の Google 系ドキュメントでは、これに CSS 側の **CSSOM 構築**を並べ、DOM + CSSOM → Render Tree → Layout → Paint を「Critical Rendering Path」と呼ぶ。CSSOM とは、CSS をオブジェクトの木として表現したもの（後述 7 章）。
 
@@ -188,6 +225,19 @@ HTML パーサの特殊さを理解するには、まず「普通のパース」
 ### 5.1 パースとは何か
 
 **パース**とは文書を「意味のある構造」= コードが理解して使える形へ翻訳することである。結果は通常、文書構造を表すノードの木（**parse tree / syntax tree**）になる。たとえば式 `2 + 3 - 1` は、演算子と数値を節点とする木として表現できる（**Figure 5: mathematical expression tree node**）。
+
+### 5.1.1 parse tree は最終成果物とは限らない（Translation）
+
+原典が補足するもう一つの重要点は、**parse tree（構文木）がそのまま最終成果物になるとは限らない**ことである。パースはしばしば「変換（translation）」の途中段階として使われる。原典が挙げる例はコンパイラで、**コンパイラはソースコードをまず parse tree にパースし、その木を機械語（machine code）の文書へ翻訳する**（**Figure 7: compilation flow**）。
+
+```text
+source code  --->  parse tree  --->  machine code
+           （パース）        （翻訳 / translation）
+```
+
+ブラウザでも同じ発想が繰り返し現れる。HTML をパースして得た DOM ツリーは render tree へ、CSS をパースして得た規則はスタイル計算へ、JavaScript をパースして得た AST（抽象構文木）はバイトコードへ、というように、**「パース → 変換」の連鎖**でページが組み立てられていく。「パースの出力＝そのページの最終形」ではなく、次の段の入力にすぎない、と押さえておくとパイプライン全体が見通しやすい。
+
+### 5.1.2 文法（grammar）とは
 
 パースは、文書が従う構文規則に基づく。パース可能なあらゆる形式は、語彙（vocabulary）と構文規則（syntax rules）からなる決定的な文法を持たねばならない。これを **文脈自由文法（context free grammar, CFG）** と呼ぶ。文脈自由文法とは、周囲の文脈に関係なく規則を適用できる文法のこと。人間の言語はそうではない（文脈で意味が変わる）ため、従来のパース技術では解析できない。この「HTML は文脈自由文法ではない」という事実が、後で決定的に効いてくる。
 
@@ -254,15 +304,19 @@ bottom up の動作はスタック遷移表で理解できる（原文の逐語�
 
 ### 6.1 HTML は文脈自由文法ではない
 
-HTML の語彙と構文は W3C の仕様で定義される。だが **従来のパーサ理論は HTML には適用できない**（CSS と JavaScript のパースには使う）。HTML は parser が必要とする文脈自由文法で簡単には定義できないからである。
+HTML の語彙と構文は W3C の仕様で定義される。原典執筆時点（2011 年）の現行版は **HTML4** で、**HTML5 はまだ作業中（work in progress）**だった。だが **従来のパーサ理論は HTML には適用できない**（CSS と JavaScript のパースには使う）。HTML は parser が必要とする文脈自由文法で簡単には定義できないからである。
 
-HTML を定義する形式手段として **DTD（Document Type Definition）** はあるが、これは文脈自由文法ではない。DTD とは、SGML 系言語で許可される要素・属性・階層を定義する形式のこと。当時の strict DTD は `http://www.w3.org/TR/html4/strict.dtd` にあった。
+HTML を定義する形式手段として **DTD（Document Type Definition）** はあるが、これは文脈自由文法ではない。DTD とは、SGML 系言語で許可される要素・属性・階層を定義する形式のこと。すなわち、許可される全要素と、その属性、そして要素の階層関係の定義を含む。
+
+DTD には複数のモードがある。**厳格モード（strict mode）は仕様のみに準拠する**が、**それ以外のモードは、過去にブラウザで使われたマークアップのサポートを含む**（後方互換のため）。この「厳格 vs 後方互換」という二本立て自体が、後で見る HTML パーサの寛容さ・エラー耐性と地続きである。当時の strict DTD は `http://www.w3.org/TR/html4/strict.dtd` にあった。
 
 HTML は XML に近いのに、なぜパースが難しいのか。答えは **HTML のアプローチが「寛容（forgiving）」**だからである。暗黙に補われるタグ、開始／終了タグの省略などを許す。全体として「ソフトな」構文であり、XML の硬く厳格な構文とは対照的である。この一見小さな違いが決定的で、一方では HTML の人気の主因（ミスを許し著者を楽にする）であり、他方では形式文法を書くのを困難にする。まとめると、**HTML は文脈自由文法でないため、従来の parser でも XML parser でも簡単にはパースできない。**
 
 ### 6.2 DOM とマークアップの対応
 
 パーサの出力木は **DOM 要素ノードと属性ノードの木**である。DOM は HTML 文書のオブジェクト表現であり、JavaScript のような外界に対する HTML 要素のインタフェースになる。**DOM はマークアップとほぼ 1 対 1 の関係**を持つ。二次資料の追記によれば、木の根は **"Document" object** である。
+
+**DOM 自体も W3C の仕様である。** DOM は特定の言語に依存しない汎用の文書操作仕様であり、その上で **HTML 固有の要素は専用モジュールが記述する**。原典は、それが **DOM Level 2 HTML** の IDL（Interface Definition Language、インタフェース定義言語。オブジェクトのプロパティやメソッドを言語非依存に記述する形式）で定義されている旨と、その定義の在りかを挙げている。つまり「文書を木として扱う汎用ルール（DOM）」と「HTML 要素ごとの具体的なインタフェース（DOM Level 2 HTML）」が層になっている、という構造を押さえておくとよい。
 
 次のマークアップ（原文のまま）は、
 
@@ -514,6 +568,10 @@ ident   {nmstart}{nmchar}*
 ```text
 ruleset
   : selector [ ',' S* selector ]*
+    '{' S* declaration [ ';' S* declaration ]* '}' S*
+  ;
+selector
+  : simple_selector [ combinator selector | S+ [ combinator? selector ]? ]?
   ;
 simple_selector
   : element_name [ HASH | class | attrib | pseudo ]*
@@ -543,7 +601,9 @@ div.error , a.error {
 }
 ```
 
-`div.error` と `a.error` がセレクタ、波括弧内がこの ruleset で適用される規則である。BNF の意味は「ruleset はセレクタ 1 つ、または任意個のセレクタをカンマと空白で区切ったもの。ruleset は波括弧を含み、その中に宣言 1 つ、または任意個の宣言をセミコロンで区切ったものを含む」。
+`div.error` と `a.error` がセレクタ、波括弧内がこの ruleset で適用される規則である。BNF の意味は「ruleset はセレクタ 1 つ、または任意個のセレクタをカンマと空白（`S` は white space）で区切ったもの。ruleset は波括弧（`'{' ... '}'`）を含み、その中に宣言 1 つ、または任意個の宣言をセミコロンで区切ったものを含む」。この宣言ブロックの行（`'{' S* declaration [ ';' S* declaration ]* '}' S*`）が、セレクタ部と宣言部を 1 つの規則として結び付けている。
+
+`selector` の生成規則にも注目してほしい。`selector : simple_selector [ combinator selector | S+ [ combinator? selector ]? ]?` は、**`combinator`（結合子。子孫を表す空白、子を表す `>`、隣接を表す `+` など）でセレクタどうしが連結できる**ことを表している。つまり `table div` や `ul > li` のような複合セレクタは、この再帰的な生成規則によって組み立てられる。`simple_selector` が「単体の（結合子を含まない）セレクタ」で、それを `combinator` でつないだものが `selector` である、という入れ子構造になっている。
 
 ### 7.2 WebKit / Firefox の CSS パーサ
 
@@ -949,5 +1009,5 @@ WebKit は「（`@imports` を含む）すべてのトップレベルスタイ�
 - https://www.w3.org/TR/CSS2/grammar.html （CSS2 の字句・構文文法。原典が参照）
 
 <!-- sources: https://codeburst.io/how-browsers-work-6350a4234634, https://raw.githubusercontent.com/webplatform/docs/HEAD/concepts/Internet_and_Web/how_browsers_work/index.md, https://raw.githubusercontent.com/vasanthk/how-web-works/HEAD/README.md, https://www.w3.org/TR/CSS2/grammar.html -->
-<!-- terms: URI, W3C, DOM, レンダリングエンジン, WebKit, Gecko, Blink, render tree, Attachment, Reflow, Critical Rendering Path, トークン化, 挿入モード, ステートマシン, 文脈自由文法, BNF, DTD, エラー耐性, mutation XSS, サニタイザ回避, document.write, 投機的パース, speculative parsing, CSSOM, specificity, カスケード, rule tree, style context, スタイル共有, UI redressing, display:none, visibility:hidden, FOUC -->
+<!-- terms: URI, W3C, DOM, DOM Level 2 HTML, IDL, レンダリングエンジン, WebKit, Gecko, Blink, フォーク, render tree, Attachment, Reflow, Critical Rendering Path, トークン化, 挿入モード, ステートマシン, 文脈自由文法, BNF, combinator, DTD, strict mode, Translation, parse tree, エラー耐性, mutation XSS, サニタイザ回避, document.write, 投機的パース, speculative parsing, CSSOM, specificity, カスケード, rule tree, style context, スタイル共有, UI redressing, display:none, visibility:hidden, FOUC -->
 <!-- self-read: https://codeburst.io/how-browsers-work-6350a4234634 | サイト側（エグレスプロキシ）の制限で取得不能。原典と二次情報で代替 -->

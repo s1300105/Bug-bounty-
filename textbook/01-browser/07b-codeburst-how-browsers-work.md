@@ -81,6 +81,8 @@ HTML は **フローベースのレイアウトモデル** を使う。フロー
 
 増分レイアウトは dirty な部分だけを計算するが、その結果さらに周囲の再レイアウトが必要になる（損傷が広がる）こともある。
 
+〔補足〕増分レイアウトが起きる典型例が **寸法未指定の置換要素（replaced element）** である。ここで**置換要素とは、画像（`<img>`）や動画のように、中身がその要素の外（別ファイル）から来る要素のこと**。MDN によれば、**寸法（`width` / `height`）が分からない置換要素には、まずプレースホルダ（仮の場所取り）領域が確保され、画像の寸法が判明した時点で reflow が起きる**。だから画像に寸法を書かないと、読み込み後にレイアウトがずれる（後続の内容が飛ぶ）。これが CLS（レイアウトのガタつき）の一因であり、実務上は `<img width=… height=…>` を必ず付けるべき理由でもある。
+
 ### 1.5 非同期レイアウトと同期レイアウト——ここが副チャネルの入口
 
 - **増分レイアウトは通常「非同期」に行われる。** Firefox は増分レイアウト用の **"reflow commands"（リフローコマンド）をキューに貯め**、スケジューラがまとめて実行する。WebKit にもタイマーがあり、木を走査して dirty な renderer をレイアウトする。「非同期」とは、すぐには実行せず、あとでまとめて処理するという意味である。
@@ -152,7 +154,13 @@ clientWidth and clientHeight represent the interior of an object excluding borde
 
 二次資料は **レイアウトスラッシング（layout thrashing）** を「ページが読み込み完了になる前に、ブラウザが何度も reflow / repaint を強いられる状態」と定義する。JavaScript が普及する前のサイトは通常 1 回の reflow/paint で済んだが、今は読み込み中に JS が DOM を変更し、追加の reflow/repaint を起こすことが増えた。低スペック端末ほど遅延が目立つ。
 
-「なぜ DOM は遅いのか」への二次資料の答えは明快だ——**短い答えは「DOM は遅くない」**。DOM ノードの追加・削除はポインタの入れ替えが数回で、JS オブジェクトのプロパティ設定と大差ない。**しかしレイアウトが遅い**。DOM に触ると木全体に dirty bit が立ち、JS が制御をブラウザに返した瞬間に、ブラウザは「CSS recalc → layout → repaint → re-compositing」を実行して再描画する。しかも**特定のプロパティにアクセスするとレイアウトが同期的に起動される**。二次資料は「2013 年頃、Google Instant は 1 クエリで 13 回のレイアウトを引き起こし、モバイルで画面が約 2 秒固まった（のちに高速化）」と述べ、React は「ページ状態を更新するたびに最大 1 回のレイアウトに抑える」ことを保証すると説明する。
+#### なぜ DOM は遅いのか（短答）
+
+「なぜ DOM は遅いのか」への二次資料の答えは明快だ——**短い答えは「DOM は遅くない」**。DOM ノードの追加・削除はポインタの入れ替えが数回で、JS オブジェクトのプロパティ設定と大差ない。**遅いのは DOM ではなくレイアウトのほうである**。DOM に触ると木全体に dirty bit が立ち、JS が制御をブラウザに返した瞬間に、ブラウザは「CSS recalc → layout → repaint → re-compositing」を実行して再描画する。しかも**特定のプロパティにアクセスするとレイアウトが同期的に起動される**（前述の `offsetHeight` 等）。つまり「DOM 操作が重い」のではなく、「DOM 操作が引き起こすレイアウトが重い」のである。
+
+#### 具体例（Google Instant と React）
+
+二次資料はこの重さを 2 つの実例で示す。1 つは **Google Instant**——「2013 年頃、Google Instant は 1 クエリで 13 回のレイアウトを引き起こし、モバイルで画面が約 2 秒固まった（のちに高速化）」。もう 1 つは **React**——React は「ページ状態を更新するたびに最大 1 回のレイアウトに抑える」ことを保証すると説明する。仮想 DOM でまとめて差分を適用し、レイアウトの回数を減らす設計だ、という対比である。
 
 ---
 
@@ -350,18 +358,20 @@ absolute と fixed のレイアウトは通常フローと無関係に正確に�
 
 教科書に図を再作成するときの索引として、原典の全図を挙げる（この節の範囲に関わる後半のみ抜粋。図番号とキャプションは原文のまま）。
 
-| 図 | キャプション（原文） | 内容 |
-|---|---|---|
-| Figure 17 | Incremental layout - only dirty renderers and their children are layed out (3.6) | dirty な部分木だけが再レイアウトされる |
-| Figure 18 | CSS2 box model | content / padding / border / margin の 4 領域 |
-| Figure 19 | Block box | ブロックボックス |
-| Figure 20 | Inline boxes | インラインボックス |
-| Figure 21 | Block and Inline formatting | ブロックは縦、インラインは横 |
-| Figure 22 | Lines | line box への詰め込み |
-| Figure 23 | Relative positioning | 通常配置後の delta 移動 |
-| Figure 24 | Float | float:right の画像にテキストが回り込む |
-| Figure 25 | Fixed positioning | fixed はスクロールしても動かない |
-| Figure 26 | （原文は "Fixed positioning" と誤記。実際は z-index の例） | z-index:3 の赤 div が z-index:1 の緑 div の前面に来る |
+画像ファイル名の列は、原典のリポジトリで図を再作成・差し替えするときの索引として原典（webplatform docs）のファイル名をそのまま載せている。
+
+| 図 | キャプション（原文） | 画像ファイル名 | 内容 |
+|---|---|---|---|
+| Figure 17 | Incremental layout - only dirty renderers and their children are layed out (3.6) | `reflow.png` | dirty な部分木だけが再レイアウトされる |
+| Figure 18 | CSS2 box model | `image046.jpg` | content / padding / border / margin の 4 領域 |
+| Figure 19 | Block box | `image057.png` | ブロックボックス |
+| Figure 20 | Inline boxes | `image059.png` | インラインボックス |
+| Figure 21 | Block and Inline formatting | `image061.png` | ブロックは縦、インラインは横 |
+| Figure 22 | Lines | `image063.png` | line box への詰め込み |
+| Figure 23 | Relative positioning | `image065.png` | 通常配置後の delta 移動 |
+| Figure 24 | Float | `image067.png` | float:right の画像にテキストが回り込む |
+| Figure 25 | Fixed positioning | `image25.png` | fixed はスクロールしても動かない |
+| Figure 26 | （原文は "Fixed positioning" と誤記。実際は z-index の例） | `image071.png` | z-index:3 の赤 div が z-index:1 の緑 div の前面に来る |
 
 ### 7.2 原典の参考文献（Resources）から押さえるべきもの
 
@@ -402,6 +412,8 @@ Chrome 公式「Inside look at modern web browser」（Mariko Kosaka, 2018）par
 
 マルチプロセスの利点は 2 つ。1 タブが応答しなくなっても他は生き残ること。そして**セキュリティとサンドボックス化**——OS がプロセスの権限を制限できるので、**任意のユーザ入力を扱うレンダラプロセスからの任意ファイルアクセスを Chrome は制限できる**。コストはメモリで、各プロセスが V8 などの共通基盤のコピーを抱える。そこで Chrome は**プロセス数に上限**を設け、上限に達すると**同一サイトの複数タブを 1 プロセスにまとめる**。
 
+〔補足〕このメモリと安定性のトレードオフに対する Chrome の設計方針が **Servicification（サービス化）** である。ここで**サービス化とは、ブラウザプログラムの各部（ネットワーク、ストレージ等）を独立した「サービス」として作り、環境に応じてプロセス分割の粒度を変えられるようにする改修のこと**。強力なハードウェアでは各サービスを別プロセスに分割して安定性を優先し、リソース制約のある端末では複数サービスを 1 プロセスに集約してメモリを節約する。つまり「プロセスをいくつに割るか」を端末ごとに変えられる、という考え方である。
+
 ### 8.2 Site Isolation——プロセス境界をセキュリティ境界にする（最重要）
 
 原典 2 節の「Chrome はタブごとに 1 プロセス」は、2018 年時点で既に**「サイトごと」へ更新**されている。それが **Site Isolation（サイト分離）** である。
@@ -433,8 +445,24 @@ MDN も「ブラウザは概ねシングルスレッド」という言い方は*
 - **接続の確立**：DNS lookup → TCP ハンドシェイク（SYN / SYN-ACK / ACK の 3 メッセージ）→ TLS ネゴシエーション。MDN は TLS に「さらに 5 往復」を要するとし、**合計 8 往復ののちにようやくリクエストを送れる**とする。
 - **TCP slow start（スロースタート）**：輻輳ウィンドウ **CWND** は 1 / 2 / 4 / 10 MSS のいずれかで初期化され（MSS は Ethernet 上で 1500 バイト）、ACK を受ければ倍、受けなければ半分になる。
 - **最初のコンテンツチャンクは通常 14KB**（原典の「8K chunks」に相当する現代の数値）。**TTFB（Time To First Byte）** は操作から最初の HTML パケット受信までの時間。
+- **TTI（Time To Interactive、対話可能になるまでの時間）**：最初のリクエストからページが操作を受け付けられるようになるまでの時間。MDN の言う「対話可能」とは、**FCP（First Contentful Paint、最初の意味あるピクセルが出た時点）より後で、かつユーザ操作に 50ms 以内で応答できる**状態を指す。MDN は、2MB のスクリプトが 1.5 秒以上メインスレッドを占有し、クリックにもタップにも反応しないページの例を挙げる。〔補足〕TTFB が「サーバがどれだけ速く返し始めたか」の指標なのに対し、TTI は「ユーザがいつ触れるようになったか」の指標であり、両者は別物である。
 
 〔補足〕この 14KB / slow start は本来は性能の話だが、「最初の 1 パケットに何が載るか」は**タイミング副チャネル（XS-Leaks）で観測されうる粒度**でもある。まず性能として提示し、副チャネル章で再訪すると繋がる。
+
+#### ナビゲーションを主導するのは browser process
+
+Chrome 公式 part 2 は、ナビゲーションが **browser process 主導**で進むことを、次のステップ列で示す。原典にはこの層が丸ごと欠けている。
+
+1. **入力の処理**：アドレスバーへの入力は browser process の **UI スレッド**が扱い、まず「検索クエリか URL か」を判定する。
+2. **ナビゲーション開始**：UI スレッドが **network スレッド**にネットワーク呼び出しを開始させる（DNS 解決・TLS 接続はここ）。サーバリダイレクト（HTTP 301 等）を受け取ると network スレッドが UI スレッドに伝え、別 URL のリクエストが始まる。
+3. **レスポンスの読み取り**：後述の MIME スニッフィング・SafeBrowsing・CORB などのセキュリティ判定が集中する（次項）。
+4. **レンダラプロセスの先回り確保**：ネットワーク応答には数百 ms かかりうるので、UI スレッドは**ステップ 2 でネットワークリクエストを出すのと並行して、行き先が分かっている前提でレンダラプロセスを先回りして探す／起動する**。ただしクロスサイトのリダイレクトが起きると、この待機プロセスは使われず捨てられる。
+5. **コミット**：browser process から renderer process へ **IPC（プロセス間通信）** でナビゲーションをコミットし、データストリームを渡す。**このタイミングでアドレスバー・セキュリティインジケータ（鍵アイコン等）・サイト設定 UI が新しいページの情報に更新される**。あわせて**セッション履歴が更新され、タブ／セッション復元のためディスクに保存される**。
+6. **初期読み込み完了**：レンダラは**全フレームで `onload` が発火し実行が終わった後に** IPC を返し、タブのスピナー（読み込み中のくるくる）が止まる。ただし記事は「"終わった" と書いたが、**この後もクライアント側 JavaScript はリソースを読み込み、新しいビューを描画しうる**」と注意する。
+
+〔補足〕(5) で「アドレスバーとセキュリティインジケータがコミット時に更新される」という事実は、**アドレスバーの表示とページ内容のズレ**（URL なりすまし系の UI 詐称）を考えるときの前提になる。表示更新のタイミングを握っているのは、レンダラではなく特権を持つ browser process 側である。
+
+#### ナビゲーション時のセキュリティ判定
 
 Chrome 公式 part 2 は、ナビゲーション時に **セキュリティ判定が集中する**ことを示す。
 
@@ -442,7 +470,8 @@ Chrome 公式 part 2 は、ナビゲーション時に **セキュリティ判�
 - **SafeBrowsing チェック**：既知の悪性サイトに一致すれば警告ページを出す。
 - **CORB（Cross Origin Read Blocking）**：**機微なクロスサイトデータがレンダラプロセスに到達しないことを保証する**ためのチェック。
 - **`beforeunload`**：別サイトへ遷移する前に、現在のレンダラに `beforeunload` ハンドラがあるか確認する（「このサイトを離れますか?」の出所）。Chrome 公式は「無条件の `beforeunload` を付けるな（ナビゲーション前に必ず実行され、レイテンシが増える）」と警告する。遷移先が別サイトなら**新しいレンダラプロセス**が呼ばれる。
-- **Service Worker**：ネットワークプロキシをアプリコードで書く手段。**重要なのは Service Worker がレンダラプロセスで動く JavaScript であること**。登録時にスコープが保持され、ナビゲーション時に network スレッドがドメインを登録済みスコープと照合する。
+- **Service Worker**：ネットワークプロキシをアプリコードで書く手段。**重要なのは Service Worker がレンダラプロセスで動く JavaScript であること**。登録時にスコープが保持され、ナビゲーション時に network スレッドがドメインを登録済みスコープと照合する。一致すれば UI スレッドが SW コードを実行するレンダラプロセスを探す。
+  - **Navigation Preload（ナビゲーションプリロード）**：SW の起動には時間がかかるため、**SW を起動するのと並行してリソースを先に読み込む**仕組み。このときのリクエストには専用のヘッダ（`Service-Worker-Navigation-Preload`）が付くので、**サーバ側はこのヘッダを見て内容を差し替えられる**。〔補足〕SW 起動と並行取得が走るという事実は、SW の応答とプリロード応答のどちらが使われるか、というレース的な挙動の理解につながる。
 
 〔補足〕「SW はレンダラで動く JS」「スコープはナビゲーション時に照合される」という 2 点は、**XSS から Service Worker を登録できた場合、スコープ配下の通信を恒久的に掌握できる**という攻撃の前提そのものである。SW スクリプトの配置場所（スコープ制限）と `Service-Worker-Allowed` の扱いは、脆弱性ハンティングで必ず確認する項目である。
 
@@ -463,6 +492,8 @@ MDN「Populating the page」と「Critical rendering path」は、パースま�
 
 1. **プリロードスキャナ（preload scanner）**：メインスレッドが DOM を作る間に内容を先読みし、CSS / JavaScript / Web フォントといった高優先度リソースを先に要求する。原典の "speculative parsing" の現代名。Chrome 公式 part 3 は「HTML パーサが生成したトークンを覗き見して `<img>`／`<link>` を見つけたら network スレッドへ要求する」と具体化する。
 2. **CSS はレンダリングブロッキング**：MDN CRP は「**DOM 構築は逐次的（incremental）だが、CSSOM はそうではない**」と述べる。理由は「**後続の規則が先行の規則を上書きしうるため**、上書きされる予定のスタイルを画面に出してはいけない」から。だから**ブラウザは CSS をすべて処理し終えるまでレンダリングをブロックする**。教科書では「**HTML は段階的、CSS は全部揃うまで待つ**」と対比させると強い。なお CSS は HTML のパースは止めないが **JavaScript は止める**（JS が CSS の計算結果を問い合わせうるため）。
+
+〔補足〕もっとも、**CSSOM の構築そのものは非常に高速**である。MDN によれば **CSSOM 構築は速すぎて DevTools には単独の項目としては現れず**、DevTools の **"Recalculate Style"** は「CSS のパース＋CSSOM 構築＋計算済みスタイルの再帰計算」を合計した時間を表示する。MDN は「**CSSOM 生成の総時間は DNS 解決 1 回より短いことが多い**」とまで述べ、最適化の優先度が低いことを示唆する。つまり「CSS がレンダリングをブロックする」のは処理が遅いからではなく、**途中の（上書きされうる）状態を画面に出さないため**という設計上の理由である。
 3. **複数の木が並立する**：ブラウザは DOM・CSSOM に加えて**アクセシビリティツリー（AOM）**を作る。DOM の「意味的な版」で、支援技術からは変更できない。〔補足〕「DOM・CSSOM・レイアウトツリー・レイヤツリー・アクセシビリティツリー」と**同じ文書に複数の木が並ぶ**構図が重要。**サニタイズや防御は普通 DOM にしか作用しないが、ユーザが実際に知覚する内容は他の木を経由して決まる**。
 
 ### 8.7 レイアウトツリーと「DOM にないのに描画される内容」
@@ -481,18 +512,47 @@ Chrome 公式 part 3 は、原典のレイアウトを **layout tree** という
 ```
 layout tree
   → paint records（「まず背景、次にテキスト…」という描画手順のメモ）
-  → layer tree（レイヤへの分割。DevTools の "Update Layer Tree"）
-  → 各レイヤをタイルに分割
+  → layer tree（レイヤ＝別々に描いて後で重ねる層への分割。DevTools の "Update Layer Tree"）
+  → 各レイヤをタイルに分割（タイル＝レイヤを小さく切った区画）
   → ラスタスレッドがタイルをラスタライズ → GPU メモリに格納
   → コンポジタスレッドが draw quads を集める
-  → compositor frame（ページの 1 フレーム）
-  → IPC で browser process へ提出 → GPU → 画面
+       （draw quads＝「どのタイルを画面のどこに描くか」を指す
+         1 枚ぶんの描画指示片。タイル 1 つ＝おおよそ 1 quad）
+  → compositor frame（draw quads を集めたページ 1 フレームぶんのまとまり）
+  → IPC（Inter-Process Communication＝プロセス間通信）で
+     browser process へ提出 → GPU → 画面
 ```
+
+図の後半に出てくる **draw quads**（描画指示片）・**compositor frame**（1 フレームぶんの draw quads の集合）・**IPC**（プロセス間通信）は、いずれもレンダラで作った描画結果を browser process 経由で GPU に渡すための道具立てである。browser process 側では、ここに **UI スレッド由来（ブラウザ UI の変更）や他のレンダラプロセス由来（拡張機能）の compositor frame も合流しうる**。
 
 - **ラスタライズ**は情報を画面のピクセルに変える処理。素朴には「ビューポート内だけラスタライズし、スクロールで足りない分を追加」する（Chrome も初期はこうだった）。
 - **compositing** はページを複数レイヤに分け、**別々にラスタライズ**して、**コンポジタスレッドで 1 ページに合成**する技術。スクロールやアニメーションは、既にラスタ済みのレイヤを動かして合成するだけなので速い。
 - レイヤ分割のヒントには CSS の **`will-change`** を使えるが、**レイヤが過剰だとかえって遅くなる**ので計測が必須。
 - **利点はメインスレッドを介さないこと**。だから**合成だけで済むアニメーションが最もスムーズ**。レイアウトやペイントの再計算が必要になるとメインスレッドが巻き込まれる。
+
+#### なぜ 16.67ms なのか——フレーム予算
+
+多くのディスプレイは毎秒 60 回更新（60fps）である。ここから **1 フレームに使える時間はおよそ 16.67ms（＝1000ms ÷ 60）** と決まる。MDN はこれを **フレーム予算（frame budget）** とし、「**スムーズなスクロールやアニメーションのためには、スタイル計算・reflow・paint を含むメインスレッド上の全作業が 16.67ms 未満で終わらなければならない**」と述べる。この予算を超えるとフレームが落ち（jank）、カクつきとして知覚される。
+
+処理量の規模感として、MDN は **iPad（解像度 2048×1536）で 300 万（3,145,000）ピクセル超**を毎フレーム描き直す例を挙げる。これだけのピクセルを 16.67ms 以内に処理するのは重く、だからこそ前述の compositing（レイヤを別々にラスタ済みにしておき、動かすときは合成だけで済ませる）が効いてくる。
+
+#### 〔補足〕レイヤ語彙の橋渡し（原典と Chrome 公式の間）
+
+原典（2011）は「z-index / レイヤ」までしか語らず、Chrome 公式（2018）は layer tree / タイル / compositor frame を語る。その中間を埋める語彙として、kunigami の記事（下記 📌）は **DOM Element ＞ Render Object ＞ Render Layer ＞ Graphics Layer** という 4 段の対応関係を示す。
+
+- **Render Layer（レンダーレイヤ）**：要素の**重なりや半透明を正しい順序で合成するために存在する**論理的なレイヤ。1 つ以上の render object を含む。
+- **Graphics Layer（グラフィックスレイヤ）**：**GPU で実際に描画される**レイヤ。自前の graphics layer を持つ render layer をとくに **compositing layer（合成レイヤ）** と呼ぶ。
+
+この語彙は Chrome 公式 part 3 の layer tree / タイル / compositor frame の説明と地続きである。〔補足〕教科書としては **Chrome 公式 part 3 を主典拠**とし、この 4 段語彙は補助として扱うのが安全（公式ドキュメントのほうが新しく規範に近い）。
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: kunigami「Notes on how browsers work」（2015-10-09） — https://kunigami.github.io/ 上の同名記事（raw: `https://raw.githubusercontent.com/kunigami/kunigami.github.io/master/blog/_posts/2015-10-09-notes-on-how-browsers-work.md`）
+> **なぜ**: タイトルが codeburst 記事とほぼ同一だが、**同一文書である証拠はなく転載関係は未検証**である（別物として扱う）。それでも原典（2011）と Chrome 公式 4 部作（2018）の間を埋めるレイヤ語彙として有用。
+> **読みどころ**:
+> 1. レイアウトで**幅はボトムアップ（子→親）、高さはトップダウン（親→子）**で計算されるという説明（本節 1.6 と向きが逆の表現に見えるが、依存関係の見方の違い。両方の言い回しに触れておくと混乱しない）。
+> 2. **DOM Element ＞ Render Object ＞ Render Layer ＞ Graphics Layer** の 4 段対応と、render layer（重なり・半透明の合成用）／graphics layer（GPU 描画）／compositing layer の区別。
+> 3. レンダリングを **painting（graphics layer の中身を埋める）** と **compositing/drawing（graphics layer を 1 枚に合成する）** の 2 フェーズに分ける整理。
+> **代替手段**: Chrome 公式 part 3（https://developer.chrome.com/blog/inside-browser-part3 ）。こちらのほうが新しく規範に近いので、食い違うときは公式を優先する。
 
 ### 8.9 入力イベントとヒットテスト——クリックジャッキングの実装的基礎
 
@@ -504,7 +564,9 @@ Chrome 公式 part 4 は入力処理を扱う。ブラウザにとって「入�
 〔補足〕**これがクリックジャッキング／UI redressing の実装的な土台である**。ユーザの操作対象は「DOM 上の論理的な意味」ではなく「**その座標に paint records 上で最前面として存在するもの**」で決まる。だから透明なオーバーレイ、`opacity:0`、`z-index` の操作、`pointer-events` の設定が、攻撃と防御の両方の道具になる。原典 6 章（スタッキングコンテキストの描画順）と本節を繋げて教えるとよい。
 
 - **Non-Fast Scrollable Region（非高速スクロール領域）**：コンポジタは、イベントハンドラが付いた領域に印を付け、その中でイベントが起きたときだけメインスレッドへ送る。`document.body` に 1 つのハンドラを付ける「イベントデリゲーション」は、**ページ全体を非高速スクロール領域にしてしまう**。緩和は `{passive: true}`、`event.cancelable` の確認、CSS の `touch-action`。
-- **イベントの合体**：Chrome は連続イベント（`wheel` `mousemove` `touchmove` 等）を合体させ、次の `requestAnimationFrame` 直前までディスパッチを遅らせる。一方、離散イベント（`keydown` `mouseup` `touchstart` 等）は**即座にディスパッチ**する。〔補足〕この差は、入力タイミングを使った計測・自動化・レース条件を考えるときの前提になる。
+- **イベントの合体（coalescing）**：なぜ合体が要るのか。**タッチスクリーンは毎秒 60〜120 回、マウスは毎秒約 100 回イベントを届ける**のに対し、画面のリフレッシュは毎秒 60 回程度である。つまり**入力の忠実度（届く頻度）が画面更新より高い**。そこで Chrome は連続イベント（`wheel` `mousewheel` `mousemove` `pointermove` `touchmove` 等）を合体させ、次の `requestAnimationFrame` 直前までディスパッチをまとめて遅らせる。一方、離散イベント（`keydown` `keyup` `mouseup` `mousedown` `touchstart` `touchend` 等）は**即座にディスパッチ**する。
+  - フレーム間で捨てられた中間座標が必要なとき（なめらかな手書き描画など）は、**`event.getCoalescedEvents()`** で合体前の個々のイベント（座標列）を取り出せる。
+  - 〔補足〕「連続イベントは合体され rAF 直前まで遅延、離散イベントは即時」という差は、入力タイミングを使った計測・自動化・レース条件を考えるときの前提になる。
 
 ---
 
@@ -606,7 +668,10 @@ Chrome 公式 part 4 は入力処理を扱う。ブラウザにとって「入�
 - **HTML のエラー耐性は現在 WHATWG 仕様で規範化**されている（原典は「仕様外」と書いていた）。mXSS はこの現行仕様を典拠にする。
 - **`::before` の content は DOM にないのに描画される**。DOM ベースの防御には死角がある。
 - 入力処理では**ヒットテストが paint records を使い、座標の下の最前面を選ぶ**。これがクリックジャッキングの実装的基礎。
-- ナビゲーションでは MIME スニッフィング・SafeBrowsing・**CORB**・`beforeunload`・Service Worker の照合が働く。SW はレンダラで動く JS である。
+- ナビゲーションは **browser process 主導**で進み、応答を待つ間にレンダラを先回り確保し、コミット時にアドレスバー／セキュリティインジケータを更新してセッション履歴をディスクに保存し、全フレーム `onload` 後に IPC を返してスピナーを止める。
+- ナビゲーションでは MIME スニッフィング・SafeBrowsing・**CORB**・`beforeunload`・Service Worker の照合が働く。SW はレンダラで動く JS で、**Navigation Preload** は SW 起動と並行取得を行う。
+- なめらかな描画には **16.67ms のフレーム予算**（60fps）を守る必要があり、iPad(2048×1536)＝300 万ピクセル超を毎フレーム描き直すのは重い。だから合成（compositing）が効く。
+- **TTFB は「サーバが返し始めた速さ」、TTI は「ユーザが触れるようになった時点（FCP 後＋操作に 50ms 以内で応答）」**で、別物である。
 - 差分マップを使い、「古典として読む部分」と「現代の公式で更新する部分」を分けて書くこと。
 
 ---
@@ -643,6 +708,15 @@ Chrome 公式 part 4 は入力処理を扱う。ブラウザにとって「入�
 10. `p::before { content: "Hi!" }` の content は DOM に存在するか。それは防御上どんな死角を生むか。
     ▶ 答え：DOM には存在しない（`querySelectorAll` 等では見えない）が、layout tree には載り画面に描画される。DOM を走査する防御やサニタイザは、ユーザが実際に見る内容を完全に把握できない。
 
+11. ナビゲーションは browser process 主導で進む。(a) レンダラプロセスはいつ確保されるか、(b) コミット時に何が更新されるか、を答えよ。
+    ▶ 答え：(a) ネットワークリクエストを出すのと**並行して先回りで**確保される（クロスサイトのリダイレクトが起きると捨てられる）。(b) アドレスバー・セキュリティインジケータ・サイト設定 UI が新ページの情報に更新され、セッション履歴がディスクに保存される。
+
+12. なめらかなスクロール／アニメーションのためにメインスレッド作業が収まるべき時間は何 ms か。その数字の根拠は何か。
+    ▶ 答え：約 16.67ms。多くのディスプレイが 60fps（毎秒 60 回更新）で、1000ms ÷ 60 ≒ 16.67ms が 1 フレームの予算になるため。
+
+13. 連続イベントと離散イベントの扱いはどう違うか。フレーム間の中間座標を取る API は何か。
+    ▶ 答え：連続イベント（`mousemove` `touchmove` 等）は合体され次の `requestAnimationFrame` 直前までまとめて遅延、離散イベント（`keydown` `mouseup` 等）は即時ディスパッチ。中間座標は `event.getCoalescedEvents()` で取得できる。
+
 ---
 
 ## 出典
@@ -654,9 +728,11 @@ Chrome 公式 part 4 は入力処理を扱う。ブラウザにとって「入�
 - Chrome 公式 “Inside look at modern web browser” part 1〜4（Mariko Kosaka, 2018）: https://developer.chrome.com/blog/inside-browser-part1
 - WHATWG HTML Standard「エラー処理入門」: https://html.spec.whatwg.org/multipage/parsing.html#an-introduction-to-error-handling-and-strange-cases-in-the-parser
 - WHATWG HTML Standard「パースモデル概観」: https://html.spec.whatwg.org/multipage/parsing.html#overview-of-the-parsing-model
+- kunigami, “Notes on how browsers work”（2015-10-09・同名の別記事、関係は未検証）: https://kunigami.github.io/
 - 元記事（取得不能）: https://codeburst.io/how-browsers-work-6350a4234634
 
 <!-- self-read: https://codeburst.io/how-browsers-work-6350a4234634 | エグレス許可リストで codeburst.io/medium.com への接続が組織ポリシー拒否され本文を1文字も取得できず。原典と公式資料で代替 -->
+<!-- self-read: https://kunigami.github.io/ | codeburst記事と同名だが同一文書か未検証の別記事。原典(2011)とChrome公式(2018)の間を埋めるレイヤ語彙(DOM Element>Render Object>Render Layer>Graphics Layer)として読者に一次確認を促す -->
 
-<!-- sources: https://codeburst.io/how-browsers-work-6350a4234634, https://raw.githubusercontent.com/webplatform/docs/HEAD/concepts/Internet_and_Web/how_browsers_work/index.md, https://raw.githubusercontent.com/vasanthk/how-web-works/HEAD/README.md, https://developer.mozilla.org/en-US/docs/Web/Performance/Guides/How_browsers_work, https://developer.mozilla.org/en-US/docs/Web/Performance/Guides/Critical_rendering_path, https://developer.chrome.com/blog/inside-browser-part1, https://html.spec.whatwg.org/multipage/parsing.html#an-introduction-to-error-handling-and-strange-cases-in-the-parser, https://html.spec.whatwg.org/multipage/parsing.html#overview-of-the-parsing-model -->
-<!-- terms: レイアウト, リフロー, ダーティビット, 増分レイアウト, グローバルレイアウト, 同期レイアウト, レイアウトスラッシング, ペイント, スタッキングコンテキスト, z-index, ボックスモデル, ポジショニング方式, イベントループ, ビューポート, Site Isolation, コンポジタスレッド, ラスタスレッド, compositing, layout tree, layer tree, paint records, ヒットテスト, preload scanner, CORB, MIMEスニッフィング, Service Worker, クリックジャッキング, UIredressing, タイミング副チャネル, アクセシビリティツリー, TTFB, TCPスロースタート, WHATWG HTML Standard -->
+<!-- sources: https://codeburst.io/how-browsers-work-6350a4234634, https://raw.githubusercontent.com/webplatform/docs/HEAD/concepts/Internet_and_Web/how_browsers_work/index.md, https://raw.githubusercontent.com/vasanthk/how-web-works/HEAD/README.md, https://developer.mozilla.org/en-US/docs/Web/Performance/Guides/How_browsers_work, https://developer.mozilla.org/en-US/docs/Web/Performance/Guides/Critical_rendering_path, https://developer.chrome.com/blog/inside-browser-part1, https://html.spec.whatwg.org/multipage/parsing.html#an-introduction-to-error-handling-and-strange-cases-in-the-parser, https://html.spec.whatwg.org/multipage/parsing.html#overview-of-the-parsing-model, https://kunigami.github.io/ -->
+<!-- terms: レイアウト, リフロー, ダーティビット, 増分レイアウト, グローバルレイアウト, 同期レイアウト, レイアウトスラッシング, 置換要素, ペイント, スタッキングコンテキスト, z-index, ボックスモデル, ポジショニング方式, イベントループ, ビューポート, Site Isolation, Servicification, コンポジタスレッド, ラスタスレッド, compositing, フレーム予算, layout tree, layer tree, paint records, draw quads, compositor frame, IPC, Render Layer, Graphics Layer, ヒットテスト, preload scanner, CORB, MIMEスニッフィング, Service Worker, Navigation Preload, getCoalescedEvents, クリックジャッキング, UIredressing, タイミング副チャネル, アクセシビリティツリー, CSSOM, TTFB, TTI, TCPスロースタート, WHATWG HTML Standard -->

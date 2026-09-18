@@ -590,13 +590,21 @@ print(result.stdout)
 
 ### 5.1 インストールと基本的な使い方（原文逐語）
 
+ドキュメントはnpm / yarn / pnpmの3つのパッケージマネージャの逐語コマンドを載せている。CLI節（4.1）と同じく、どれを使ってもよい。
+
 ```bash
 npm install webcrack@latest
 ```
 
 ```bash
+yarn add webcrack@latest
+```
+
+```bash
 pnpm add webcrack@latest --allow-build=isolated-vm
 ```
+
+なお`--allow-build=isolated-vm`はpnpmの例にのみ付いている。これはpnpmがネイティブアドオンのビルドをデフォルトでブロックするためで、`isolated-vm`（後述するサンドボックス実行に使うネイティブモジュール）のビルドを明示的に許可する意味である。npm / yarnではこのフラグは不要である。
 
 基本形。`webcrack()`は非同期関数で、`result.code`に結果が入る。
 
@@ -779,7 +787,10 @@ export interface WebcrackResult {
 ```text
 The `sandbox` option has to be passed when trying to deobfuscate string arrays in a browser.
 It is an (optionally async) function that takes a `code` parameter and returns the evaluated value.
+In future versions, this should hopefully not be necessary anymore.
 ```
+
+〔補足〕原文の最後の一文（`In future versions, this should hopefully not be necessary anymore.`）は、「将来のバージョンでは、この`sandbox`指定はおそらく不要になる見込み」という意味である。つまりブラウザでの`sandbox`必須は現時点の制約であり、恒久的な仕様ではない。読者が使うバージョンによっては挙動が変わりうる点に留意する。
 
 最も単純な実装は`eval`をそのまま渡すこと。ただし原文はCAUTIONブロックで強く警告している。
 
@@ -976,7 +987,7 @@ console.log(result.code); // 'b();'
 > 1. visitorの書き方（`enter` / `exit`）
 > 2. `path.replaceWith` / `path.remove` / `path.scope`
 > 3. `@babel/types`のビルダとバリデータ
-> 4. スコープとバインディングの扱い
+> 4. スコープとバインディングの扱い（webcrackの`renameFast` / `generateUid`の背景。変数リネームや一意な識別子生成がなぜ安全に行えるかがここで理解できる）
 > **代替手段**: なし
 
 ---
@@ -1009,9 +1020,31 @@ console.log(result.code); // 'b();'
         errorRecovery: true,
         plugins: ['jsx'],
       });
+      if (ast.errors?.length) {
+        debug('webcrack:parse')('Recovered from parse errors', ast.errors);
+      }
 ```
 
-### 6.3 実行順まとめ（教科書向け）
+パース時にエラーがあっても`errorRecovery: true`で解析は続行されるが、そのとき`ast.errors`に回復したエラーが溜まる。上のコードはそれが存在する場合に`debug('webcrack:parse')`で回復ログを出す。`debug`は環境変数`DEBUG`で有効化される定番のデバッグ出力ライブラリで、`DEBUG=webcrack:parse`を付けて実行するとどこで構文が壊れていたかを追える。断片的なスクリプトを扱うときの手掛かりになる。
+
+### 6.3 prepareステージ — なぜ`removeNodeFields`を別traverseで走らせるか
+
+prepareステージは、後段の解析を軽く速くするための下ごしらえを行う。その先頭で呼ばれる`removeNodeFields`について、ソースには設計意図のコメントが逐語で付いている。
+
+```ts
+      // Separate traverseFast is ~4x faster than running it within the merged prepare visitor.
+      // This introduces some initial performance overhead, but reduces the memory usage of each AST node by half,
+      removeNodeFields(ast);
+      applyTransforms(
+        ast,
+        [blockStatements, sequence, splitVariableDeclarations],
+        { name: 'prepare' },
+      );
+```
+
+コメントの意味はこうである。`removeNodeFields`はASTの各ノードから不要なフィールドを削り落とす処理で、これを他のprepare変換とまとめた1つのvisitorで走らせるのではなく、専用の高速走査（`traverseFast`）で単独実行している。理由は2つ。①`traverseFast`で単独に回すほうが約4倍速い、②最初に少しオーバーヘッドが増えるが、以降ASTノード1つあたりのメモリ使用量が半減する。つまり大きなバンドルでもヒープを節約しながら解析するための最適化である。前述のHeap Out Of Memory（8.3）とも関係する。
+
+### 6.4 実行順まとめ（教科書向け）
 
 パイプライン全体を表にすると次のとおり。プラグインの差し込み点も併記する。
 
@@ -1107,7 +1140,13 @@ Use this only if you don't mind netlify or corsproxy.io seeing the code/url, oth
 - Segmentation fault
 ```
 
-これらは、使っているNode.jsバージョンが`isolated-vm`パッケージと非互換なときに起きる。webcrackインストール後にNodeをアップグレードしても発生する。対処は`npm rebuild isolated-vm`を実行するか、`node_modules/isolated-vm`ディレクトリを削除して`npm install`し直すこと。
+`undefined symbol`の`...`部分には、実機では次のような具体的なC++シンボル名が入る（ドキュメントの例を逐語）。実際に同じメッセージが出たか照合する手掛かりになる。
+
+```text
+isolated_vm.node: undefined symbol: _ZNK2v815ValueSerializer8Delegate20SupportsSharedValuesEv
+```
+
+これは、V8（Node.jsのJavaScriptエンジン）の内部シンボルで、Nodeのバージョンが変わるとこの名前や有無が変わる。だからNode本体と`isolated-vm`のビルドがずれると「そんなシンボルは無い」というエラーになる。これらは、使っているNode.jsバージョンが`isolated-vm`パッケージと非互換なときに起きる。webcrackインストール後にNodeをアップグレードしても発生する。対処は`npm rebuild isolated-vm`を実行するか、`node_modules/isolated-vm`ディレクトリを削除して`npm install`し直すこと。
 
 Node 20.x以上ではsnapshot無効化が必要な場合がある（逐語）。
 
@@ -1138,11 +1177,21 @@ pnpm 10以降が既定でpostinstallスクリプトを実行しないために�
 FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory
 ```
 
-大きなバンドルでヒープが足りないときに起きる。`--max-old-space-size`フラグでヒープ上限を増やす。
+大きなバンドルでヒープが足りないときに起きる。`--max-old-space-size`フラグでヒープ上限を増やす（この例では8192MB＝8GB）。ドキュメントはWindows / Linux・Mac / node実行の3バリアントを逐語で載せている。環境に合わせて選ぶ。
+
+Windows（コマンドプロンプト。`set`で環境変数を設定してから実行する）:
+
+```sh
+set NODE_OPTIONS=--max-old-space-size=8192 && webcrack bundle.js
+```
+
+Linux / Mac（環境変数を同じ行の先頭に置く）:
 
 ```sh
 NODE_OPTIONS="--max-old-space-size=8192" webcrack bundle.js
 ```
+
+Node.jsスクリプトとして直接実行する場合（`node`に直接フラグを渡す）:
 
 ```sh
 node --max-old-space-size=8192 your-script.js
@@ -1155,17 +1204,24 @@ If this appears in your code, the deobfuscator failed to decode a string from th
 This can happen in forked javascript-obfuscator versions or when `Dead Code Injection` is enabled.
 ```
 
-出力に`__DECODE_0__`が残っていたら、文字列配列からの復号に失敗している。javascript-obfuscatorのフォーク版、またはDead Code Injection（ダミーコード注入）が有効なときに起きる。この場合はissueを報告する。
+出力に`__DECODE_0__`が残っていたら、文字列配列からの復号に失敗している。javascript-obfuscatorのフォーク版、またはDead Code Injection（ダミーコード注入）が有効なときに起きる。この場合はwebcrackにissueを報告する。ドキュメントはバグ報告テンプレート付きのissue作成URLを逐語で案内している。
+
+```text
+Open an issue if you encounter this.
+https://github.com/j4k0xb/webcrack/issues/new?assignees=&labels=bug&projects=&template=bug_report.yml
+```
+
+このURLにはあらかじめ`labels=bug`とバグ報告用テンプレート（`bug_report.yml`）が指定されているので、開くと報告フォームがそのまま表示される。再現できるサンプルコードを添えると開発者が対処しやすい。
 
 ### 8.5 エラー対処の一覧表
 
 | 症状 | 原因 | 対処（原文コマンド） |
 | --- | --- | --- |
-| `isolated_vm.node: undefined symbol` / `ERR_DLOPEN_FAILED` / `Segmentation fault` | Nodeバージョンとisolated-vmのABI非互換 | `npm rebuild isolated-vm`、または`node_modules/isolated-vm`削除→`npm install` |
+| `isolated_vm.node: undefined symbol: _ZNK2v8...` / `ERR_DLOPEN_FAILED` / `Segmentation fault` | Nodeバージョンとisolated-vmのABI非互換 | `npm rebuild isolated-vm`、または`node_modules/isolated-vm`削除→`npm install` |
 | 同上（Node 20.x以上） | snapshot機能との衝突 | `NODE_OPTIONS=--no-node-snapshot webcrack input.js` |
 | `Error: Cannot find module './out/isolated_vm'` | pnpm 10以降が既定でpostinstallを実行しない | `--allow-build=isolated-vm --force`を付ける |
 | `FATAL ERROR: Ineffective mark-compacts near heap limit` | 大きなバンドルでヒープ不足 | `NODE_OPTIONS="--max-old-space-size=8192" webcrack bundle.js` |
-| 出力に`__DECODE_0__`が残る | 文字列配列のデコード失敗（フォーク版/Dead Code Injection） | issueを報告する |
+| 出力に`__DECODE_0__`が残る | 文字列配列のデコード失敗（フォーク版/Dead Code Injection） | `issues/new?...&template=bug_report.yml`のURLからissueを報告する |
 
 ---
 
@@ -1225,7 +1281,7 @@ obfuscator.ioで保護された広告/計測/スキマー系スクリプトは�
 
 ## 手を動かす
 
-1. **インストール**: Node.js 22または24を用意し、`npm install -g webcrack@latest`を実行する（pnpmなら`pnpm add -g webcrack@latest --allow-build=isolated-vm`）。
+1. **インストール**: Node.js 22または24（および将来の偶数系26系）を用意し、`npm install -g webcrack@latest`を実行する（pnpmなら`pnpm add -g webcrack@latest --allow-build=isolated-vm`）。対応バージョンは`package.json`の`engines`フィールド（`">=22.0.0 <23 || >=24.0.0 <25 || >=26.0.0 <27"`）が正で、README準拠なら偶数系メジャーが対象になる。奇数系は避ける。
 2. **1行で試す**: `echo "const a = 1+1;" | webcrack` を実行し、`const a = 2;`と表示されることを確認する。
 3. **難読化サンプルの解除**: obfuscator.ioで自分の書いた小さなJSを難読化してファイルに保存し、`webcrack obf.js > clean.js`で復元。`clean.js`を開いて文字列が平文に戻っているか確認する。
 4. **バンドルの展開**: webpackで作った`bundle.js`を用意し、`webcrack bundle.js -o out`を実行。`out/bundle.json`で`type`と`entryId`を、`out/index.js`と`out/1.js`などでモジュール本体を確認する。
@@ -1251,7 +1307,7 @@ await result.save('output-dir');
 
 - `-f/--force`は指定した出力ディレクトリを丸ごと削除する。既存の作業ディレクトリを`-o`に指定してはいけない。
 - ログはstderr、コードはstdoutに分かれる。`webcrack input.js > output.js`ではログは画面に残り、コードだけがファイルへ行く。これは仕様。
-- Nodeの奇数系メジャーバージョンは`isolated-vm`のABIが壊れやすく非推奨。エラーが出たら偶数系（22/24）に切り替える。
+- Nodeの奇数系メジャーバージョンは`isolated-vm`のABIが壊れやすく非推奨。エラーが出たら偶数系（22/24、および`engines`が許可する26系）に切り替える。対応範囲は`package.json`の`engines`フィールド（`">=22.0.0 <23 || >=24.0.0 <25 || >=26.0.0 <27"`）が正なので、26などの新しい偶数系を非対応と早合点しないこと。
 - JSX復元はReactの**UMDビルド**のみ。バンドル済みで`React`がローカル変数化しているコードでは効かない。
 - webpackの**マルチチャンク**は未対応。本体だけ展開しても遅延読み込みチャンクは別途取得が必要。
 - 出力に`__DECODE_0__`が残っていたら復号失敗のサイン。フォーク版obfuscatorやDead Code Injectionが原因。

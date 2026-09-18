@@ -372,14 +372,89 @@ JavaScript reconは、より大きな「総合recon」の一分野である。�
 
 | 分野 | 主なツール（実在） |
 |---|---|
-| (a) サブドメイン列挙 | `amass -passive` / `subfinder` / `assetfinder` / `findomain` / crt.sh / `puredns`（massdnsラッパ）/ `dnsx` / `shuffledns` / `gotator`・`dnsgen`・`altdns`（パーミュテーション）/ `httpx`（生存確認）/ `anew`（差分蓄積） |
-| (b) ポートスキャン | `naabu` / `masscan`（高速発見）/ `nmap -sV`（サービス特定）→ `httpx` で再確認 |
+| (a) サブドメイン列挙 | `amass enum -passive` / `subfinder` / `assetfinder` / `findomain` / crt.sh / `puredns`（massdnsラッパ）/ `dnsx` / `shuffledns` / `gotator`・`dnsgen`・`altdns`（パーミュテーション）/ `httpx`（生存確認）/ `anew`（差分蓄積） |
+| (b) ポートスキャン | `naabu` / `masscan`（高速発見）/ `nmap -sV`（サービス特定）→ `httpx` で再確認 / `ffuf -H 'Host: FUZZ.target.com'`・`gobuster vhost`（VHOST列挙） |
 | (c) コンテンツ発見 | `ffuf` / `feroxbuster` / `gobuster` / `dirsearch` / `gau`・`waybackurls`・`katana`・`gospider`・`hakrawler`（過去URL・クロール）/ `paramspider`・`arjun`・`x8`（パラメータ発見）/ SecLists・assetnote wordlists |
 | (d) GitHub dork | `org:`/`filename:`/`extension:` qualifier / `github-search`・`trufflehog`・`gitleaks`・`gitrob`・`git-hound`。目的は漏洩APIキー・認証情報・内部ホスト名・S3バケット |
 | (e) JS解析 | `subjs`・`getJS`・`gau|grep .js`（収集）/ `LinkFinder`・`xnLinkFinder`・`katana -jc`（抽出）/ `SecretFinder`・`trufflehog`・`mantra`（シークレット）/ `js-beautify`（整形）/ `innerHTML`/`document.write`/`eval`/`postMessage` の grep（危険シンク） |
-| (f) 通知・自動化 | `notify`（Slack/Discord/Telegram/webhook）/ `anew`（新規行のみ）＋ `cron`/GitHub Actions で定期実行 → 新規サブドメイン・新規JS・JS内容変化を検知 |
+| (g) 技術フィンガープリント | `whatweb -a3` / Wappalyzer（`wappalyzer-next`）/ `httpx -tech-detect` / Cookie名でのスタック判別（`PHPSESSID`/`JSESSIONID`/`ASP.NET_SessionId`/`laravel_session`）/ WAF検知 `wafw00f` / CMSスキャナ `wpscan`・`joomscan`・`droopescan`・`CMSeeK` |
+| (f) 通知・自動化 | エンドツーエンド枠組 `reconftw`・`osmedeus`・`reNgine`・`BBOT`（再帰）/ マップ後 `nuclei -t exposures/,misconfiguration/` / `notify`（Slack/Discord/Telegram/webhook）/ `anew`（新規行のみ）＋ `cron`/GitHub Actions で定期実行 → 新規サブドメイン・新規JS・JS内容変化を検知（下記 6.5 で詳説） |
 
-### 6.2 判明している事実（源泉調査から／捏造なし）
+### 6.2 スコープ確定・資産発見 ― 総合reconの「最初の前段」
+
+〔補足・二次情報（出典: `dylanzonix/ambit`）〕サブドメイン列挙より前に、**そもそもどこまでが対象なのか**を確定させ、対象組織の保有資産を洗い出す段がある。これは §1.3 で述べた「スコープ内資産の中で検証する」という原則を、recon の起点として具体化するものである。
+
+- **スコープ確認を最初に**: HackerOne/Bugcrowd のスコープ定義を `bounty-targets-data`（各プログラムのin-scope一覧をまとめた公開データ）や `chaos-data.projectdiscovery.io` から取得し、**in-scope のホスト/IP/ワイルドカードのみ**触る。ここを外すと規約違反になる。
+- **ASN発見**（ASN＝Autonomous System Number, 組織が保有するIPアドレス群の識別番号）: `whois -h whois.radb.net`、bgp.he.net、`amass intel -asn <ASN>` で組織保有CIDR（IPアドレス範囲）を把握する。
+- **Reverse WHOIS**（逆引きWHOIS＝登録者情報から同一組織の別ドメインを探す手法）: ViewDNS / Whoxy（`whoxyrm`）で、登録者メールや組織名から兄弟apexドメイン（同じ組織が持つ別の最上位ドメイン）を発見する。
+- `nmap -sL <CIDR>` でPTR（逆引きDNS）を列挙（プローブは投げない）。CDNとオリジンの範囲分類は `kaeferjaeger.gay` のCDNリスト＋`cdncheck`/`mapcidr`。
+- **資産検索エンジン横断**: Shodan/Censys/ZoomEye/FOFA（`fofax`）/Netlas/FullHunt/SecurityTrails を `uncover`（複数エンジンを一括で叩くラッパ）でピボット（ある手掛かりから別の資産へ辿ること）する。コード検索 `publicwww.com`/NerdyData/grep.app では、解析ID・APIキー・固有文字列から他ホストやリポジトリを芋づる式に発見できる。
+
+### 6.3 サブドメイン列挙の主要成果物 ― dangling record とテイクオーバー
+
+〔二次情報（出典: `dylanzonix/ambit`）〕サブドメイン列挙は §6.1(a) のツールをパッシブ→アクティブの順に回すのが基本だが、その**成果物として直接ひとつの脆弱性クラスに繋がる**ものがある。それがDNSレコード検査から見つかる **dangling record（宙ぶらりんのレコード）** である。
+
+各サブドメインのDNSレコード（CNAME/SPF/MX/TXT/DMARC）を `dig any` などで検査すると、たとえば CNAME が「すでに解約されたクラウドサービスのホスト名」を指したまま残っていることがある。これが dangling record で、**サブドメインテイクオーバー**（Subdomain Takeover＝攻撃者がその指し先サービスを自分の名前で取り直し、対象のサブドメイン上に任意コンテンツを載せる攻撃）の糸口になる。列挙して終わりにせず、レコードの指し先が生きているかまで確認するのが要点である。
+
+### 6.4 技術フィンガープリント ― 相手のスタックを特定する
+
+〔二次情報（出典: `dylanzonix/ambit`。WSTG-INFO-02/08/09/10 に対応）〕技術フィンガープリント（technology fingerprinting＝対象がどのサーバ・言語・フレームワーク・CMSで動いているかを推定すること）は、後続のコンテンツ発見や既知脆弱性の当たりを付けるための土台になる。
+
+- **バナー/ヘッダ**: `Server` / `X-Powered-By` / `X-AspNet-Version` / `X-Generator` / `Via` / `X-Runtime` を `curl -sI` で確認。ヘッダの順序・大文字小文字・空白の癖や既定エラーページの見た目でも Apache / nginx / IIS を識別できる。
+- **自動判別**: `whatweb -a3`、Wappalyzer（`wappalyzer-next`）、`httpx -tech-detect`、`chameleon`。
+- **Cookie名でのスタック判別**: セッションCookieの名前は言語・フレームワークごとに既定値がある。次が代表例。
+
+| Cookie名 | 推定されるスタック |
+|---|---|
+| `PHPSESSID` | PHP |
+| `JSESSIONID` | Java（サーブレット/JSP） |
+| `ASP.NET_SessionId` | ASP.NET |
+| `laravel_session` | Laravel（PHPフレームワーク） |
+
+- **既定パス**: スタック別の既定パス（`/wp-login.php`, `/administrator`, `/actuator`, `/_next/`）の存在で製品を推定。
+- **CMSスキャナ**: `wpscan`（WordPress）/ `joomscan`（Joomla）/ `droopescan`（Drupal）/ `CMSeeK`。
+- **WAF検知**（WAF＝Web Application Firewall, 攻撃リクエストを遮断する防御機構）: `wafw00f` / `nmap --script http-waf-detect` でWAFの有無・種類を推定する。
+
+### 6.5 通知・自動化・継続recon ― 総合reconの肝
+
+〔二次情報（出典: `dylanzonix/ambit`）＋一般知識〕総合reconで最も価値を生むのは、一度きりで終わらせず **差分を継続的に検知する** 仕組みである。
+
+**エンドツーエンドのreconフレームワーク**（列挙〜httpx〜JS抽出〜通知を丸ごと束ねる自動化基盤）としては `reconftw` / `osmedeus` / `reNgine` / `BBOT`（再帰的に資産を辿る）がある。個別ツールを自分でパイプするのに慣れたら、これらで全体を回すと抜けが減る。
+
+マップし終えた資産には `nuclei -t exposures/,misconfiguration/`（既知の露出・設定ミスをテンプレートで一括検査するスキャナ）をかけ、低コストで拾える露出を洗う。
+
+差分監視の**具体的な検知対象と用途**は次のとおり。ここが「継続recon」の中身である。
+
+| 検知する差分 | 使うもの | 何に使うか |
+|---|---|---|
+| 新規サブドメイン | `subfinder`→`anew`＋cron/CI | 新しい攻撃面が生えた瞬間に触りにいく |
+| 新規JSファイル | `gau|grep .js`→`anew` | 新機能・新エンドポイントの手掛かり |
+| JS内容の変化 | `allJsToJson.py` が保存する `content` を定期取得しdiff | 追加されたエンドポイント・シークルットを捕捉 |
+
+`anew`（新規行のみ追記するツール）で差分だけを抽出し、`notify`（Slack/Discord/Telegram/webhook へ結果を送るツール）でアラートを飛ばす。JS内容の差分については、§5.2 の `allJsToJson.py` が本文（`content`）ごと保存している点を思い出してほしい。この保存済み `content` こそが、前回と今回を突き合わせる **diff の素材** になる。
+
+**OOB（Out-Of-Band）基盤の事前準備**（OOB＝リクエストの応答本文ではなく、外部への通信の有無で脆弱性を判定する手法）: SSRFやブラインド系の検証に備え、`interactsh` / Burp Collaborator / `ceye.io` / `canarytokens` を監査の**前に**用意しておく。
+
+**カバレッジ台帳**: `(identity, host, endpoint, param)` の組でマップ済み/未テストを管理し、recon がどこまで飽和したかを判定する。「未マップの面こそバグが潜む」（§1.2）を運用に落とす仕組みである。
+
+### 6.6 クラウド/ストレージ/VCS露出
+
+〔二次情報（出典: `dylanzonix/ambit`）〕GitHub dork（§6.1(d)）を、クラウドストレージやバージョン管理システム（VCS＝Gitなどソース履歴を管理する仕組み）の露出まで広げる分野である。
+
+- **`.git` 露出**: `/.git/HEAD`・`/.git/config` が見えたら `git-dumper`/`GitTools` で全ソース＋履歴＋シークレットを復元できる。他に `/.svn/entries`、`/.env`、`/config.json`、`/web.config`、`/.DS_Store`。
+- **S3/GCS/Azureバケット推測**（バケット＝クラウド上のオブジェクトストレージの入れ物）: `cloud_enum -k <keyword>`、`bucket-stream`、`buckets.grayhatwarfare.com`（公開バケットの検索サービス）、`aws s3 ls s3://bucket --no-sign-request`（認証なしで中身が見えれば権限設定ミス）。JS/HTML中のバケット名を `s3.amazonaws.com` / `.blob.core.windows.net` / `storage.googleapis.com` でgrepする。
+- **依存混乱**（dependency confusion＝社内向けの非公開パッケージ名と同名のものを公開レジストリに置き、ビルドに紛れ込ませる攻撃）: `confused` / `nodep` で候補を洗う。
+- **クラウドIMDS SSRF**（IMDS＝クラウドVMのメタデータサービス。`169.254.169.254` に置かれ、SSRFで叩くと一時認証情報が漏れうる）: 標的メモとして `169.254.169.254` を控えておく。
+
+### 6.7 防御シグナル ― recon中に記録すべき兆候
+
+〔二次情報（出典: `dylanzonix/ambit`）〕recon は攻撃面を広げるだけでなく、**相手の防御の癖**を観測する場でもある。次の兆候は独立して記録する価値がある。
+
+- **ワイルドカードDNS/ソフト404**（ソフト404＝存在しないページなのにHTTP 200を返す挙動）: ランダムなパスでベースラインを1回取得し、サイズ/ハッシュでフィルタする。ステータスコードだけを判定基準にしない。
+- **攻撃的WAF/レート制限（403/429）**: スロットリング（速度を落とす）やUA/IP回転で回避を検討しつつ、**パス正規化のギャップ**を突く。同じ `/admin` でもサーバやWAFの正規化のズレで通ることがある。例: `//admin`, `/./admin`, `/%2e/admin`, `/Admin`, 末尾に `%20`/`%09`/`;` を付ける。
+- `Server`/バージョンヘッダを消し、CSPを付け、ソースマップを出していない対象は**成熟している**と読める。その場合は挙動のフィンガープリントやID別のレスポンスdiffに頼る。
+
+### 6.8 判明している事実（源泉調査から／捏造なし）
 
 サイト `chs.us` の著者は Carl Sampson（ハンドル @chs, GitHub `sampsonc`, 連絡先 chs@chs.us）。Burp拡張（AuthHeaderUpdater, HeaderUpdater, PassiveSearch, Perfmon など）や `PwnedCheck`、`csp_toolkit` を公開しているAppSec研究者である。`chs.us/guides/` 配下には recon 以外に ssrf, csrf, authentication, business-logic-flaws, idor, fuzzing, mobile, supply-chain, authz などの体系的ガイドが2026年時点で存在する（他リポジトリからの参照リンクで確認）。著者本人の2026年プロジェクト `sampsonc/vulnlab.dev` の記述から、これらは「著者による hands-on（実践的）ガイド群で、少なくともSSRFガイドは著者の演習ラボの土台」であることが裏付けられている。
 

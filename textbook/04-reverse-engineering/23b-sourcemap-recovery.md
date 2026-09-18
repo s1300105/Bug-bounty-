@@ -225,8 +225,8 @@ export default {
 | --- | --- | --- |
 | `inline-` | source map を別ファイルにせず元ファイルにインライン化する | **`.map` ファイルが存在しない**。バンドル本体に `data:` URI で埋まる。`.map` を GET して 404 でも安心できない決定的理由 |
 | `hidden-` | source map への参照を付けない（デプロイはしないがエラー報告目的で生成はしたい場合） | `sourceMappingURL` コメントが**無い**だけ。`.map` は生成されるので**URL 推測で取れる**。「隠す」機能ではない |
-| `eval-` | モジュールごとに SourceMap を生成し `eval` 経由で添付する（開発向け推奨） | **開発専用**。本番に出ていれば「dev ビルドが本番にある」明確な所見 |
-| `nosources-` | source code を SourceMap に含めない | **`sourcesContent` が無い**。原本は取れないが**ファイル名と構造は漏れる** |
+| `eval-` | モジュールごとに SourceMap を生成し `eval` 経由で添付する（リビルド性能が改善するため開発向け推奨。なお Windows Defender の問題でウイルススキャンによる大幅な低下が起きる点に注意） | **開発専用**。本番に出ていれば「dev ビルドが本番にある」明確な所見 |
+| `nosources-` | source code を SourceMap に含めない（元ファイルを参照させたい場合に有用。さらに設定が必要） | **`sourcesContent` が無い**。原本は取れないが**ファイル名と構造は漏れる** |
 | `cheap-` | column マッピングを持たない | 漏洩の質には影響しない（位置精度のみ） |
 | `cheap-module-` | loader の Source Map を 1 行 1 マッピングに簡約する | 同上 |
 | `-debugids` | パターン中にのみ登場する新しいサフィックス | 同上 |
@@ -261,7 +261,7 @@ export default {
 | `bundled code` | 生成コード全体が 1 つの大きな塊として見える | バンドルそのまま（map 無し） |
 | `generated code` | 各モジュールが分離され、webpack 変換後のコードが見える | webpack 変換後 |
 | `transformed code` | webpack 変換前・Loader トランスパイル後のコードが見える | トランスパイル後（TS の型は消えている） |
-| `original source` | **各モジュールが分離され、トランスパイル前の、あなたが書いたままのコードが見える** | **原本（TS/JSX/Vue SFC のまま）← 本命** |
+| `original source` | **各モジュールが分離され、モジュール名が注記され、トランスパイル前の、あなたが書いたままのコードが見える**（Loader の対応に依存する） | **原本（TS/JSX/Vue SFC のまま）← 本命** |
 | `without source content` | ソース内容は含まれない | 内容なし（`nosources-*`） |
 | `(lines only)` | 1 行 1 マッピングに簡約 | 位置精度のみ低下 |
 
@@ -286,7 +286,7 @@ DeepWiki（自動生成ウィキ）は取得できなかったが、原典リポ
 
 ### 4.1 sourcemapper の年表（全 40 コミット、2018-09-07 〜 2026-07-24）
 
-HEAD は `f739bd5`（2026-07-24）。**タグ／リリースは 1 つも打たれていない**ので、`go install ...@latest` は常に main HEAD を取る。診断で使うなら**コミットハッシュを記録せよ**（バージョン番号で固定できない）。
+HEAD は `f739bd5`（完全ハッシュ `f739bd5dd266b0d0e2cfa17c0a132f79bd9a5ba9`、コミット日時 2026-07-24 21:12:36 +1200）。**タグ／リリースは 1 つも打たれていない**（`git tag -l` が空）ので、`go install ...@latest` は常に main HEAD を取る。診断で使うなら**コミットハッシュを記録せよ**（バージョン番号で固定できない）。記録するときは短縮ハッシュではなく、上記のような完全ハッシュを残しておくと後で再現・照合しやすい。
 
 セキュリティ・機能上の主要コミット（逐語メッセージ付き）。
 
@@ -297,11 +297,15 @@ HEAD は `f739bd5`（2026-07-24）。**タグ／リリースは 1 つも打た�
 | 2019-07-31 | `23ac2f5` | DoI | `Added link to sourcemapper post` | README に pulsesecurity 記事リンク追加 |
 | **2020-05-27** | **`eee1d1a`** | **parsiya** | `Added a few features...` | **`path.Join`→`filepath.Join` + Windows サニタイズ** |
 | 2020-06-24 | `d396eef` | DoI | **`...Folders on *nix were created with mode 000`** | **パーミッションのバグ修正** |
+| 2020-12-19 | `7468a04` | R3zk0n | `Added Cookie parameter` | **`-header` の前身**。まず Cookie 専用の認証対応が入った（Cookie 専用 → 汎用への物語の起点） |
 | 2020-12-21 | `0308323` | DoI | `Add multi-header support...` | Cookie 専用 → 汎用 `-header` に置換 |
 | 2021-03-14 | `62e0fdd` | DoI | `Added -insecure flag...` | `-insecure` 導入 |
 | 2021-03-16 | `baaed2b` ほか | poptart | `Added explicit proxy handling` | `-proxy` 導入 |
+| 2022-03-25 | `d1b85c4` | DoI | `Create go mod file` | `go.mod`（`go 1.16`）追加。**2018〜2022 は go.mod 無しだった** |
 | 2023-07-24 | `0adc84c` | DoI | `Added processing logic for non-200 responses` | 非200でも body があれば続行 |
+| 2023-07-24 | `02d6d3e` | DoI | `Better warning for json deserialization problems` | JSON パース失敗時の警告改善（XSSI プレフィックスを踏んだときの手がかりになる） |
 | **2024-01-05** | **`c55342b`** | DoI | **`Added sourcemap extraction from JavaScript files`** | **`-jsurl` モードと `data:` URI 対応** |
+| 2024-03-22 | `f1becf5` | Alexandre ZANNI (noraj) | `add BA install step` | README に BlackArch の `pacman -S sourcemapper` を追記 |
 | **2026-04-17** | **`a5c8b89`** | **gnomegl** | **`Add -dir flag for batch processing...`** | **`-dir` モード導入** |
 | **2026-07-24** | **`f739bd5`** | DoI | **`prevent remote sourcemapping urls from reading local file paths`** | **`remoteSource` によるローカル読み出し防止（最新）** |
 
@@ -377,12 +381,19 @@ unwebpack の主要コミット（逐語メッセージ付き）。
 | 日付 | ハッシュ | 作者 | メッセージ（逐語） | 意味 |
 | --- | --- | --- | --- | --- |
 | **2019-06-12** | `8cb367c` | rarecoil | `first public commit` | **Medium 記事公開の前日**。README・本体・ラボが一度に公開 |
+| 2019-11-02 | `cb6c65f` | dependabot | `Bump lodash from 4.17.10 to 4.17.15 in /example-react-ts-app` | 同梱ラボアプリの依存更新（自動 PR） |
+| 2019-11-02 | `453c5c7` | rarecoil | `npm audit fix` | 同梱ラボの依存脆弱性の自動修正 |
+| 2019-12-08 | `9e3dc1e` | rarecoil | `security patches` | 同梱ラボの依存脆弱性対応 |
+| 2020-03-19 | `86bd230` | rarecoil | `fix #5` | Issue #5 の修正 |
 | 2020-10-14 | `fb558a8` | Agus Setya R | `Fix UnicodeEncodeError...in Python3` | Windows 既定コードページでの書き出し失敗を修正 |
 | 2021-01-22 | `dc91d9c` | RA80533 | `Strip whitespace before splitting file contents` | 末尾改行で最終行が空になる検出漏れを修正 |
+| 2021-01-22 | `25b373a` | RA80533 | `Change False to None` | 戻り値の型整理（`False` → `None`） |
 | 2021-01-22 | `f814cd6` | RA80533 | `Recurse on redirects` | リダイレクト再帰処理の由来 |
+| 2021-01-22 | `8c30252` | RA80533 | `Update _get_remote_data()` | リモート取得処理の整理 |
 | 2021-04-10 | `1ccd5e0` | Arthur A | `Add --disable-ssl-verification` | SSL 検証無効フラグ |
 | 2021-05-27 | `00beb3e` | dee-see | `Do not crash on empty content` | `sourcesContent` に null/空が混じる map への対策 |
 | **2021-05-31** | **`b9570b2`** | Kartik Soneji | **`Fix \r\r for source files with CRLF line endings`** | **`newline=''` の由来** |
+| 2021-05-31 | `4336d0e` | Kartik Soneji | `Refactor source writing loop.` | 書き出しループの整理 |
 | **2022-04-15** | `7fa8ef2` | rarecoil | `Update README.md` | **アーカイブ通知の追記（最後のコミット）** |
 
 `b9570b2` の差分（逐語）。
@@ -422,7 +433,35 @@ module.exports = merge(commonConfig, {
 
 **`mode: 'production'` と `devtool: 'source-map'` が同居している**。これが §3.3 の公式警告（「利用者が Source Map ファイルにアクセスできないようサーバを設定すべき！」）に対応せず本番ビルドする、という**現実の事故の最小再現**である。出力名 `js/bundle.[hash].min.js` から `.map` は `dist/js/bundle.<hash>.min.js.map` に出る（`output.sourceMapFilename` 未設定なので既定の `[file].map`）。
 
-このラボを `npm run build` → `express.js` で配信 → `unwebpack_sourcemap.py --detect http://localhost:<port>/ output` と回せば、**`output/src/components/App.tsx` が TSX のまま出る**ことを確認でき、`.scss` も `sources` に含まれるので `.css.map` の話ともつなげられる。手順 1〜9（後述の §7）を通しで練習できる格好の教材である。
+対して**開発側の設定** `configs/webpack/dev.js` は `devtool: 'cheap-module-eval-source-map'` を使っている。これは **webpack 4 時代の名称**で、webpack 5 では `eval-cheap-module-source-map` に相当する（§3.2 の命名パターンの順序に合わせて綴りが変わった）。ここが教訓で、**dev には `eval-` 系（開発専用・リビルド高速）、prod には `source-map`（別ファイル）** と、開発用と本番用で明確に別の値を割り当てている。事故はこの設計自体ではなく、**`source-map` を選んだうえで `.map` へのアクセス制御をしないまま公開する**点にある。
+
+#### 復元後に何が見えるはずか — 完全なファイル構成
+
+このラボを復元したとき、`output/` にどんなツリーが出るはずかを事前に知っておくと「取りこぼしなく復元できたか」の答え合わせになる。`git ls-files` で得た**実物のファイル一覧**は次のとおり（`App.tsx` と `.scss` だけでなく、テスト・モック・各種設定ファイルまで含まれる）。
+
+```text
+example-react-ts-app/src/components/App.tsx
+example-react-ts-app/src/index.tsx
+example-react-ts-app/src/index.html.ejs
+example-react-ts-app/src/assets/scss/App.scss
+example-react-ts-app/src/assets/img/react_logo.svg
+example-react-ts-app/tests/App.test.tsx
+example-react-ts-app/tests/__mocks__/fileMock.js
+example-react-ts-app/tests/__mocks__/shim.js
+example-react-ts-app/tests/__mocks__/styleMock.js
+example-react-ts-app/configs/webpack/common.js
+example-react-ts-app/configs/webpack/dev.js
+example-react-ts-app/configs/webpack/prod.js
+example-react-ts-app/configs/jest.json
+example-react-ts-app/configs/jest.preprocessor.js
+example-react-ts-app/express.js
+example-react-ts-app/tsconfig.json
+example-react-ts-app/tslint.json
+```
+
+ここで注目すべきは、`sources` に**テストコード（`tests/App.test.tsx`）・Jest のモック（`__mocks__/*.js`）・`tsconfig.json` / `tslint.json` といった設定ファイル**まで含まれうる点である。実際の診断でも、復元ソースにテストやモックが混じっていれば**そこにダミーでない資格情報や内部エンドポイントが残っている**ことがあり、読む価値が高い（§7 の手順 9 で「テストコードやモックに残った資格情報」を挙げているのはこのためである）。
+
+このラボを `npm run build` → `express.js` で配信 → `unwebpack_sourcemap.py --detect http://localhost:<port>/ output` と回せば、**`output/src/components/App.tsx` が TSX のまま出る**ことを確認でき、上の一覧と突き合わせて**期待した全ファイルが揃ったか**を検証できる。`.scss` も `sources` に含まれるので `.css.map` の話ともつなげられる。手順 1〜9（後述の §7）を通しで練習できる格好の教材である。
 
 ---
 
@@ -448,23 +487,75 @@ if (response.slice(0, 3) === ")]}") {
 - したがって**ツールがパースに失敗しても「これは source map ではない」と結論してはいけない。** `head -c 16 foo.js.map` で先頭を見て、`)]}` 系があれば `tail -n +2` で剥がしてから再投入する。
 - 防御側の助言としても使えるが、**これは情報漏洩対策ではない** — `.map` を fetch/curl できる相手には中身がそのまま読まれる。「XSSI 対策したから安全」と混同させないこと。
 
+#### `sourcesContent` が登場する前の map の形
+
+同じ記事の「The anatomy of a source map」節は、当時（2012 年）の map の例 JSON を **Closure Compiler が生成する形**として載せている（逐語）。
+
+```json
+{
+    version : 3,
+    file: "out.js",
+    sourceRoot : "",
+    sources: ["foo.js", "bar.js"],
+    names: ["src", "maps", "are", "fun"],
+    mappings: "AAgBC,SAAQ,CAAEA"
+}
+```
+
+注目すべきは、**この頃の map には `sourcesContent` フィールドがまだ無い**点である。`version` / `file` / `sourceRoot` / `sources` / `names` / `mappings` の 6 つだけで、**元ソースの中身そのものは含まれていない**。現代の map（§5.2 で見る web.dev の例）が `sourcesContent` を持つのと対比すると、「原本が丸ごと復元できる」という本章の前提は**`sourcesContent` が普及した後の話**だと分かる。古い map や `nosources-*` 設定の map では `sources`（ファイル名の並び）と `names`（識別子の並び）しか得られないことがある。
+
+各フィールドの説明（逐語訳）。
+
+- `sourceRoot` — 「ソースにフォルダ構造を前置できる。**これも省スペース技法である**」（全 `sources` に共通の接頭辞を 1 か所にまとめて重複を減らす）。
+- `names` — 「コード全体に現れる**全ての変数名／メソッド名**を含む」。よって `sourcesContent` が無くても、`names` から内部の命名規則・API 名の語彙は読める。
+- `mappings` — 「**Base64 VLQ 値を使って魔法が起きる場所**。真の省スペースはここで行われる」。生成コードの位置と元コードの位置の対応が、この一見ランダムな文字列に符号化されている。
+
 この記事は当時の V3 仕様を **Google Docs** として参照しているが、**現在の規範は TC39 の https://tc39.es/source-map-spec/ に移っている**。教科書では TC39 版を引くべきで、Google Docs 版は歴史的文脈としてのみ触れる。また記事は `sourceURL` / `displayName` の慣習も紹介しており、**`eval` されたコードに `sourceURL` が残っていると、そこからも map を辿れる**。
 
 ### 5.2 web.dev「What are source maps?」（2023）— 拡張フィールドと限界
 
 後継記事（著者 jecelynyeen、2023-03-31）から 2 点。
 
+この記事が載せる**典型的な map の実例（逐語）**は、§5.1 で見た 2012 年の形と違い **`sourcesContent` を含む現代的な形**である。
+
+```js
+{
+  "mappings": "AAAAA,SAASC,cAAc,WAAWC, ...",
+  "sources": ["src/script.ts"],
+  "sourcesContent": ["document.querySelector('button')..."],
+  "names": ["document","querySelector", ...],
+  "version": 3,
+  "file": "example.min.js.map"
+}
+```
+
+`sources[i]` にファイル名、`sourcesContent[i]` に**その中身そのもの**が入る。この 1 対 1 対応こそが「原本を丸ごと復元できる」根拠であり、§5.1 の 6 フィールド時代との決定的な差である。
+
+記事は `mappings` を復号したときの表記として `65-> 2:2` という読み方も示している。意味は「**生成コード側では圧縮後の位置 65 から始まり、元コード側では 2 行 2 列から始まる**」。可視化ツールに map を投げるとこの形で対応が表示されるので、記法を知っておくと読み解きが速い。
+
 **`x_` 拡張フィールドの規約（逐語訳）**: 「source map は拡張をサポートする。拡張は **`x_` という命名規約で始まるカスタムフィールド**である。一例が Chrome DevTools が提案した `x_google_ignoreList` である。」→ 診断では `jq 'keys' foo.js.map` で map のトップレベルキーを必ず列挙し、見慣れない `x_*` の中身を確認する（ビルドツール独自の情報が入っていることがある）。
 
 **map の限界（「It's not perfect」節、逐語訳）**: 「例では変数 `greet` がビルド過程で最適化により消えた。値は最終的な文字列出力に直接埋め込まれた。（…）コードをデバッグしても開発ツールは実際の値を推論・表示できないことがある。（…）**コードの監視と解析も難しくする**。」→ **診断上の含意**: 復元したソースは「開発者が書いた原本」だが、**最適化で消えた変数・インライン化された定数は、復元ソースを読んでも実行時の値が分からない**。ハードコード値を探すときは、復元ソースとバンドル本体（minified JS）の**両方**を grep する。
 
-記事はビルドツールとして TypeScript, Dart, CoffeeScript, SCSS, LESS, PostCSS, Angular, React, Vue, Svelte, Next.js, Nuxt, Astro などを列挙しており、**`webpack://` 以外の擬似スキームもありうる**ことを示唆する。Vite・Next.js（`webpack-internal:///`）・esbuild・Dart などでは `sources` の語彙が違う。復元前に語彙を掴むには次を打つ。
+記事はビルドツールとして TypeScript, Dart, CoffeeScript, SCSS, LESS, PostCSS, Angular, React, Vue, Svelte, Next.js, Nuxt, Astro などを列挙しており、**`webpack://` 以外の擬似スキームもありうる**ことを示唆する。バンドラごとに `sources` の語彙は次のように違う。
+
+| バンドラ／言語 | `sources` に現れる語彙の例 |
+| --- | --- |
+| webpack | `webpack://<プロジェクト名>/./src/...` |
+| Next.js | `webpack-internal:///` |
+| Vite | `/@fs/`（実ファイルの絶対パス）、`\0` 付きの仮想モジュール（プラグイン生成のモジュールは先頭にヌル文字 `\0` が付く） |
+| esbuild | 相対パスがそのまま入ることが多い |
+| Dart | ソース名が `.dart` 拡張子で現れる |
+
+これらは丸暗記するものではなく、**復元前に `sources` を一覧して語彙を観察する**のが正しい。復元前に語彙を掴むには次を打つ。
 
 ```bash
 jq -r '.sources[]' foo.js.map | sed 's|/[^/]*$||' | sort -u | head -50
 ```
 
 可視化ツール（`mappings` の Base64 VLQ を目で追いたいとき）は https://sokra.github.io/source-map-visualization/ （webpack 作者製）、https://evanw.github.io/source-map-visualization/ （esbuild 作者製）。**mappings の手計算は不要、可視化ツールに投げるのが実務的**。
+
+なお記事は、最適化で消えた変数を map で追えないという限界の解決には「source map 仕様と実装をエコシステム全体で改善する必要がある」と述べ、その活発な議論として https://github.com/source-map/source-map-rfc/issues/12 （**スコープ情報を source map に含める将来の拡張**の議論）を挙げている。教科書で「今後」を語るなら参照する価値がある。
 
 ### 5.3 MDN: `SourceMap` レスポンスヘッダ（規範の裏取り）
 
@@ -507,7 +598,20 @@ Firefox の DevTools ドキュメント本文（逐語訳、要点）。
 
 sourcemapper のコメントが引用する記事（著者 parsiya、2019-03-09）の中身。TL;DR は逐語で「Instead of path.join use filepath.Join.」。
 
-問題の核心（逐語訳）: 「`path.Join` は複数のパスを連結する。問題は、**OS に関係なく `/` を区切りとして使う**ことである。」記事の最小再現例（逐語）。
+問題の核心（逐語訳）: 「`path.Join` は複数のパスを連結する。問題は、**OS に関係なく `/` を区切りとして使う**ことである。ソースを見れば分かる:」記事は根拠として Go 標準ライブラリ `path.Join` の実装そのものを引用している（逐語）。
+
+```go
+func Join(elem ...string) string {
+	for i, e := range elem {
+		if e != "" {
+			return Clean(strings.Join(elem[i:], "/")) // <---
+		}
+	}
+	return ""
+}
+```
+
+`strings.Join(elem[i:], "/")` の部分がすべてで、**連結に必ず `/` を使う**（`runtime.GOOS` を一切見ない）。だから Windows でも区切りは `/` になる。「なぜ壊れるか」の根拠は結論ではなくこの 1 行にある。記事の最小再現例（逐語）。
 
 ```go
 	path1 := "c:\\windows\\system32"
@@ -521,7 +625,7 @@ sourcemapper のコメントが引用する記事（著者 parsiya、2019-03-09�
 c:\windows\system32/drivers\etc\hosts
 ```
 
-正しくない壊れたパスが出る。対策は `filepath.Join`（OS 固有の区切りを使う）か、全パスを `/` に正規化する方法。
+正しくない壊れたパスが出る。対策は `filepath.Join`（OS 固有の区切りを使う）か、全パスを `/` に正規化する方法である。後者について記事著者は、自分の別ツール **borrowedtime** で「全パスを `/` に正規化する」対策を実際に採ったと、コミットへのリンク付きで書いている（`https://github.com/parsiya/borrowedtime/commit/e35b32d891bb160e8b03903de5ebdfd3f2db083b`）。`c:/windows/system32/drivers/etc/hosts` のように `/` 区切りにしても Windows のパスとして受け入れられるため成立する。
 
 **重要な留保**（記事とコードを突き合わせた推論）。
 
@@ -721,7 +825,7 @@ docker run --rm -v "$PWD/out:/out" --network none <image> sourcemapper -dir /map
 - https://pulsesecurity.co.nz/articles/javascript-from-sourcemaps （取得できず）
 
 <!-- sources: https://webpack.js.org/configuration/devtool/, https://github.com/denandz/sourcemapper, https://github.com/rarecoil/unwebpack-sourcemap, https://developer.chrome.com/blog/sourcemaps/, https://web.dev/articles/source-maps, https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/SourceMap, https://firefox-source-docs.mozilla.org/devtools-user/debugger/how_to/use_a_source_map/index.html, https://parsiya.net/blog/2019-03-09-path.join-considered-harmful/, https://tc39.es/source-map-spec/, https://github.com/webpack/webpack/tree/master/examples/source-map -->
-<!-- terms: source map, sourcesContent, devtool, sourceMappingURL, hidden-source-map, nosources-source-map, inline-source-map, XSSI, )]} プレフィックス, SSRF, 強制リクエスト, パス・トラバーサル, filepath.Join, remoteSource, x_google_ignoreList, sourceRoot, index source map, SourceMap ヘッダ, sourcemapper, unwebpack-sourcemap -->
+<!-- terms: source map, sourcesContent, devtool, sourceMappingURL, hidden-source-map, nosources-source-map, inline-source-map, XSSI, )]} プレフィックス, SSRF, 強制リクエスト, パス・トラバーサル, path.Join, filepath.Join, remoteSource, x_google_ignoreList, sourceRoot, names, mappings, Base64 VLQ, index source map, SourceMap ヘッダ, sourcemapper, unwebpack-sourcemap, cheap-module-eval-source-map -->
 
 <!-- self-read: https://medium.com/@rarecoil/spa-source-code-recovery-by-un-webpacking-source-maps-ef830fc2351d | medium.com がegress許可リスト外で CONNECT 403、ミラーも全滅 -->
 <!-- self-read: https://deepwiki.com/denandz/sourcemapper | deepwiki.com がegress許可リスト外で CONNECT 403（原典リポジトリで代替済み） -->

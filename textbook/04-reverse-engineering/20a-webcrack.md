@@ -90,9 +90,119 @@ README では webcrack の設計方針が 6 つの柱として挙げられてい
 | バージョン（HEAD 時点） | 2.16.0 |
 | homepage | `https://webcrack.netlify.app` |
 | スター / フォーク | 2.9k / 336（取得時点の表示値） |
+| watcher（監視者数） | 27（取得時点の表示値） |
+| コミット数 | 593（取得時点の表示値） |
+| open issue / PR | 40 / 10（取得時点の表示値） |
 | Topics | `ast`, `browserify`, `bundle`, `debundle`, `deobfuscation`, `deobfuscator`, `extract`, `javascript`, `javascript-obfuscator`, `reverse-engineering`, `unminify`, `unpack`, `webpack` |
 
+#### リポジトリのディレクトリ構成
+
+一次ソース（GitHub のツリーページ）から取得したトップレベル構成は次のとおり。どこに何があるかを把握しておくと、ソースを自分で確認したいときに迷わない。
+
+```
+webcrack/
+├── .github/            # CI・Issue テンプレート等
+├── .vscode/
+├── apps/               # アプリ群
+│   ├── docs/           # VitePress 製のドキュメントサイト
+│   ├── playground/     # Web プレイグラウンド
+│   └── web/
+├── packages/           # 本体パッケージ群（webcrack 本体はここ）
+├── patches/
+├── .gitignore
+├── .prettierrc
+├── CONTRIBUTING.md
+├── LICENSE
+├── README.md
+├── eslint.config.js
+├── package.json
+├── pnpm-lock.yaml
+├── pnpm-workspace.yaml
+├── turbo.json
+├── vitest.config.js
+└── vitest.workspace.json
+```
+
+本体の変換ロジックは `packages/webcrack/src/` 配下にあり、主要ディレクトリは `ast-utils`, `deobfuscate`, `transpile`, `unminify`, `unpack`, `transforms`, `plugin`, `utils` などである。本節で扱うパターンマッチのコードはほとんどが `deobfuscate` と `unminify` の下にある。
+
+#### 寄付先（Donations）
+
+README には作者への寄付先が記載されている（原文のまま逐語）。ツールの素性を確認する材料として、また「誰が作っているか」を知る手がかりとして挙げておく。
+
+```
+- GitHub Sponsors: https://github.com/sponsors/j4k0xb
+- Ethereum: 0xb3eFD474Dd8aFA715F563EfA322F6ae9Ae9DfCeA
+- Bitcoin: bc1qc3u7ef2rue75f6t8x290r0qk0u84f0ln8ndjun
+- Solana: 6w9SFAYBxCKdtuj8DEAV9YT5zP68g4PyEkb21AmdxcBq
+- Monero: 87iYegrerGf1DUsTvUnbsv8gjTMJmzS3idRxHWkCy4iz1Xz5CUnDXy3VkTToSg32LUW3cwNrgLKd1TXRJqJY7MnvVR9yidm
+```
+
 内部実装は **Babel の AST（抽象構文木、Abstract Syntax Tree）** を使っている。AST とは、ソースコードを「木構造のデータ」として表現したもので、`@babel/parser` がコードを AST に変換し、`@babel/traverse` で木を歩き、`@babel/types` でノードを組み立て直す。webcrack はこの AST に対してパターンマッチと書き換えを行う。パターンマッチには `@codemod/matchers` というライブラリを使う。
+
+`@codemod/matchers` とは、AST のノードが「特定の形をしているか」を宣言的に書いて照合するためのライブラリのこと。本節に出てくる `m.capture`（一致した部分を捕捉して後で参照する）、`m.fromCapture`（捕捉した値と同一であることを要求する＝バックリファレンス）、`m.containerOf`（入れ子のどこかに含まれることを要求する）、`m.anyList` / `m.zeroOrMore`（可変長の並びを表す）などはすべてこのライブラリのマッチャである。webcrack のパターンマッチのコードは、この語彙を知らないと読み解けない。
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: `@codemod/matchers`（AST パターンマッチのライブラリ） — https://github.com/codemod-js/codemod/tree/main/packages/matchers#readme
+> **なぜ**: 本教科書の執筆環境からは自動取得できなかった（理由: GitHub のサブディレクトリ README で、本ノートの一次取得対象は webcrack 本体に絞っていたため）。本節が引用する matcher コード（`m.capture` / `m.fromCapture` / `m.containerOf` / `m.anyList` / `m.zeroOrMore` など）は全編にわたって登場するので、語彙を押さえておくと読みやすさが段違いになる。
+> **読みどころ**:
+> 1. `m.capture` / `m.fromCapture` によるバックリファレンス（同じ変数名の再出現を要求する仕組み）
+> 2. `m.containerOf` / `m.anyList` / `m.zeroOrMore` などの構造マッチャ
+> 3. `mappings` オプションに渡せるマッチャの一覧
+> 4. 独自マッチャ（`m.matcher(fn)`）の書き方
+> **代替手段**: なし（同ライブラリの README が一次情報。webcrack の各 `*.ts` を併読すると具体例で理解できる）
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: Babel Plugin Handbook（AST 変換の基礎） — https://github.com/jamiebuilds/babel-handbook/blob/master/translations/en/plugin-handbook.md#writing-your-first-babel-plugin
+> **なぜ**: 本教科書の執筆環境からは自動取得できなかった（理由: 担当 URL 外だが、webcrack の変換はすべて Babel の visitor と AST 操作の上に成り立っており、`renameFast` / `generateUid` など本節に出る道具の背景は一次資料で理解するのが早い）。
+> **読みどころ**:
+> 1. visitor の書き方（`enter` / `exit`。本節の `control-flow-switch` などが `exit` を使う理由が分かる）
+> 2. `path.replaceWith` / `path.remove` / `path.scope`（本節の削除・置換処理の土台）
+> 3. `@babel/types` のビルダとバリデータ
+> 4. スコープとバインディングの扱い（webcrack の `renameFast` / `generateUid` の背景。§10 のスコープ衝突回避を読む前に有用）
+> **代替手段**: 日本語訳（同リポジトリの `translations/` 配下）も参照できる
+
+### 1.5 ドキュメントサイトの構成
+
+webcrack のドキュメントは `apps/docs/` にある **VitePress**（Vue 製の静的ドキュメントサイト生成ツール）で作られており、`https://webcrack.netlify.app/docs` で公開されている。ドキュメントの実体は `apps/docs/src/` 配下の Markdown なので、サイトが開けない環境でも GitHub の raw から同じ内容を読める（本節もその方法で一次取得している）。
+
+トップページ（`apps/docs/src/index.md`）の features 表（原文のまま逐語）。
+
+| アイコン | title | details |
+| --- | --- | --- |
+| 🛡️ | Deobfuscate | `Undo all the obfuscation techniques of obfuscator.io` |
+| 🧹 | Unminify | `Convert minified code to human readable code` |
+| 🧩 | Transpile | `Convert transpiled syntax back to modern JavaScript` |
+| 📦 | Unpack Bundles | `Extract modules from webpack and browserify bundles to separate files` |
+
+サイドバー構成（`.vitepress/config.ts` に定義。netlify 上の URL 構造そのもの）。どのページに何が書いてあるかの索引として使える。
+
+| セクション | 項目 | リンク（`https://webcrack.netlify.app/docs` 起点） |
+| --- | --- | --- |
+| Guide | Introduction | `/guide/introduction` |
+| Guide | CLI | `/guide/cli` |
+| Guide | Node.js API | `/guide/api` |
+| Guide | Website | `/guide/web` |
+| Guide | Common Errors | `/guide/common-errors` |
+| Concepts | Deobfuscate | `/concepts/deobfuscate` |
+| Concepts | Unminify | `/concepts/unminify` |
+| Concepts | Transpile | `/concepts/transpile` |
+| Concepts | Unpack Bundle | `/concepts/unpack` |
+| Concepts | JSX | `/concepts/jsx` |
+
+サイト設定（`.vitepress/config.ts`、逐語）は次のとおり。
+
+| 設定項目 | 値 |
+| --- | --- |
+| `title` | `'webcrack'` |
+| `description` | `'Deobfuscate, unminify and unpack bundled javascript'` |
+| `base` | `'/docs/'` |
+| 検索 provider | `'local'`（ローカル全文検索。外部サービスに依存しない） |
+
+編集リンクのパターンは次のとおりで、これは**ドキュメントの実体が `apps/docs/src/` 配下にある**ことの直接の根拠でもある。
+
+```
+https://github.com/j4k0xb/webcrack/edit/master/apps/docs/src/:path
+```
 
 ## 2. 動作要件とインストール
 
@@ -255,6 +365,11 @@ webcrack can deobfuscate code obfuscated with [javascript-obfuscator](https://gi
 | 単独機能 | Self Defending | 対応（`self-defending.ts`） |
 | 単独機能 | Debug Protection | 対応（`debug-protection.ts`） |
 | 単独機能 | Domain Lock | 対応（`self-defending.ts` が兼務） |
+
+この表にいくつか先取りの用語が出てくるので、ここで軽く定義しておく（詳しい解説はそれぞれの節で行う）。
+
+- **定数畳み込み（constant folding）**とは、コンパイル時に定数式を計算して、その結果の値に置き換えることのこと。たとえば `1 + 2 * 3` を実行時ではなくあらかじめ `7` にしてしまう処理を指す。obfuscator.io の「Numbers To Expressions」は逆に `7` をわざと `-0x1021e + ...` のような式に膨らませる難読化なので、webcrack の `number-expressions`（定数畳み込み）はそれを計算し直して元の数値に戻す。実際の before → after は §13.3 の `number-expressions` の項で示す。
+- **プロキシ関数（proxy function）**とは、受け取った引数を右から左へ中継するだけの関数のこと。たとえば `function(a, b){ return a + b }` のように、それ自体は意味のある処理をせず「加算を中継するだけ」の関数を指す。制御フロー平坦化のオブジェクト方式でよく使われる。詳しくは §9.2 で扱う。
 
 IIFE（Immediately Invoked Function Expression、即時実行関数式）とは、`(function(){ ... })()` のように定義と同時に実行される関数のこと。難読化器はこの形で「配列を回す処理」などを埋め込むため、webcrack はこの形をシグネチャ（特徴的な形）として検出する。
 
@@ -585,6 +700,53 @@ export function createBrowserSandbox(): Sandbox {
   };
 }
 ```
+
+### 8.2.1 ブラウザ側（プレイグラウンド）の隔離構成
+
+ブラウザには `isolated-vm` が無いので、公式プレイグラウンドは別の方法で「信頼できないコードを安全に実行する」を実現している。ドキュメント（Website ページ）は「より安全な実装」として次のコードを逐語で示している。
+
+```js
+const sandbox = await Sandybox.create();
+const iframe = document.querySelector('.sandybox');
+iframe?.contentDocument?.head.insertAdjacentHTML(
+  'afterbegin',
+  `<meta http-equiv="Content-Security-Policy" content="default-src 'none';">`,
+);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function evalCode(code) {
+  const fn = await sandbox.addFunction(`() => ${code}`);
+  return Promise.race([
+    fn(),
+    sleep(10_000).then(() => Promise.reject(new Error('Sandbox timeout'))),
+  ]).finally(() => sandbox.removeFunction(fn));
+}
+
+const result = await webcrack('function _0x317a(){....', { sandbox: evalCode });
+```
+
+原文の説明（逐語）はこうである。
+
+```
+This is how the webcrack playground currently implements it in a more secure way, with sandybox, a Content-Security-Policy to prevent network access and a timeout:
+```
+
+防御設計として重要な 3 点は次のとおり。これは「信頼できないコードをブラウザで動かすときの型」としてそのまま参考になる。
+
+1. **sandybox で iframe 内に隔離する。** sandybox とは、`iframe` を使って関数を隔離実行するための小さなライブラリのこと。`Sandybox.create()` でサンドボックスを作り、`addFunction` / `removeFunction` で関数を出し入れする。
+2. **CSP `default-src 'none'` でネットワークアクセスを遮断する。** iframe の `<head>` に `<meta http-equiv="Content-Security-Policy" content="default-src 'none';">` を注入し、隔離コードが外部と通信できないようにする。難読化コードが実行時に外部へデータを送る（＝情報漏えい）ことを防ぐ。
+3. **`Promise.race` による 10 秒タイムアウト。** 実行が 10 秒を超えたら `Sandbox timeout` で打ち切る。無限ループを仕込まれてもブラウザが固まらない。加えて実行後は `finally` で `sandbox.removeFunction(fn)` を必ず呼び、後片付けする。
+
+つまり Node 側（`isolated-vm` + 10 秒タイムアウト）とブラウザ側（sandybox + CSP `default-src 'none'` + 10 秒タイムアウト）で、隔離の実現手段は違っても「ホストから遮断・通信禁止・時間制限」という設計思想は共通している。
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: sandybox（ブラウザ用サンドボックス） — https://github.com/trentmwillis/sandybox
+> **なぜ**: 本教科書の執筆環境からは自動取得できなかった（理由: 担当 URL 外だが、プレイグラウンドの隔離実行の土台であり、iframe ベースの隔離の限界を知るには一次資料が要る）。
+> **読みどころ**:
+> 1. `Sandybox.create()` と `addFunction` / `removeFunction` の API
+> 2. iframe ベースの隔離モデルの限界（どこまで守れて、どこは守れないか）
+> 3. CSP との併用方法
+> **代替手段**: なし（公式 README が一次情報）
 
 Node のメジャーバージョンで `isolated-vm` を切り替える処理（逐語）。
 
@@ -1513,10 +1675,16 @@ color === "red" // [!code ++]
 - https://webcrack.netlify.app/docs/concepts/unminify.html
 - https://github.com/javascript-obfuscator/javascript-obfuscator
 - https://github.com/laverdet/isolated-vm
+- https://github.com/trentmwillis/sandybox
+- https://github.com/codemod-js/codemod/tree/main/packages/matchers#readme
+- https://github.com/jamiebuilds/babel-handbook/blob/master/translations/en/plugin-handbook.md#writing-your-first-babel-plugin
 - https://excalidraw.com/#json=0vehUdrfSS635CNPEQBXl,hDOd-UO9ETfSDWT9MxVX-A
 
 <!-- self-read: https://github.com/javascript-obfuscator/javascript-obfuscator | 担当URL外・obfuscator.io の各オプションと元テンプレートの一次情報 -->
 <!-- self-read: https://github.com/laverdet/isolated-vm | 担当URL外だがサンドボックス実行の土台。API と Node偶数系制約の一次情報 -->
+<!-- self-read: https://github.com/codemod-js/codemod/tree/main/packages/matchers#readme | サブディレクトリREADMEで未取得。m.capture/m.fromCapture/m.containerOf/m.anyList/m.zeroOrMore が全編で登場 -->
+<!-- self-read: https://github.com/jamiebuilds/babel-handbook/blob/master/translations/en/plugin-handbook.md#writing-your-first-babel-plugin | 担当URL外。visitor enter/exit・path.replaceWith/remove/scope・renameFast/generateUid の背景 -->
+<!-- self-read: https://github.com/trentmwillis/sandybox | 担当URL外だがプレイグラウンドの隔離実行の土台。iframe隔離の限界とCSP併用 -->
 <!-- self-read: https://excalidraw.com/#json=0vehUdrfSS635CNPEQBXl,hDOd-UO9ETfSDWT9MxVX-A | JS必須のインタラクティブ図で静的取得不可。制御フローオブジェクト変換の図解 -->
-<!-- sources: https://github.com/j4k0xb/webcrack, https://raw.githubusercontent.com/j4k0xb/webcrack/HEAD/README.md, https://raw.githubusercontent.com/j4k0xb/webcrack/HEAD/apps/docs/src/concepts/deobfuscate.md, https://raw.githubusercontent.com/j4k0xb/webcrack/HEAD/apps/docs/src/concepts/unminify.md, https://webcrack.netlify.app/docs/concepts/deobfuscate.html, https://webcrack.netlify.app/docs/concepts/unminify.html, https://github.com/javascript-obfuscator/javascript-obfuscator, https://github.com/laverdet/isolated-vm -->
-<!-- terms: webcrack, リバースエンジニアリング, 難読化解除（Deobfuscation）, unminify, obfuscator.io, javascript-obfuscator, String Array（文字列配列）, Array Rotator（配列回転）, Decoder（デコード関数）, サンドボックス（Sandbox）, isolated-vm, Self Defending, Domain Lock, Debug Protection, Control Flow Flattening（制御フロー平坦化）, Dead Code Injection（デッドコード注入）, SingleCallController, Calls Transform, AST（抽象構文木）, Babel, @codemod/matchers, IIFE, source/sink, safe/unsafe タグ -->
+<!-- sources: https://github.com/j4k0xb/webcrack, https://raw.githubusercontent.com/j4k0xb/webcrack/HEAD/README.md, https://raw.githubusercontent.com/j4k0xb/webcrack/HEAD/apps/docs/src/concepts/deobfuscate.md, https://raw.githubusercontent.com/j4k0xb/webcrack/HEAD/apps/docs/src/concepts/unminify.md, https://webcrack.netlify.app/docs/concepts/deobfuscate.html, https://webcrack.netlify.app/docs/concepts/unminify.html, https://github.com/javascript-obfuscator/javascript-obfuscator, https://github.com/laverdet/isolated-vm, https://github.com/trentmwillis/sandybox, https://github.com/codemod-js/codemod/tree/main/packages/matchers#readme, https://github.com/jamiebuilds/babel-handbook/blob/master/translations/en/plugin-handbook.md#writing-your-first-babel-plugin -->
+<!-- terms: webcrack, リバースエンジニアリング, 難読化解除（Deobfuscation）, unminify, obfuscator.io, javascript-obfuscator, String Array（文字列配列）, Array Rotator（配列回転）, Decoder（デコード関数）, サンドボックス（Sandbox）, isolated-vm, Self Defending, Domain Lock, Debug Protection, Control Flow Flattening（制御フロー平坦化）, Dead Code Injection（デッドコード注入）, SingleCallController, Calls Transform, AST（抽象構文木）, Babel, @codemod/matchers, IIFE, source/sink, safe/unsafe タグ, 定数畳み込み（constant folding）, プロキシ関数（proxy function）, sandybox, CSP（Content-Security-Policy）, VitePress, visitor, renameFast, generateUid -->

@@ -225,6 +225,8 @@ Professional を初回起動するとライセンスキーの入力を求めら�
 
 startup wizard で **Open existing project** を選ぶか、コマンドライン引数で開く。別インスタンスで作られたプロジェクトでは「full ownership（完全な所有権）を取るか」を尋ねられる。他インスタンスで作業が続く可能性があり、かつ **Burp Collaborator identifier** がプロジェクトファイルに保存されている場合、その identifier を共有してしまうため、**full ownership を取らないことが推奨** される（identifier の共有はエラーの原因になる）。
 
+〔補足〕Burp Collaborator identifier とは、Burp Collaborator（帯域外〈out-of-band〉の検知に使う PortSwigger のサーバ機能）が発行する一意の ID のこと。攻撃が直接のレスポンスに現れず、別経路の通信で初めて検知できるタイプの脆弱性を見つけるために使う。ここでは「ひとつのプロジェクトに紐づく一意の ID で、複数インスタンスで共有すると衝突する」という点だけ押さえればよい。Collaborator 自体は本ノートの範囲外なので、詳細は別途学ぶこと。
+
 ---
 
 ## 6. ブラウザの準備 — 内蔵か外部か
@@ -235,7 +237,13 @@ Burp Suite には専用ブラウザが同梱されており、手動・自動の
 
 > 「Burp's browser is preconfigured to work with the full functionality of Burp Suite right out of the box. All of the necessary proxy listener settings are automatically adjusted for you. This means you can launch Burp for the first time and immediately start testing, even using HTTPS, without performing any additional configuration.」
 
-つまり **proxy listener 設定は自動調整済みで、初回起動から即、HTTPS でもテストを開始でき、追加設定は不要** である。起動は **Proxy > Intercept** タブの **Open Browser** を押すだけ。以後は通常のブラウザ同様に操作でき、in-scope（対象範囲内）のトラフィックは自動的に Burp を経由する。閲覧中は Burp の既定 live task が訪れた場所を passively crawl and audit（受動的にクロール・監査）し、site map を自動で埋め、潜在的な問題を報告する。
+つまり **proxy listener 設定は自動調整済みで、初回起動から即、HTTPS でもテストを開始でき、追加設定は不要** である。起動は **Proxy > Intercept** タブの **Open Browser** を押すだけ。以後は通常のブラウザ同様に操作でき、in-scope（対象範囲内）のトラフィックは自動的に Burp を経由する。
+
+閲覧中は Burp の既定 live task が訪れた場所を **passively crawl and audit** する。passive（受動的）とは、能動スキャンのように Burp のほうから追加のリクエストを送り込むのではなく、こちらが閲覧した通信を眺めるだけで、余計なリクエストは一切送らない、という意味である。この受動監査によって site map（サイトの構造マップ）が自動で埋まり、潜在的な問題が報告される。
+
+#### browser-powered scanning（Burp Scanner との統合）
+
+内蔵ブラウザは手動テストに便利なだけではない。**browser-powered scanning**（ブラウザ駆動スキャン）として Burp Scanner に統合すると、実際のブラウザで JavaScript を実行しながらクロールできるため、通常の HTTP レベルのスキャンより深くサイトを解析できる。手動テストと自動スキャンの両方で内蔵ブラウザが土台になる、と押さえておくとよい（Burp Scanner は後述のとおり Professional / Enterprise 専用）。
 
 内蔵ブラウザに不具合があるときは、**Help** メニューの **Health check for Burp's browser** を使う。一連のテストを走らせて、ブラウザが正しく動いているかを診断してくれる。
 
@@ -322,6 +330,14 @@ proxy listener（プロキシリスナー）とは、ブラウザからの接続
 
 ## 8. CA 証明書 — なぜ必要で、どこから取るか
 
+### 8-0. この作業は必須か（初学者の不安を先に解く）
+
+CA 証明書のインストールは、外部ブラウザを使う人向けの作業である。公式はこう補足している（逐語）。
+
+> 「Although this step isn't strictly mandatory, especially if you only want to work with non-HTTPS URLs, we still recommend completing this step. You only need to do it once, and it is required to get the most out of your experience with Burp Suite when using an external browser.」
+
+つまり、**HTTP（非 HTTPS）の URL だけを扱うなら厳密には必須ではない**。ただし外部ブラウザで Burp を最大限使うには必要であり、**一度やれば済む**（インストールごとに一度きり）。内蔵ブラウザを使うなら最初から設定済みなので、この作業自体が不要である。
+
 ### 8-1. なぜ CA 証明書を入れるのか（原理）
 
 TLS（Transport Layer Security）とは、通信を暗号化し、相手のサーバが本物であることを確認するための仕組みのこと。公式の原理説明（逐語）を読もう。
@@ -371,6 +387,13 @@ CA 証明書の各手順に共通する入口はどれも「Burp を動かした
 
 削除は **View certificates > Authorities** で **PortSwigger CA** を選び **Delete or Distrust** → **OK** → 再起動。
 
+Chrome での証明書インストール手順は OS ごとに異なる（逐語: 「The process to install Burp's CA certificate for use with Chrome is different for each operating system.」）。以下の Chrome 手順（Windows / MacOS / Linux）に共通する **事前条件** は次の2つである。
+
+- **proxy listener が active であること**（`127.0.0.1:8080` などが **Running**）。
+- **ブラウザが Burp と連携するプロキシ設定済みであること**（7-2 の手順を済ませている）。
+
+この2つが満たされていないと `http://burpsuite` から証明書をダウンロードできないので、先に確認しておくこと。
+
 ### 9-2. Chrome — Windows
 
 1. **Customize** メニュー → **Settings** → **Privacy and security**。
@@ -384,6 +407,8 @@ CA 証明書の各手順に共通する入口はどれも「Burp を動かした
 
 5. **Open** → 証明書ストアが **Trusted Root Certification Authorities** であることを確認 → **Next** → **Finish** → **OK**。
 6. Chrome を再起動する。
+
+削除は次のとおり（Windows）。Chrome → **Customize** → **Settings** → **Privacy and security** → **Security** → **Manage certificates** → 対象の証明書を選択 → **Remove** → 確認ダイアログで **Yes > Yes** → **Close**。他のブラウザ（Firefox / Chrome-Mac / Linux / Safari）と同じく、Windows でも古い CA を削除できる。新しい CA を入れ直す前や、テストを終えて信頼登録を戻したいときに使う。
 
 ### 9-3. Chrome — MacOS
 
@@ -635,7 +660,8 @@ Burp Scanner は Professional と Enterprise Edition のみで、Community で�
 
 3. **Scan configuration** で **Use a preset scan mode** の **Lightweight** を選ぶ。「Scans using this mode run for a maximum of **15 minutes**.」
 4. **OK** でスキャン開始。**Target > Site map** にクロール結果がリアルタイムで増える。
-5. **Dashboard** の **Tasks** からスキャンを選び **Issues** タブへ。issue を選ぶと **Advisory** タブに詳細な説明と修正助言があり、隣に証拠の **Request** / **Response** タブが並ぶ。
+5. **Dashboard** でスキャンの状態を監視する。目安として **1〜2分ほどでクロール（Crawling）が終わり、続いて監査（Auditing）が始まる**。この crawl → audit のフェーズ遷移が進んでいれば正常である。
+6. **Dashboard** の **Tasks** からスキャンを選び **Issues** タブへ。issue を選ぶと **Advisory** タブに詳細な説明と修正助言があり、隣に証拠の **Request** / **Response** タブが並ぶ。
 
 ### 12-6. レポート生成（Professional 専用）
 
@@ -653,6 +679,20 @@ Burp Scanner は Professional と Enterprise Edition のみで、Community で�
 - Burp Repeater でリクエストを再送して脆弱性を探る。
 - Burp Scanner で自動スキャンとレポート生成をする。
 - Web Security Academy で技を磨く。
+
+### 12-8. 次に学ぶべきこと（Continue your Burp Suite journey）
+
+公式チュートリアルの末尾（What next?）は、ここから先の学習先として次の見出しを挙げている。初学者が「この後どこを読めばよいか」の地図になるので、対応表として押さえておく。
+
+| 学習先の見出し | 何のためか |
+| --- | --- |
+| **Tools** | Repeater / Intruder / Scanner など各ツールの詳細を個別に学ぶ |
+| **Tutorials** | テーマ別の実践ガイド（このチュートリアルの続き）を進める |
+| **Options & Preferences** | 設定項目を体系的に理解し、自分の使い方に合わせて調整する |
+| **Web Security Academy** | 無料の脆弱な lab で攻撃手法そのものを鍛える |
+| **Troubleshooting** | listener・ブラウザ・証明書などが動かないときの切り分けを調べる |
+| **Burp Suite extensions** | 拡張（BApp）で機能を追加し、独自の自動化を組む |
+| **Reference documentation** | 各機能・設定の網羅的なリファレンスを引く |
 
 ---
 
@@ -748,7 +788,7 @@ Burp Scanner は Professional と Enterprise Edition のみで、Community で�
 - https://portswigger.net/burp/documentation/desktop/mobile/config-android-device.html
 
 <!-- sources: https://portswigger.net/burp/documentation/desktop/getting-started, https://portswigger.net/burp/documentation/desktop/tools/proxy, https://portswigger.net/burp/documentation/desktop/getting-started/system-requirements.html, https://portswigger.net/burp/documentation/desktop/projects/create-project-file.html, https://portswigger.net/burp/documentation/desktop/external-browser-config/certificate/index.html, https://portswigger.net/burp/documentation/desktop/tools/proxy/manage-certificates.html, https://portswigger.net/burp/documentation/desktop/tools/proxy/intercept-messages.html -->
-<!-- terms: Burp Suite, Burp Proxy, proxy listener, intercept, HTTP history, Repeater, target scope, CA証明書, TLS, 中間者攻撃, trust store, Burp's browser, プロジェクトファイル, Burp Scanner, クライアントサイド制御への過信, Apache Struts, invisible proxying, loopback, DER形式 -->
+<!-- terms: Burp Suite, Burp Proxy, proxy listener, intercept, HTTP history, Repeater, target scope, CA証明書, TLS, 中間者攻撃, trust store, Burp's browser, プロジェクトファイル, Burp Scanner, クライアントサイド制御への過信, Apache Struts, invisible proxying, loopback, DER形式, browser-powered scanning, Burp Collaborator, passive crawl -->
 <!-- self-read: https://portswigger.net/burp/documentation/desktop/tools/proxy | サイト側 egress ブロックにより live ページ取得不可、オフライン版 HTML ミラーから逐語取得 -->
 <!-- self-read: https://portswigger.net/burp/documentation/desktop/getting-started | サイト側 egress ブロックにより live ページ取得不可、オフライン版 HTML ミラーから逐語取得 -->
 <!-- self-read: https://portswigger.net/burp/documentation/desktop/mobile/config-ios-device.html | 担当URL配下でなく live アクセスもブロックされ未取得、目次・関連ページからの要約 -->

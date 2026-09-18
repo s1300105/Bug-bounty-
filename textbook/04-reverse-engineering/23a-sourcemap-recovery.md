@@ -100,11 +100,23 @@ source map は**トップレベル JSON オブジェクトを 1 つ含む JSON �
 
 仕様書は拡張性についてこう述べる（逐語訳）。「**source map の消費側は、認識できない追加プロパティを、source map を拒否する理由とせず無視しなければならない**。」つまり見慣れないフィールドがあっても壊れない設計になっている。
 
+`ignoreList` については、もう 1 つ実務上有用な分岐がある。仕様書は「**`ignoreList` が無い場合、一部のブラウザは非推奨の `x_google_ignoreList` フィールドも使うことがある**」と述べている。`x_` で始まるフィールドは、前段の拡張性規定に沿ってツール実装から取り入れられた拡張フィールドの一種だ。つまり実物の `.map` を眺めるときは、**`ignoreList` が空でも `x_google_ignoreList` があるかを見る**。どちらか一方に「サードパーティ扱いのインデックス一覧」が入っているので、両方を突き合わせれば自社コードだけを機械的に絞り込める。
+
 ハンティング視点で最重要なのは **`sourcesContent`**。ここが埋まっていれば原本が丸ごと手に入る。次点が **`sources`**（ディレクトリツリー）と **`names`**（`sourcesContent` が空でも命名規則が読める）である。
 
 ### 2.3 `mappings` の構造は復元には要らない
 
 `mappings` は Base64 VLQ（可変長数値エンコード）で位置対応を表す。仕様書によれば、`;`（セミコロン）で生成ファイルの行を区切り、`,`（カンマ）で各セグメントを区切り、各セグメントは 1・4・5 個のフィールドからなる。
+
+このフィールド数（1・4・5）は当てずっぽうではなく、それぞれ意味を持つ。仕様書の注記を表にまとめる。
+
+| セグメントのフィールド数 | 意味 |
+| --- | --- |
+| **1 個** | 対応する元ソースコードが存在せず、**マップされない生成コード**（コンパイラが生成したコードなど）。元ソースの行・列・name のどれにも紐づかない |
+| **4 個** | 元ソースの位置にマップされているが、**対応する name が無い**マップ済みコード |
+| **5 個** | 元ソースの位置にマップされ、**name もマップされている**マップ済みコード |
+
+つまりフィールドが多いほど元ソースとの結びつきが濃い、という並びになっている。バグハンティングではここまで解読する場面はほとんど無いが、「なぜ数がまちまちなのか」を押さえておくと map を目視したとき混乱しない。
 
 ただし**ソース本文（`sourcesContent`）を取り出すだけなら `mappings` は解読不要**である。`mappings` が要るのは、圧縮後の行とソースの行を正確に対応づけたいときだけ。バグハンティングでは大抵ソース本文が読めれば十分なので、この部分は飛ばしてよい。〔補足〕仕様書の注記では、この VLQ エンコーディングは Google Calendar のテストで source map を旧提案比 50% 削減したとある。サイズ削減が目的の設計だ。
 
@@ -112,9 +124,55 @@ source map は**トップレベル JSON オブジェクトを 1 つ含む JSON �
 
 `sources` のエントリが絶対 URL でない場合、仕様は「**`sourceRoot` を前置した後でも絶対 URL でなければ、source map に対して相対的に解決する**（HTML の script `src` と同様）」と定める。重要なのは、`sourceRoot` が `/` で終わっていなければ `/` が補われてから連結される点。手作業で復元パスを再現するときもこの規則を守ると、開発機上の実パスを正確に再現できる。
 
+#### 相対解決の「基準」はどこか — source origin 決定規則
+
+「HTML の script `src` と同様」だけでは、相対 URL を何に対して解決するのかが曖昧だ。仕様は、`.map` を指す `sourceMappingURL` 自体が相対だったとき、その基準を**生成コードの source origin（ソースの出所）**と定め、次のように場合分けする。診断で「この `../foo.js.map` はどの URL からの相対か」を判断するときの規範なので押さえておく。
+
+| 生成コードの出どころ | source origin（相対解決の基準） |
+| --- | --- |
+| `src` 属性を持つ `<script>` に紐づく | **その `src` 属性の URL** |
+| `<script>` に紐づくが `src` 属性が無い（インライン `<script>`） | **ページの origin** |
+| `eval()` または `new Function()` で文字列として評価される | **ページの origin** |
+| `<script src>` に紐づかず、生成コード中に `//# sourceURL` コメントがある | **その `//# sourceURL` コメントの値**を基準に使うべき |
+
+つまり `main.a1b2c3.js` が `<script src="/static/js/main.a1b2c3.js">` で読み込まれているなら、その中の `//# sourceMappingURL=main.a1b2c3.js.map` は `/static/js/` を基準に解決され、`.map` は `/static/js/main.a1b2c3.js.map` になる。`//# sourceURL` は元々デバッガ上での表示名を与えるコメントで、`//@` から `//#` へ変わった歴史も `sourceMappingURL` と同じ（どちらも受け入れるのが妥当だが `//#` が推奨）。相対 `.map` を手で追うときは、まず「その JS がどの URL で読み込まれたか」を確定させてから連結する。
+
 ### 2.5 index source map（`sections`）という落とし穴
 
-生成コードの連結などに対応するため、`sources` を直接持たず `sections` 配列を持つ「index source map」も仕様で認められている。各 section は `offset`（`line` と `column`）と `map`（通常の source map）を持つ。
+生成コードの連結などに対応するため、`sources` を直接持たず `sections` 配列を持つ「index source map」も仕様で認められている。各 section は `offset`（`line` と `column`）と `map`（通常の source map）を持つ。`offset` は、その section の map が対応する**生成コード内へのオフセット**（開始位置）を表す。
+
+仕様書が例示する 2 セクションの index map を、目で構造を確認できるよう全文で引用する（逐語）。
+
+```json
+  {
+    "version" : 3,
+    "file": "app.js",
+    "sections": [
+      {
+        "offset": {"line": 0, "column": 0},
+        "map": {
+          "version" : 3,
+          "file": "section.js",
+          "sources": ["foo.js", "bar.js"],
+          "names": ["src", "maps", "are", "fun"],
+          "mappings": "AAAA,E;;ABCDE"
+        }
+      },
+      {
+        "offset": {"line": 100, "column": 10},
+        "map": {
+          "version" : 3,
+          "file": "another_section.js",
+          "sources": ["more.js"],
+          "names": ["more", "is", "better"],
+          "mappings": "AAAA,E;AACA,C;ABCDE"
+        }
+      }
+    ]
+  }
+```
+
+見てのとおり、トップレベルには `sources` も `sourcesContent` も無く、`version` / `file` のほかは `sections` だけがある。復元に必要な `sources` / `sourcesContent` は各 `sections[].map` の内側に入っている。
 
 **診断上の重要な注意**: index map では `sources` / `sourcesContent` がトップレベルに無く、`sections[].map` の中にある。**トップレベルの `sources` しか見ないツールは index map を取りこぼす**。後述の sourcemapper・unwebpack-sourcemap はいずれもトップレベルしか見ないため、index map は「no sources found」で落ちる。この場合は次のように各セクションを取り出して個別処理する。
 
@@ -182,7 +240,7 @@ sourcemap: <url>
 
 1. `sourceMappingURL` コメントは**本番ビルドで意図的に削除されることが多い**（webpack の `hidden-source-map` は「map は生成するがコメントは付けない」設定）。しかし **`.map` ファイル自体はデプロイ先に残る**。「コメントが無い＝map が無い」ではない。
 2. ロードされた全アセット URL に `.map` を素朴に付加して GET する。`main.a1b2c3.js` → `main.a1b2c3.js.map`、`app.css` → `app.css.map`。
-3. `sources` / `file` / `sourceRoot` から判明した別チャンクのパスを使って、まだ取っていない map を追う。webpack のコード分割では `1.chunk.js.map`, `2.chunk.js.map` … と連番になることが多い。
+3. `sources` / `file` / `sourceRoot` から判明した別チャンクのパスを使って、まだ取っていない map を追う。webpack のコード分割では `1.chunk.js.map`, `2.chunk.js.map` … と連番になることが多い。連番を総当りするより確実な方法として、**バンドル本体に含まれる chunk 名テーブル**（webpack ランタイムの `__webpack_require__.u` 相当の関数）を読むと、全チャンクのファイル名が列挙されている。この関数はチャンク ID からファイル名（ハッシュ付き）を組み立てる役目なので、そこを読めば推測ではなく実名で `.map` を追える。
 4. デプロイ由来の副産物も狙う。`/static/js/`, `/assets/`, `/_next/static/`, `/build/` などのディレクトリ一覧、`asset-manifest.json`, `manifest.json`, `stats.json`（webpack の `--json` 出力）。`stats.json` が公開されているとモジュール一覧が丸ごと得られる。
 5. 応答判定: `.map` は `Content-Type: application/json` で、**先頭が `{"version":3` である**ことをシグネチャにする。SPA のフォールバックで 200 + `index.html` が返ることがあるため、**ステータスコードだけで判定してはいけない**。
 6. 総当りは**必ず許可された対象・スコープ内**で、レート制御しつつ行う。
@@ -270,7 +328,31 @@ README 冒頭には 2022 年 4 月 15 日のアーカイブ通知があり、「
 
 ### 5.2 依存関係とバージョンの注意
 
-README は Python3・`BeautifulSoup4`・`requests` を要求する。ただし `requirements.txt` のピン留めは 2019 年当時のもので、`urllib3==1.25.3` / `requests==2.22.0` はいずれも現在では既知の脆弱性を含む古い版だ。〔補足〕**診断端末で使う場合は必ず venv（仮想環境）に隔離**し、可能なら PyPI 配布フォークか sourcemapper を使う。
+README は Python3・`BeautifulSoup4`・`requests` を要求し、`pip3 install -r requirements.txt` で入れる。その `requirements.txt` は全依存を厳密にピン留めしている（逐語）。
+
+```text
+beautifulsoup4==4.7.1
+certifi==2019.3.9
+chardet==3.0.4
+idna==2.8
+requests==2.22.0
+soupsieve==1.9.1
+urllib3==1.25.3
+```
+
+表にすると、どれも 2019 年前後で止まっているのが一目で分かる。
+
+| パッケージ | ピン留めされたバージョン | 役割 |
+| --- | --- | --- |
+| `beautifulsoup4` | `4.7.1` | HTML パース（`<script src>` 抽出） |
+| `certifi` | `2019.3.9` | ルート CA 証明書束 |
+| `chardet` | `3.0.4` | 文字エンコーディング判定 |
+| `idna` | `2.8` | 国際化ドメイン名処理 |
+| `requests` | `2.22.0` | HTTP 取得 |
+| `soupsieve` | `1.9.1` | BeautifulSoup の CSS セレクタ |
+| `urllib3` | `1.25.3` | HTTP 下回り |
+
+このうち `urllib3==1.25.3` / `requests==2.22.0` はいずれも現在では既知の脆弱性を含む古い版だ。〔補足〕**診断端末で使う場合は必ず venv（仮想環境）に隔離**し、可能なら PyPI 配布フォークか sourcemapper を使う。
 
 ### 5.3 使い方（「騒がしさ」の小さい順）
 
@@ -302,6 +384,10 @@ README は「騒がしさ（対象サーバへのアクセス量）の小さい�
 | `--make-directory` | 出力ディレクトリが無ければ作る |
 | `--dangerously-write-paths` | 「フルパスで書く。信頼できないソースからディレクトリを引くので注意」（help 文） |
 | `--disable-ssl-verification` | サイトの SSL 証明書を検証しない |
+| `uri_or_file`（位置引数） | 対象の URI またはファイル |
+| `output_directory`（位置引数） | source map から書き出す先のディレクトリ |
+
+末尾 2 つは**位置引数**で、`uri_or_file`（対象）と `output_directory`（出力先）を必ずこの順で渡す。スクリプトは起動時に `len(sys.argv) < 3`（＝実質この 2 つが揃っていない）なら `parser.print_usage()` で使い方を表示して `sys.exit(1)` する。だから引数が足りないと何もせず終了する。
 
 **実装上の重要な指摘**: `--dangerously-write-paths` は `argparse` に定義されているが、**実際のコードからは一切参照されていない**。したがってこのフラグを付けても挙動は変わらず、**常にサニタイズが適用される**。フラグ名に反して危険な生パス書き込みは実際には行われない（少なくともアーカイブ時点の master では）。安全側に倒れた実装漏れだ。
 
@@ -329,6 +415,8 @@ README は「騒がしさ（対象サーバへのアクセス量）の小さい�
 
 さらに最終防衛線として、生成した絶対パスが出力ルート配下にあることを**構成要素の前方一致で検証**する。〔補足〕この「**文字列を連結してから絶対パス化して検証する**」二重チェックは、パス・トラバーサル防御の教科書的パターン（正規化 → 検証の順序を守る）。逆に検証してから正規化すると `a/../../b` を見逃す。
 
+〔補足〕細かいが、パス組み立てを行う `make_valid_file_path` の `else` 節（`path` も `filename` も無いケース）には `complete_path = complete_path` という**未定義変数を参照するバグ**がある。ここに到達すれば `NameError` で落ちるはずだが、実際にはこの関数を呼ぶ前段の `os.path.split` が必ず `filename` を返すため、`filename` が空になるこの分岐には到達しない。コードを読むときに「バグに見えるが到達不能」と分かっていると混乱しない。
+
 ### 5.7 認証が必要な環境では使いにくい
 
 `_get_remote_data` は `requests.get(uri)` を呼ぶだけで、**Cookie / Authorization ヘッダを渡すオプションが無い**。ログイン後の管理画面バンドルを狙うなら、後述の sourcemapper の `-header` を使うか、先に手で `.map` を落として `--local` で処理する。
@@ -348,12 +436,17 @@ python3 -m pip install unwebpack-sourcemap
 unwebpack-sourcemap --help
 ```
 
-フォーク README は「依存関係がシステムの Python と衝突しうるので**常に virtualenv の中にインストールすることが重要**」と強調している。使用例は `--make-directory` で出力先を自動作成する形。
+フォーク README は「依存関係がシステムの Python と衝突しうるので**常に virtualenv の中にインストールすることが重要**」と強調している。virtualenv を有効化せずに使いたい場合、コマンドは `venv/bin/unwebpack-sourcemap` にある。使用例は `--make-directory` で出力先を自動作成する形。
 
 ```bash
 unwebpack-sourcemap --make-directory --local /path/to/source.map output_dir
 unwebpack-sourcemap --make-directory --detect https://pathto.example.com/spa_root/ output_dir
 ```
+
+フォーク README は、source map の基礎を学ぶための入門資料も 2 件挙げている。source map 自体の仕組みをまず押さえたい人向けの自習リンクとして有用だ。
+
+- "Introduction to JavaScript Source Maps"（Google Chrome Developers） — https://developer.chrome.com/blog/sourcemaps/
+- "Use a source map"（Firefox Source Docs） — https://firefox-source-docs.mozilla.org/devtools-user/debugger/how_to/use_a_source_map/index.html
 
 ---
 
@@ -372,7 +465,17 @@ unwebpack-sourcemap --make-directory --detect https://pathto.example.com/spa_roo
 
 ### 6.1 概要とインストール
 
-README（逐語訳）: 「Sourcemapper は、webpack などが生成した source map をパースして元の JavaScript を吐き出し、**source map 内のファイルパスに基づいてソースツリーを再構成する** golang の小物である。」`go.mod` は `go 1.16`。
+README（逐語訳）: 「Sourcemapper は、webpack などが生成した source map をパースして元の JavaScript を吐き出し、**source map 内のファイルパスに基づいてソースツリーを再構成する** golang の小物である。」`go.mod` は `go 1.16`。README は、このツールを作った目的を説明した記事として Pulse Security（ニュージーランド）の記事 https://pulsesecurity.co.nz/articles/javascript-from-sourcemaps を挙げている。
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: JavaScript from Sourcemaps（Pulse Security） — https://pulsesecurity.co.nz/articles/javascript-from-sourcemaps
+> **なぜ**: 本教科書の執筆環境からは自動取得できなかった（理由: `pulsesecurity.co.nz` が組織のegressポリシー外で CONNECT 403。アーカイブ・テキスト抽出プロキシもすべて拒否）。sourcemapper の README が「its purpose を説明した記事」として挙げている姉妹記事であり、以下の記述は README とコミット履歴からの推測にもとづく。
+> **読みどころ**:
+> 1. sourcemapper を書くに至ったペネトレーションテストの実例と、source map によって診断がどう変わったか。
+> 2. なぜ Python 版（unwebpack）ではなく Go 実装を選んだのか、両者の棲み分け。
+> 3. 診断レポートでの所見の書き方（source map 漏洩を単独の情報漏洩として報告するか、他の所見の前提として扱うか）。
+> 4. README の Dockerhub の実例（約 23MB の map から 1,828 ファイル・20MB を復元）を、開示プロセスとしてどう扱ったか。
+> **代替手段**: 記事本文の代替は無い。ただしリポジトリの履歴から予備知識は得られる（`git clone https://github.com/denandz/sourcemapper.git` → `git log`）。記事へのリンクが README に入ったのは 2018 年のツール初公開の約 11 か月後（2019-07）なので、記事は「作った経緯の振り返り」として読むとよい。読者自身の環境からは通常アクセスできるはず。
 
 ```bash
 # 最近の Go があれば
@@ -468,6 +571,45 @@ $ ./sourcemapper -output test -jsurl http://localhost:8080/main.js
 ```
 
 **正規表現の逐語**: `` `\/\/[@#] sourceMappingURL=(.*)` ``。`//@` と `//#` の両方を受け入れる（仕様準拠）が、`[@#]` の直後に**リテラルの半角スペース 1 個**が必須なので、`//#sourceMappingURL=`（スペースなし）や `//#  sourceMappingURL=`（スペース 2 個）は**マッチしない**。手作業で grep するなら、スペースの有無を問わない `//[@#]\s*sourceMappingURL=` を使うのが安全。また複数見つかったら**最後のもの**を採用する。
+
+#### 見つけた参照 URL の解決（相対・絶対）
+
+`sourceMappingURL` を取り出したら、それが絶対 URL か相対 URL かを判定して解決する。実装はまず絶対 URL としてパースを試み、失敗したら JS の URL を基準に相対解決する。
+
+```go
+	sourceMapURL, err = url.ParseRequestURI(sourceMap)
+	if err != nil {
+		// relative url...
+		sourceMapURL, err = u.Parse(sourceMap)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+```
+
+`url.ParseRequestURI` は絶対 URL 専用のパーサで、`main.js.map` のような相対値だとエラーになる。そこで失敗時は、JS 本体を取得した URL `u` に対して `u.Parse(sourceMap)` で相対解決する。前述の source origin 規則を Go の標準ライブラリで素直に実装した形だ。
+
+#### `data:` URI のデコード実装とその限界
+
+`sourceMappingURL` が `data:` URI だった場合は、その場でデコードする。
+
+```go
+		} else if u.Scheme == "data" {
+			urlchunks := strings.Split(u.Opaque, ",")
+			if len(urlchunks) < 2 {
+				log.Fatalf("[!] Could not parse data URI - expected atleast 2 chunks but got %d\n", len(urlchunks))
+			}
+
+			data, err := base64.StdEncoding.DecodeString(urlchunks[1])
+			if err != nil {
+				log.Fatal("[!] Error base64 decoding", err)
+			}
+
+			body = []byte(data)
+		}
+```
+
+これは `data:...,<base64>` をカンマで分割し、**2 番目のチャンクを標準 base64 でデコードするだけ**の実装だ。ここに限界がある。`base64.StdEncoding` は標準 base64（`+` `/` を使う）専用なので、**URL-safe base64（`-` `_` を使う版）や、base64 ですらない `data:` URI（パーセントエンコードされた生 JSON をそのまま埋めたもの）には対応しない**。実物でこの形の `data:` URI に当たったら、`base64 decoding` エラーで止まるので、**診断者が手でデコード**して `.map` ファイルに落とし、`-url` で渡し直す必要がある。
 
 ### 6.6 `-header`（認証済み診断で必須）
 
@@ -657,6 +799,7 @@ type sourceMap struct {
 - https://pulsesecurity.co.nz/articles/javascript-from-sourcemaps （取得できず）
 
 <!-- sources: https://medium.com/@rarecoil/spa-source-code-recovery-by-un-webpacking-source-maps-ef830fc2351d, https://raw.githubusercontent.com/rarecoil/unwebpack-sourcemap/HEAD/README.md, https://raw.githubusercontent.com/rarecoil/unwebpack-sourcemap/HEAD/unwebpack_sourcemap.py, https://raw.githubusercontent.com/jamesmishra/unwebpack-sourcemap/HEAD/README.md, https://raw.githubusercontent.com/denandz/sourcemapper/HEAD/README.md, https://raw.githubusercontent.com/denandz/sourcemapper/HEAD/main.go, https://raw.githubusercontent.com/tc39/source-map/main/spec.emu, https://deepwiki.com/denandz/sourcemapper, https://pulsesecurity.co.nz/articles/javascript-from-sourcemaps -->
-<!-- terms: source map, sourcesContent, sourceMappingURL, webpack, SPA, グレーボックス診断, unwebpack-sourcemap, sourcemapper, index source map, パス・トラバーサル, SSRF, data URI, TC39 Source Map仕様, ignoreList, Base64 VLQ -->
+<!-- terms: source map, sourcesContent, sourceMappingURL, webpack, SPA, グレーボックス診断, unwebpack-sourcemap, sourcemapper, index source map, パス・トラバーサル, SSRF, data URI, TC39 Source Map仕様, ignoreList, x_google_ignoreList, source origin, Base64 VLQ -->
 <!-- self-read: https://medium.com/@rarecoil/spa-source-code-recovery-by-un-webpacking-source-maps-ef830fc2351d | medium.comが組織egressポリシーで全面ブロック（403）、ミラーも全滅 -->
 <!-- self-read: https://deepwiki.com/denandz/sourcemapper | deepwiki.comがegressポリシーでブロック（自動生成図・対話機能のみ未取得、原典リポジトリで代替済み） -->
+<!-- self-read: https://pulsesecurity.co.nz/articles/javascript-from-sourcemaps | pulsesecurity.co.nzがegressポリシーでブロック（403）、sourcemapperの目的解説記事は本文の代替なく取得不可 -->

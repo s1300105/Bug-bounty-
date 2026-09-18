@@ -7,7 +7,8 @@
 > - 露出したソースマップの深刻度を「中身」で判断し、報告を格上げできる
 > - webpack / Vite / Rollup / Next.js / CRA / Sentry の設定で露出を止められる
 
-**元資料**: https://blog.sentry.security/abusing-exposed-sourcemaps/ , https://www.raijuna.com/knowledge/source-map-exposure （いずれも原典は取得できず二次情報ベース。技術仕様・検出・防御は TC39 公式仕様・OWASP・各ビルドツール公式ドキュメント等の一次資料で裏付け）
+**元資料（一次資料・逐語取得済み）**: TC39 Source Map 公式仕様 https://github.com/tc39/source-map-spec ／ OWASP WSTG-INFO-05 https://owasp.org/www-project-web-security-testing-guide/ ／ 各ビルドツール公式ドキュメント（webpack https://webpack.js.org/configuration/devtool/ ・Vite ・Rollup ・Next.js ・Create React App）／ Sentry Docs https://docs.sentry.io/ ／ Bugcrowd VRT https://github.com/bugcrowd/vulnerability-rating-taxonomy （本節の技術仕様・検出・防御・深刻度分類の裏付けはこれら一次資料による）
+**元資料（二次情報。テーマ導入・事例）**: https://blog.sentry.security/abusing-exposed-sourcemaps/ , https://www.raijuna.com/knowledge/source-map-exposure （いずれも原典は本環境から取得できず、要約・再構成ベース）
 **関連する節**: クライアントサイド偵察、JavaScript 静的解析、シークレット検出
 
 ---
@@ -160,7 +161,7 @@ var conString = "tcp://postgres:1234@localhost/postgres";
 </script>
 ```
 
-Google Maps API キーなどが直に書かれた例（逐語）。
+Google Maps API キーなどが直に書かれた例（逐語、ただしキー値は伏字）。OWASP 原文では `GOOGLE_MAP_API_KEY` に `AIzaSy...` で始まる実キー値が載っているが、本教科書では秘密値を伏字（`AIza_REDACTED_EXAMPLE`）に置き換えて示す。構造は原文のままである。
 
 ```html
 <script type="application/json">
@@ -257,7 +258,14 @@ CSS（`.css.map`、Sass/Less の原ソースが漏れる）と **WebAssembly（`
 
 > If the generated code is associated with a script element and the script element has a `src` attribute, the `src` attribute of the script element will be the source origin.
 
-要点は、`src` 属性を持つ `<script>` に紐づくコードならその `src` が基準、`src` の無いインラインスクリプトやページの `eval()` / `new Function()` 経由ならページの origin が基準になる、ということ。
+仕様が定める4ケースは次のとおり。基準となる origin が場面ごとに変わる。
+
+- **`src` 属性を持つ `<script>` に紐づくコード** … その `<script>` の `src` 属性が source origin になる（外部 JS の典型。CDN 配信ならその CDN が基準）。
+- **`src` 属性の無いインラインスクリプト** … そのスクリプトを含む**ページの origin** が基準。
+- **`eval()` / `new Function()` 経由で生成されたコード** … 同じく**ページの origin** が基準。
+- **`//# sourceURL` コメントがある場合** … そのコメントで指定された値によって解決先が決まる。
+
+つまり CDN 以外（インライン由来や `eval` 由来）のコードでは、基準 origin は「その JS を配ったホスト」ではなく**ページ側**になる、という違いがある。
 
 診断上の含意: CDN 配信の JS が相対 `sourceMappingURL` を持つ場合、`.map` は**アプリのドメインではなく CDN 側**に取りに行く。露出調査では「その JS を配っているホスト」を基準に `.map` の URL を組み立てること。
 
@@ -382,7 +390,7 @@ $ ./unwebpack_sourcemap.py https://pathto.example.com/source.map output
 $ ./unwebpack_sourcemap.py --detect https://pathto.example.com/spa_root/ output
 ```
 
-`--detect` は HTML の全 `<script src>` を読み、JS を取得して `sourceMappingURI` を探し、リモートから map を取得する。依存は `BeautifulSoup4`, `requests`（`pip3 install -r requirements.txt`）。TypeScript+React / TypeScript+Vue テンプレート向け。
+`--detect` は HTML の全 `<script src>` を読み、JS を取得して `sourceMappingURI` を探し、リモートから map を取得する。依存は `BeautifulSoup4`（HTML をパースして `<script src>` を抜き出す）と `requests`（HTML・JS・`.map` を HTTP 取得する）で、`pip3 install -r requirements.txt` で入る。TypeScript+React / TypeScript+Vue テンプレート向け。なお本リポジトリは※2022 に Archive 済み（アーカイブされたリポジトリ＝以後更新されない）なので、動かない場合は `sourcemapper` / `shuji` を併用する。
 
 このツール README には、開発者向けの対策も逐語で書かれている（防御としてそのまま使える）。
 
@@ -432,8 +440,8 @@ grep -rE '(api[_-]?key|secret|token|password|/api/|https?://)' ./restored/
 
 - **未公開パスワード変更エンドポイント → アカウント乗っ取り（Sentry blog の中心事例）**: 本番の Webpack ソースマップから、UI に存在しない**未文書化 API エンドポイント**が判明。そのエンドポイントは適切な認証なしにパスワード変更を許した。関連する Daniel Silva の Medium writeup では、change-password URL を叩くと unauthorized ではなく「必須フィールドが足りない」というエラーが返り、そこから必要フィールドが判明。有効なメールと単純な新パスワードを送ると 200 が返り、他人アカウントの奪取に至った。
 - **Stripe シークレットキー露出（Matthew Keeley）**: 本番ビルドに誤って `.map` が含まれ公開状態。JS を復元してハードコードされた Stripe API シークレットキーを発見。不正決済が可能だった。〔補足〕Stripe の secret key は `sk_live_...` 形式で、GitGuardian 等が高リスクとして扱う。
-- **Apple 新 Web App Store のフロント全ソース流出（escape.tech）**: 刷新された App Store サイトで本番にソースマップが有効化され、フロント全コードが本番サイトから直接ダウンロード可能に。技術選定・コンポーネント構成・状態管理・ルーティングが丸見えになった。露出は**公開フロントコードのみで、資格情報や決済情報は含まれなかった**とされる。escape.tech の DAST は同一問題を組織の**70%**で検出したと報告している。
-- **Claude Code（Anthropic）の 59.8MB ソースマップ流出（2026）**: 公開 npm パッケージに Bun が既定生成した完全なソースマップ（59.8MB）が同梱。`*.map` が `.npmignore` / `package.json` の `files` で除外されておらず、512,000 行超の TypeScript（1,906 ファイル）が復元可能になった。Anthropic は「機微な顧客データや資格情報は含まれない」と説明。本節は防御・診断目的の技術解説である。
+- **Apple 新 Web App Store のフロント全ソース流出（escape.tech）**: 刷新された App Store サイトで本番にソースマップが有効化され、フロント全コードが本番サイトから直接ダウンロード可能に。技術選定・コンポーネント構成・状態管理・ルーティングが丸見えになった。発見の経緯が学びになる。GitHub ユーザ rxliuli が **DevTools でマップの読み込みに気付き**、"Save All Resources" 拡張（読み込み済みリソースを一括保存するブラウザ拡張）で**丸ごと取得**。復元されたコードのリポジトリは削除される前に **8,000+ fork** された。つまり「DevTools で気付く → 一括保存拡張で丸ごと落とす」という再現手順で、専用ツールが無くてもフロント全体を手元に取れる。露出は**公開フロントコードのみで、資格情報や決済情報は含まれなかった**とされる。escape.tech の DAST は同一問題を組織の**70%**で検出したと報告している。
+- **Claude Code（Anthropic）の 59.8MB ソースマップ流出（2026）**: 公開 npm パッケージに Bun が既定生成した完全なソースマップ（59.8MB）が同梱。`*.map` が `.npmignore` / `package.json` の `files` で除外されておらず、512,000 行超の TypeScript（1,906 ファイル）が復元可能になった。復元された原文からは、**UI に現れない 44 の隠し feature flag、常駐バックグラウンドエージェント "KAIROS"、未公開モデルへの参照**などが判明した。これは本節の主題である「ソースマップ露出が隠し機能・未公開機能を暴く」ことの最も具体的な実例である（feature flag の個数、内部エージェント名、未公開モデル参照まで読み取れた）。Anthropic は「機微な顧客データや資格情報は含まれない」と説明。本節は防御・診断目的の技術解説である。
 - **GitHub 自身（github.githubassets.com）**でも「ソースマップが意図的に公開されているのか」という議論（community discussion #191423）があり、意図的な露出と事故の線引きが実務課題であることを示す。
 
 ---
@@ -454,8 +462,13 @@ Bugcrowd の VRT（Vulnerability Rating Taxonomy, 脆弱性の深刻度分類基
 | --- | --- | --- |
 | Sensitive Data Exposure > Source Code Dump | `source_code_dump` | P4（Low） |
 | Sensitive Data Exposure > Sensitive data Leakage/Exposure | `sensitive_data_leakage_exposure` | P1 |
+| Server Security Misconfiguration > Missing Subresource Integrity | （別軸） | P5 |
 
-VRT のスケールは P1（Critical）〜 P5（Informational）で、P4=Low（実在の軽微な脆弱性）、P5=Informational。つまり単なるソース流出は P4 どまりだが、**露出内容が機微なら P1 まで格上げされ得る**ことを分類自体が示している。プログラムはトリアージ時に CVSS 由来の深刻度を上書きできる。
+上表の2行目までが「露出した中身」で深刻度が動く軸である。3行目の `Missing Subresource Integrity`（priority 5）は**別軸**の近縁分類で、深刻度スケールを掴む参考として挙げておく。VRT のスケールは P1（Critical）〜 P5（Informational）で、P4=Low（実在の軽微な脆弱性）、P5=Informational。つまり単なるソース流出は P4 どまりだが、**露出内容が機微なら P1 まで格上げされ得る**ことを分類自体が示している。プログラムはトリアージ時に CVSS 由来の深刻度を上書きできる。
+
+### 6-2b. トリアージの枠組み — ソースマップ露出は「触媒（catalyst）」
+
+Raijuna や一般的な triager の見解の核心は、深刻度そのものより**位置づけ**にある。ソースマップ露出は**単独では low / informational** にとどまるが、その本質的な価値は**別の脆弱性を容易にする「触媒（catalyst）」**である点にある。つまり「これ単体で何点か」ではなく「これが次のどのバグを開けるか」で捉えるのが正しいトリアージ観だ。この枠組みを持つと、次の §6-3 の格上げ手順が「触媒をどう実害に変換するか」の作業として一貫して見える。
 
 ### 6-3. 格上げ（escalation）のコツ
 
@@ -496,6 +509,13 @@ VRT のスケールは P1（Critical）〜 P5（Informational）で、P4=Low（�
 
 > The pattern is: `[inline-|hidden-|eval-][nosources-][cheap-[module-]]source-map[-debugids]`.
 
+パターンに現れる `hidden-*` / `nosources-*` の各 addition の公式説明（逐語）。この2つがハンティング上とくに重要である。
+
+> `hidden-*` addition | no reference to the SourceMap added. When SourceMap is not deployed, but should still be generated, e. g. for error reporting purposes.
+> `nosources-*` addition | source code is not included in SourceMap.
+
+つまり `hidden-*` は「参照コメントを足さない（＝バンドルから `.map` の在処が読めない）」だけで `.map` 自体は生成される。`nosources-*` は「`.map` に元ソース本文（`sourcesContent`）を含めない」。両者は隠すものが違う。
+
 production 可否表（逐語、抜粋）。
 
 | devtool | production | quality | comment |
@@ -530,7 +550,7 @@ module.exports = {
 }
 ```
 
-Next.js は既定で本番ブラウザ向けソースマップ無効。上記フラグを true にすると露出するので**触らないのが安全**。
+Next.js は既定で本番ブラウザ向けソースマップ無効。上記フラグを true にすると露出するので**触らないのが安全**。有効化した場合、生成された `.map` は **JS と同じディレクトリに出力され、Next.js がそれを自動的に配信する**（サーバ側で個別に置く必要がない分、うっかり有効化するとそのまま公開される）。
 
 ### 7-4. Create React App（GENERATE_SOURCEMAP docs 逐語）
 
@@ -599,7 +619,9 @@ Sentry の警告（逐語）。
 
 > Generating source maps **may expose them to the public**, potentially causing your source code to be leaked. You can prevent this by configuring your server to deny access to `.js.map` files, or by using [Sentry Webpack Plugin's `sourcemaps.filesToDeleteAfterUpload`] option to delete source maps after they've been uploaded to Sentry.
 
-認証トークンの扱い（逐語）。`.env.sentry-build-plugin` は機微データなので `.gitignore` に入れること。
+認証トークンの扱い（逐語）。要旨は「認証トークンは `authToken` オプション・`SENTRY_AUTH_TOKEN` 環境変数・`.env.sentry-build-plugin` ファイルのいずれかで渡せる。`.env.sentry-build-plugin` は機微データなので `.gitignore` に入れること」。原文は次のとおり。
+
+> Auth tokens can be passed to the plugin explicitly with the `authToken` option, with a `SENTRY_AUTH_TOKEN` environment variable, or with an `.env.sentry-build-plugin` file (don't forget to add it to your `.gitignore` file, as this is sensitive data) in the working directory when building your project.
 
 ```bash
 # .env.sentry-build-plugin

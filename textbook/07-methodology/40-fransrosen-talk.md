@@ -311,6 +311,12 @@ Content-Type: application/json;charset=UTF-8
 {"file_name":"images/test.png","content_type":"image/png"}
 ```
 
+返ってくるのは、Google Cloud Storage の署名付きURLだ（スライド36、逐語）。`Signature=` に署名が入っており、このURLに対してアップロード（や取得）ができる。
+
+```json
+{"signed_url":"https://storage.googleapis.com/uploads/images/test.png?Expires=1515198382&GoogleAccessId=example%40example.iam.gserviceaccount.com&Signature=dlMAFC2Gs22eP%2ByoAhwGqo0A0ijySYYtRdkaIHVUr%2FvwKfNSKkKwTTpBpyOF..."}
+```
+
 問題は、`file_name` を攻撃者が自由指定でき、サーバ側が検証しないこと（スライド37-38）。
 
 - 「We can select what file to override（どのファイルを上書きするか攻撃者が選べる）」
@@ -322,7 +328,13 @@ Content-Type: application/json;charset=UTF-8
 {"file_name":"documents/invoice1.pdf","content_type":"application/pdf"}
 ```
 
-返ってきた署名URLを `fetch` するだけで請求書が手に入る。合計報奨は **~$15,000**（スライド39）。
+すると、他人の請求書 `invoice1.pdf` に対する署名URLがそのまま返ってくる（スライド38、逐語）。
+
+```json
+{"signed_url":"https://storage.googleapis.com/uploads/documents/invoice1.pdf?Expires=1515198382&GoogleAccessId=example%40example.iam.gserviceaccount.com&Signature=dlMAFC2Gs22eP%2ByoAhwGqo0A0ijySYYtRdkaIHVUr%2FvwKfNSKkKwTTpBpyOF..."}
+```
+
+Rosénの言葉では「Just fetch the URL and we have the invoice（このURLを取得するだけで請求書が手に入る）」。返ってきた署名URLを `fetch` するだけで請求書が読める。合計報奨は **~$15,000**（スライド39）。
 
 ### 独自ポリシーロジックの自作はダメ（3つのバイパス）
 
@@ -577,17 +589,19 @@ Boolean("https://www.exampleaco.nz".match('^https:\/\/.*(\.example.co.nz)$'))
 続いて決済の「INITダンス」（ハンドシェイク）を見る。加盟店 `ilikefood.com` とPCI認証済み決済ドメイン `foodpayments.com` がpostMessageで信頼を確立する（スライド114-118）。
 
 ```javascript
-// メイン → iframe
+// (114) メイン → iframe
 iframe.postMessage('INIT', '*')
-// iframe: INITの送信者を msgTarget として登録
+// (115) iframe: INITの送信者を msgTarget として登録し、INITを返す
 if(e.data==INIT && originOK) { msgTarget = event.source; msgTarget.postMessage('INIT','*') }
-// メイン: プロバイダ名＋公開鍵を送る
+// (116) メイン: iframeから返ったINITを受け、送信者が本物のiframeか source を確認してフレームを維持
+if(e.data==INIT && e.source==iframe) { all_ok_dont_kill_frame() }
+// (117) メイン: プロバイダ名＋公開鍵を送る
 if(INIT) { iframe.postMessage('["LOAD","stripe","pk_abc123"]}', '*') }
-// iframe: 決済プロバイダをロードし、リスナーを閉じる
+// (118) iframe: 決済プロバイダをロードし、リスナーを閉じる
 if(e.data[0]==LOAD && originOK) { initpayment(e.data[1], e.data[2]); window.removeEventListener('message', listener) }
 ```
 
-問題は、**最初のINITハンドシェイクだけで信頼を確立し、後続のLOADメッセージのオリジンやsourceを再検証しない**ことだ。攻撃者は `exampleaco.nz` から `ilikefood.com` を開き（オリジン判定を前述バグで通過）、iframeに `LOAD` を連射する（スライド122）。
+ここで注目すべき対比がある。スライド116のとおり、メインフレームは**INIT受信時には `e.source==iframe` で送信者が本物の子iframeかを確認している**。ところがスライド118のiframe側は、後続の `LOAD` を受け取るときに `originOK`（オリジン判定）しか見ておらず、**`e.source` の再確認をしない**。つまり、**最初のINITハンドシェイクだけで信頼を確立し、後続のLOADメッセージのオリジンやsourceを厳密に再検証しない**ことが弱点になる。攻撃者は `exampleaco.nz` から `ilikefood.com` を開き（オリジン判定を前述バグで通過）、iframeに `LOAD` を連射する（スライド122）。
 
 ```javascript
 setInterval(function(){
@@ -599,10 +613,10 @@ setInterval(function(){
 
 ```sh
 curl https://api.stripe.com/v1/charges \
-  -u sk_test_REDACTED_EXAMPLE_KEY: \
+  -u sk_test_REDACTED_EXAMPLE_KEY_EXAMPLE_KEY: \
   -d amount=999 -d currency=usd \
   -d description="Example charge" \
-  -d source=tok_REDACTED_EXAMPLE
+  -d source=tok_REDACTED_EXAMPLE_EXAMPLE
 ```
 
 Rosénの補足（スライド130）: 「openerからの、他2つのpostMessage呼び出しの間に割り込むpostMessage」で、「自分の知る限りChromeだけがこれを許すようだ」。ブラウザによってメッセージイベントの配送順序に差があり、当時Chromeがこの割り込みを許していた。

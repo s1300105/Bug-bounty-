@@ -64,7 +64,7 @@ de4js の中核は「難読化の種類を選んでアンパックする」点�
 |-----|-----|-----|
 | **Eval** | Packer, WiseLoop | `eval()` で展開するタイプ |
 | **Array** | Javascript Obfuscator, Free JS Obfuscator | 配列参照置換タイプ |
-| **_Number** | `https://jsfiddle.net/ps5anL99/embedded/result,js,html,css/` | 数値系エンコード（原文注記 _(not correct name)_ = 正式名称ではないとされる） |
+| **_Number** | `https://jsfiddle.net/ps5anL99/embedded/result,js,html,css/` | 正式名称不明の数値系エンコード（原文注記 _(not correct name)_）。リンク先は難読化サービスではなく、この形式の動作を示す**jsfiddleのデモ**である |
 | **Packer** | `http://dean.edwards.name/packer/` | Dean Edwards の有名なpacker |
 | **Javascript Obfuscator** | `https://javascriptobfuscator.com/Javascript-Obfuscator.aspx` | 商用難読化サービスの出力 |
 | **Free JS Obfuscator** | `http://www.freejsobfuscator.com/` | 無料難読化サービスの出力 |
@@ -78,7 +78,9 @@ de4js の中核は「難読化の種類を選んでアンパックする」点�
 
 ### エソテリックエンコードという特殊なグループ
 
-JSFuck・JJencode・AAencode は「エソテリック（esoteric＝難解な）エンコード」と呼ばれる。JSFuck は `[`, `]`, `(`, `)`, `!`, `+` のわずか6文字だけでJavaScriptプログラム全体を表現する。AAencode は顔文字（絵文字のような記号列）に見える形へ変換する。これらは一見まったく読めないが、変換規則が固定なので、de4js の専用アンパッカーで機械的に戻せる。
+JSFuck・JJencode・AAencode は「**エソテリックエンコード（esoteric encoding）**」と呼ばれる。エソテリックエンコードとは、`[]()!+` などごく限られた文字や記号だけを使って、見た目が異様（読めない・意味不明）になるように書き換えたエンコードのこと。たとえば JSFuck は `[`, `]`, `(`, `)`, `!`, `+` のわずか6文字だけでJavaScriptプログラム全体を表現する。AAencode は顔文字（絵文字のような記号列）に見える形へ変換する。これらは一見まったく読めないが、変換規則が固定なので、de4js の専用アンパッカーで機械的に戻せる。
+
+なお、以降この節（導入の「この節で分かること」や第14節の対応表を含む）で「エソテリックエンコード」と言うときは、この JSFuck / JJencode / AAencode のような「限られた文字で表現する、見た目が異様なエンコード」を指す。
 
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: de4js インタラクティブUI本体 — https://lelinhtinh.github.io/de4js/
@@ -229,13 +231,13 @@ de4js は「入り口」であって、これ一つで全部が解けるわけ�
 
 | ツール | URL | 説明（逐語） |
 |-----|-----|-----|
-| ESLint | https://eslint.org/docs/ | カスタムルール・code path解析対応 |
+| ESLint | https://eslint.org/docs/ | "The context object contains information that is relevant to the context of the rule"（カスタムルール・code path解析に対応） |
 | Prettier | https://prettier.io/ | "An opinionated code formatter. It enforces a consistent style by parsing your code" |
 | js-beautify | https://github.com/beautify-web/js-beautify | "Reformat and re-indent bookmarklets, ugly JavaScript, unpack scripts packed by Dean Edward's popular packer" |
-| Unminify | https://github.com/shapesecurity/unminify （https://unminify.io/ ） | "Reverse many of the transformations applied by minifiers and naïve obfuscators" |
-| de4js | https://github.com/lelinhtinh/de4js | "JavaScript Deobfuscator and Unpacker" |
+| Unminify | https://github.com/shapesecurity/unminify （対話版 https://unminify.io/ ） | "Reverse many of the transformations applied by minifiers and naïve obfuscators" |
+| de4js | https://github.com/lelinhtinh/de4js （対話版 https://lelinhtinh.github.io/de4js/ ） | "JavaScript Deobfuscator and Unpacker" |
 | JSNice | http://www.jsnice.org/ | "Statistical renaming, type inference and deobfuscation" |
-| js-deobfuscator | https://github.com/kuizuo/js-deobfuscator | "JS obfuscated code restoration" |
+| js-deobfuscator | https://github.com/kuizuo/js-deobfuscator （対話版 https://js-deobfuscator.vercel.app/ ） | "JS obfuscated code restoration; Let confusion no longer be a stumbling block"（難読化コードの復元。「混乱がもうつまずきの石にならないように」） |
 
 ### 7-2. バンドル展開・アンパック
 
@@ -332,9 +334,24 @@ gist が挙げる主なAST基盤ツールは次のとおり。
 | jscodeshift | https://github.com/facebook/jscodeshift | codemod ツールキット |
 | ast-grep | https://github.com/ast-grep/ast-grep | Rust製の構造検索・書き換えCLI |
 | semantic | https://github.com/github/semantic | 多言語の解析・比較 |
-| jalangi2 | https://github.com/Samsung/jalangi2 | JS動的解析フレームワーク（concolic実行） |
+| jalangi2 | https://github.com/Samsung/jalangi2 | JS動的解析フレームワーク（後述のconcolic実行に対応） |
 
 `recast` の「元の整形を保ったまま改変ノードだけ出力」は特に重要である。難読化解除では「怪しい箇所だけ直して、あとは触らない」ことが多く、全体を再整形すると差分が読みにくくなるからだ。まずは **astexplorer** で対象コードのASTを眺め、書き換えたいノードの型を特定するところから始めるのが定石である。
+
+### エディタ／その他の基盤
+
+gist は、解析ツールそのものではないが、自作ツールやWebベースの解析UIを組むときに土台になる基盤も挙げている。
+
+| ツール | URL | 役割（逐語ベース） |
+|-----|-----|-----|
+| CodeMirror | https://codemirror.net/ | ブラウザ組み込み用のコードエディタ部品 |
+| monaco-editor | https://microsoft.github.io/monaco-editor/ | VS Code と同じエンジンのWebエディタ部品 |
+| TypeScript | https://www.typescriptlang.org/ | 型付きJavaScript。コンパイラAPIは解析にも使える |
+| rome | https://rome.tools/ | "Unified toolchain for JavaScript, TypeScript, JSON, Markdown, CSS"（JS/TS/JSON/Markdown/CSSを扱う統合ツールチェーン） |
+
+de4js のようなブラウザ内解析UIを自作したくなったら、コード表示部に **CodeMirror** や **monaco-editor** を使うのが定番である。**TypeScript** のコンパイラAPI（型情報つきのAST）や、**rome** のような統合ツールチェーンは、パーサ・整形・リンタを一式まとめて扱いたい場合の選択肢になる。
+
+〔補足〕表の最後にある **jalangi2** は「concolic（コンコリック）実行」に対応する。**concolic実行**とは、具体的な値での実行（concrete）と、値を記号のまま扱うシンボリック実行（symbolic）を組み合わせた動的解析手法のこと。両者の頭をつなげて "concolic" と呼ぶ。プログラムを実際に走らせつつ、通った分岐の条件を記号式として集めるので、VM型や動的に組み立てられる難読化のように「静的にASTを眺めるだけでは追えない」コードの挙動を、実行時の観察から解きほぐすのに役立つ。
 
 ---
 
@@ -416,10 +433,17 @@ gist は解析を助ける周辺ツールも挙げる。特にセキュリティ
 | BC Detect | https://www.blueclosure.com/product/bc-detect | "Analyzes and automatically discovers DOM Based Cross Site Scripting issues" |
 | joern | https://joern.io/ | "The Bug Hunter's Workbench. Uncover attack surface and vulnerabilities using interactive code analysis" |
 | difftastic | https://github.com/Wilfred/difftastic | "A structural diff tool that compares files based on their syntax" |
+| delta | https://github.com/dandavison/delta | "A syntax-highlighting pager for git, diff, and grep output"（git/diff/grepの出力を色付きで見やすくするページャ） |
+| prettydiff | https://github.com/prettydiff/prettydiff | "Beautifier and language aware code comparison tool for many languages"（整形と言語を理解したコード比較） |
 | astii | https://github.com/Vunovati/astii | "A JavaScript AST-aware diff and patch toolset" |
+| stack-graphs | https://github.com/github/stack-graphs | "A Rust library for building and querying stack graphs"（スコープ解決グラフの構築・照会。名前の定義がどこかを追う「名前解決」に使う） |
 | speedscope | https://github.com/jlfwong/speedscope | "Interactive flamegraph visualization" |
 
 CyberChef は JSFuck・URLエンコード・Base64などのエンコード／復号を手早く試すのに向く。BC Detect は DOM based XSS を自動発見するツール、joern は「コードプロパティグラフ」で攻撃面と脆弱性を探すワークベンチである。難読化解除で読めるようにしたコードを、これらで sink 追跡する流れになる。
+
+### 差分ツールの使い分け
+
+難読化解除は「少し書き換えては元と見比べる」作業の連続なので、差分（diff）ツールが解析効率を大きく左右する。**delta** は git や grep の出力にシンタックスハイライトを付けて読みやすくするページャ。**difftastic** と **astii** は行単位ではなく**構文（AST）単位**で差分を取るため、整形やリネームで行がずれても「本当に変わった箇所」だけを浮かび上がらせられる。**prettydiff** は整形しながら言語を理解して比較するツールである。**stack-graphs** は GitHub 製の「スコープ解決グラフ」ライブラリで、ある名前（変数・関数）の定義がどこにあるかを追う名前解決に使い、リネームや呼び出し追跡の基盤になる。
 
 ---
 

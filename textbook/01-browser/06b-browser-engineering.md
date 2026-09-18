@@ -23,6 +23,24 @@
 
 〔補足〕本節の内容は原典サイトのHTMLではなく、そのサイトを生成しているソースリポジトリを clone して確認したものである。原典サイト `browser.engineering` は本教科書の執筆環境からは取得できなかった（後述の第12小節を参照）。ただしコード・原稿・図はすべてリポジトリ内に実体があるため、内容は一次資料で裏が取れている。
 
+### 取得できたもの・できなかったものの非対称性
+
+本節の中心資料は第10章 `security.html`（"Keeping Data Private"）である。この**レンダリング済みHTMLページ自体は取得できなかった**が、その原稿とコードは取得できた。理由は取得経路によって結果が非対称だったことにある。
+
+- `browser.engineering` への直接アクセスは、エージェントプロキシが `browser.engineering:443` への CONNECT を **`connect_rejected`（"gateway answered 403 to CONNECT"）** で拒否。`WebFetch` は **`EGRESS_BLOCKED`**。`web.archive.org` / `r.jina.ai` / `webcache.googleusercontent.com` も同様にブロックされた。
+- 一方 **`raw.githubusercontent.com` と `github.com` への `git clone` は通った**。そのため公開サイトを生成している原稿 `book/security.md` とコード `src/lab10.py` などは逐語で確保できた。
+
+この非対称性（＝ページは見えないが原稿は取れた）ゆえに、本節は「HTMLの見た目」を除く内容を一次資料で裏取りできている。逆に、**ページ上のレイアウト・アニメーションの動き・インタラクティブ要素**だけは clone では得られないので、そこは読者自身がサイトを開く必要がある。
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: Web Browser Engineering 第10章 "Keeping Data Private" — https://browser.engineering/security.html
+> **なぜ**: 本教科書の執筆環境からは自動取得できなかった（理由: サイト側のプロキシ制限。`browser.engineering:443` への CONNECT が `connect_rejected`＝"gateway answered 403 to CONNECT"、`WebFetch` は `EGRESS_BLOCKED`）。以下の記述は、公式リポジトリを clone して得た原稿 `book/security.md` と実装コードの逐語確認にもとづく要約である（レンダリング済みHTMLページ自体は未取得のため partial）。
+> **読みどころ**:
+> 1. `Cookies → Login → Implementing Cookies → Cross-site Requests → Same-origin Policy → CSRF → SameSite → XSS → CSP` という**節の順序そのもの**を追う。「機能を足すと防御が必要になる」という因果の連鎖が教材の核である。
+> 2. 各機構が「防御コードを入れる前と後」でどう挙動が変わるかを、本文の攻撃実証例と対にして読む。
+> 3. 章末6問の演習（`document.cookie`／`HttpOnly`、CORS、`Referrer-Policy`）を手を動かす題材にする。
+> **代替手段**: 公式リポジトリ `https://github.com/browserengineering/book` を clone すれば原稿 `book/security.md`・実装 `src/lab10.py` / `src/server10.py` / `src/runtime10.js` が手に入る（commit `c8c6d34b636a0fec3589a4a2e901916c774f1929`）。日本語の正式訳語はオライリー・ジャパン版 `https://www.oreilly.co.jp/books/9784814401574/`。
+
 ---
 
 ## 2. cookieはどこで付くのか — `URL.request` を読む
@@ -109,6 +127,8 @@ cookieとは、ブラウザがサイトごとに保存する永続的な状態�
 ```
 
 ここで実行順に注目する。順序は「CSPチェック → 実際にリクエストを送信（cookieも付く） → 同一オリジンチェック → 例外」になっている。つまり**同一オリジン違反であっても、リクエストは実際に飛んでおり、レスポンスだけが捨てられる**。
+
+この順序は「意外」に見える。原文の**説明用スニペット**では、まず同一オリジンなどのチェックを書き、それを通ってから送信する、という順で書かれていることが多い。ところが**完成コードでは送信が先で、チェックが後**になっている。この対比を意識すると、実装を読む価値がはっきりする——「解説の擬似コード」と「実際に動くコード」で実行順が違う場合、本物の挙動を決めるのは後者だからである。診断では常に完成コードの実行順を追う。
 
 これは偶然ではない。演習10-5がCORSについて述べるとおり、実ブラウザの単純リクエスト（simple request）の挙動もこうである。ブラウザはリクエストに `Origin` ヘッダを付けて送り、同一オリジンポリシーを満たすためにレスポンスを捨てる。
 
@@ -234,6 +254,19 @@ def add_entry(session, params):
 - nonceはセッションに1つだけ保存されるので、複数タブでフォームを開くと先のnonceが上書きされる。
 - HTMLエスケープは1箇所でも忘れればセキュリティバグになる。エスケープの網羅性が命である。
 
+### 〔重要〕SameSiteの記述には賞味期限がある
+
+SameSite（Set-Cookie 属性の一つで、cookie をクロスサイトのリクエストに載せるかどうかを制御する指定）について、本書の原文自身が「this section may become out of date（この節は古くなるかもしれない）」と断っている。原稿が書かれた時点では `SameSite` の仕様がまだドラフト段階であり、デフォルト値（本書では `None`）や schemeful same-site（スキームまで見て同一サイトを判定する扱い）、サブドメインの扱いは、その後のブラウザ実装で変わりうるからである。
+
+したがって、この節の `SameSite` に関する記述はあくまで**本書執筆時点の記述**として読み、実務でSameSiteの現在の挙動を確認するときは、必ず最新のMDNを併せて参照すること。
+
+``` text
+MDN Set-Cookie / SameSite:
+https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Set-Cookie/SameSite
+```
+
+〔補足〕診断の現場では「このブラウザ／このバージョンでのデフォルトSameSiteは何か」が結果を左右する。教材の記述を鵜呑みにせず、対象環境の実挙動を確かめる癖をつける。
+
 ---
 
 ## 6. `innerHTML` というXSSの sink — `runtime10.js`
@@ -293,6 +326,22 @@ class Tab:
 
 同一オリジンのフレームは何個あっても1つのJSコンテキストを共有し、異なるオリジンのフレームは隔離される。
 
+### 1つのJSコンテキストで複数ページを動かすための `window` 名前空間
+
+ここで設計上の問題が起きる。同一オリジンなら複数ページのスクリプトが**1つのJSコンテキスト（＝1つのグローバル空間）で動く**。そのままでは、あるページの変数が別ページの同名変数を上書きしてしまう。
+
+そこで本書のブラウザは、名前空間を `window` グローバル（`Window` 型のオブジェクト）で分ける。`window` とは、そのページのグローバル変数・関数・DOM APIをぶら下げる大元のオブジェクトのこと。本書のブラウザでは**すべての変数・関数を `window.` 経由で参照する必要がある**（`window.console`、`window.Node` など）。
+
+この `window.` を付け忘れると、ランタイムは名前を解決できず次のエラーを出す（逐語）。
+
+``` text
+dukpy.JSRuntimeError: ReferenceError: identifier 'Node'
+    undefined
+    duk_js_var.c:1258
+```
+
+〔補足〕実ブラウザでは `window.` を省略しても暗黙にグローバル（`window`）から解決されるが、本書のブラウザはページごとに `window` を切り替える仕組みのため、明示的な `window.` 参照を前提にしている。
+
 ### クロスオリジンの防壁
 
 クロスオリジンのフレーム同士はドキュメントに触れてはならない。防壁（逐語）。
@@ -332,9 +381,26 @@ window.addEventListener("message", function(e) {
 
 また、structured cloning（オブジェクトをバイト列に直列化して別フレームへ渡すアルゴリズム）は**DOMノードを送れない**。教材ブラウザは文字列のみ対応する。
 
+### 広告・アナリティクスとiframe（原文 further ボックス）
+
+原文は、iframeの最大のユーザが**広告**であることを further ボックスで補足している。広告はiframeで配信され、Webのサンドボックス・埋め込み・アニメーションといった基本機能の主要な使い手である。広告経済にとって ad analytics（広告の表示・クリックの計測）が重要で、そのために `Intersection Observer`（要素が画面内に入ったかを効率よく検知するAPI）のようなAPIが存在する。そして ad blockers（広告ブロッカー）は**最も人気のあるブラウザ拡張**でもある。診断の観点では、埋め込みiframe＝広告という前提が多いため、iframe分離の穴は広告経由の攻撃面に直結する。
+
+### 関連する演習（信頼境界に触れる題材）
+
+第15章の演習のうち、クライアントサイドの信頼境界に直接触れるものを挙げる。手を動かす題材として優秀である。
+
+| 演習 | 内容 | 診断上の関わり |
+| --- | --- | --- |
+| 15-1 *Canvas element* | `<canvas>` / `getContext("2d")` / `CanvasRenderingContext2D` の描画コマンドを実装する | 同一オリジンポリシーの canvas taint（前述）に関わる要素 |
+| 15-8 *Target origin for `postMessage`* | `postMessage` の `targetOrigin`（受信を許可するオリジンを指定する文字列）を実装する | クロスオリジンメッセージの宛先制限 |
+| 15-11 *Iframes added or removed by script* | `innerHTML` はiframeを追加・削除しうるが、本書のブラウザはその際にロード／アンロードしない | スクリプトによる動的なフレーム生成の扱い |
+| 15-12 *`X-Frame-Options`* | ページがiframe内に表示されるのを禁じる `X-Frame-Options` ヘッダを実装する | クリックジャッキング対策 |
+
+〔補足〕15-11 は「`innerHTML` にHTMLを流し込むとiframeが生えうる」という点が重要で、DOM系XSSの sink（前述の `innerHTML`）が、フレーム分離の境界にも波及しうることを示している。
+
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: Web Browser Engineering 第15章 "Supporting Embedded Content"（`Isolation and Timing` 節） — https://browser.engineering/embeds.html
-> **なぜ**: 本教科書の執筆環境からは自動取得できなかった（理由: サイト側のプロキシ制限で `browser.engineering` へのアクセスが403で拒否された）。以下の記述は clone した原稿 `book/embeds.md` の逐語引用にもとづく要約である。
+> **なぜ**: 本教科書の執筆環境からは自動取得できなかった（理由: サイト側のプロキシ制限。`browser.engineering:443` への CONNECT が `connect_rejected`＝"gateway answered 403 to CONNECT"、`WebFetch` は `EGRESS_BLOCKED`。一方 `git clone` は通ったため原稿は確保できた）。以下の記述は clone した原稿 `book/embeds.md` の逐語引用にもとづく要約である。
 > **読みどころ**:
 > 1. 同一オリジンポリシーという「Web層」の防御の下に、プロセス層・CPU層の防御がなぜ必要かを理解する。
 > 2. site isolation、rasterizerの `seccomp` サンドボックス、Spectre/Meltdown、`SharedArrayBuffer` のヘッダ要件を、短いが密度の高い1節で通読する。
@@ -378,17 +444,28 @@ window.addEventListener("message", function(e) {
 | 機構 | ヘッダ/API | 何を防ぐか | 本書の実装範囲 | 残る穴・注意点 |
 | --- | --- | --- | --- | --- |
 | Cookie | `Set-Cookie` / `Cookie` | （識別機構） | hostキーのjar、単一cookie | 複数`Set-Cookie`非対応、タブ横断共有、サブリソースにも付与 |
-| Same-origin policy | `URL.origin()` | 他オリジンの**レスポンス読み取り** | `XMLHttpRequest`のみ | リクエスト送出は止めない。CSS/JSリンク読込には非適用 |
+| Same-origin policy | `URL.origin()` | 他オリジンの**レスポンス読み取り** | `XMLHttpRequest`のみ | リクエスト送出は止めない。CSS/JSリンク読込には非適用。一方で**iframe・画像・`localStorage`** などブラウザ機能にも適用される。cookieの「サイト」定義とは別物（cookieはscheme/portを見ない） |
 | CSRF nonce | `<input name=nonce type=hidden>` | クロスサイトフォーム送信 | セッションに1つ | XSSで盗める。複数タブで上書き。予測可能な乱数 |
-| SameSite cookie | `Set-Cookie: ...; SameSite=Lax` | クロスサイト`POST`のcookie送出 | `Lax`と`None`のみ | `Strict`未実装。判定はhost一致のみ |
+| SameSite cookie | `Set-Cookie: ...; SameSite=Lax` | クロスサイト`POST`のcookie送出 | `Lax`と`None`のみ（**デフォルトは`None`**） | `Strict`未実装。判定はhost一致のみ（**schemeful same-site やサブドメインの扱いはブラウザによって差がある**）。仕様上はreferrerではなくtop-level siteを使うべき |
 | HTMLエスケープ | `html.escape()` / `&lt;` | 反射・保存型XSS | サーバ側2箇所 | 1箇所忘れれば破れる |
 | CSP | `Content-Security-Policy: default-src ...` | 許可外リソース読込 | `default-src`のみ | 実施点が1つ。パースはJS/CSS要求より前が必須 |
 | （演習）`HttpOnly` | `Set-Cookie: ...; HttpOnly` | JSからのcookie読書 | 演習10-3 | RFC 6265 §5.3 |
 | （演習）CORS | `Origin` / `Access-Control-Allow-Origin` | クロスオリジン読取の明示許可 | 演習10-5 | 本書は全て "simple request" |
 | （演習）`Referrer-Policy` | `Referer` / `Referrer-Policy` | Referer経由の漏洩 | 演習10-6 | `Referer` は綴りミスが仕様 |
+| （further）CORB | `Content-Type` を正しく設定 | HTMLをCSSとして／JSONをscriptとして読み込む攻撃 | 未実装 | Chromium の Cross-Origin Read Blocking |
+| （further）canvas taint | `drawImage` / `getImageData` | クロスオリジン画像のピクセル読み出し | 未実装 | クロスオリジンデータを書き込むとcanvasがtaint（汚染）され、読み出しメソッドがブロックされる |
+| （further）forbidden headers | `setRequestHeader` / `getResponseHeader` | スクリプトによるcookie機構・他のセキュリティ機構への干渉 | 未実装 | MDN の Forbidden header name / Forbidden response header name |
 | （第15章）`throw_if_cross_origin` | — | クロスオリジンDOMアクセス | 主要4メソッド | 著者自ら「woefully inadequate」 |
 | （第15章）`postMessage` | `postMessage` / `message`イベント | クロスオリジン間の安全な通信 | 文字列のみ | 非同期必須。DOMノードは送れない |
 | （第15章）site isolation | — | JSエンジンのバグ、rasterizer漏洩、Spectre/Meltdown | 解説のみ | Chromiumは`seccomp`でsyscall制限 |
+
+### 「本書は実装しないが、実ブラウザにはある」防御の地図
+
+上表の `CORB` / `canvas taint` / `forbidden headers` の3行は、本書の教材ブラウザが**実装していない**が、原文が further ボックス（本筋から外れた補足）で名前を挙げている防御である。診断者にとっては「本書のブラウザには無いが本物のブラウザには効いている防御」の地図として価値があるので、混同しないよう押さえておく。
+
+- **CORB（Cross-Origin Read Blocking, クロスオリジン読み取りブロック）** — CORBとは、HTMLページを外部スタイルシートとして、あるいはJSONファイルをスクリプトとして読み込ませて中身を盗む攻撃を防ぐChromiumの仕組みのこと。原文いわく、第6章で作ったCSSパーサは非常に寛容なので、一部のHTMLページはCSSとしても解釈できてしまう。そこへ外部HTMLを `<link rel=stylesheet>` で読み込ませ、適用されたスタイルを観測すると内容が漏れる。JSONを `<script>` として読み込む類似攻撃（JSON hijacking）もある。サーバが `Content-Type` を正しく設定すれば、ブラウザのCORBがこの種の攻撃を防ぐ。
+- **canvas taint（キャンバスの汚染）** — `drawImage` メソッドは、別オリジンから読み込んだ画像でもcanvasに描ける。しかしその画像を `getImageData` などでピクセルとして読み戻せると情報漏洩になる。そこでブラウザは、クロスオリジンのデータをcanvasに書き込むとcanvasを「taint（汚染）」状態にし、読み出し系メソッドをブロックする。演習15-1でこのcanvas要素を実装すると、この境界に触れる。
+- **forbidden headers（禁止ヘッダ名）** — `XMLHttpRequest` の `setRequestHeader` / `getResponseHeader` はHTTPヘッダを操作できる。だがこれを無制限に許すと、スクリプトが `Cookie` などを書き換えてcookie機構や他のセキュリティ機構に干渉できてしまう。そこで一部のリクエスト／レスポンスヘッダは、JavaScriptからはアクセスできない「禁止ヘッダ名」に指定されている（MDN の Forbidden header name / Forbidden response header name）。
 
 ---
 
@@ -468,11 +545,20 @@ Browser
 | `URL.request(referrer, payload)` | cookie付与可否（SameSite判定）の唯一の地点 | CSRF、SameSiteバイパス |
 | `URL.origin()` | `scheme://host:port` を組む。同一オリジン判定の基準 | 同一オリジンポリシー回避 |
 | `JSContext.XMLHttpRequest_send` | スクリプトからの任意URLフェッチの入口 | クロスオリジン情報漏洩 |
+| `JSContext.run(script, code)` | スクリプト実行の入口 | スクリプト注入 |
 | `JSContext.innerHTML_set` | 文字列をHTMLとしてパースするsink | DOM系XSS |
 | `Tab.allowed_request(url)` | CSPの実施点（第10章で新設） | CSP実装漏れ／バイパス |
+| `Tab.load(url, payload)` | ナビゲーションの起点。`self.url` を更新する**前に** referrer を渡す必要がある | referrer取り違えによるSameSite誤判定 |
 | `Tab.submit_form(elt)` | 同一オリジンポリシーが適用されない経路 | CSRF |
+| `RUNTIME_JS` / `EVENT_DISPATCH_JS` | ブラウザがJSコンテキストへ注入する特権コード | 特権スクリプトとページスクリプトの混在 |
 
 `Tab.allowed_request` が第9章まで存在せず第10章で追加された点が示唆的で、CSPの実施点がブラウザ側にただ1つであることが一覧から読み取れる。診断では「評価地点が1つ」＝「その1点のバグが全防御を無効化しうる」と読む。
+
+いくつかの行は、コードを読むときの具体的な注意点も示している。
+
+- `Tab.load(url, payload)` は、`self.url` を新しいURLに更新する**前に** referrer（`self.url` の元の値）を `url.request` に渡す必要がある。順序を誤ると referrer が新しいURL自身になり、SameSiteの判定を取り違える。
+- `RUNTIME_JS` / `EVENT_DISPATCH_JS` は、ブラウザがJSコンテキストへ注入する**特権コード**である。ページ由来のスクリプトと同じコンテキストで動くため、特権スクリプトとページスクリプトの混在は、実ブラウザでも権限昇格の温床になる。
+- `JSContext.run(script, code)` はスクリプト実行の入口であり、ここに信頼できない `code` が届けばスクリプト注入になる。
 
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: Web Browser Engineering 各章末の "Outline" 節 / ワンページ版 — https://browser.engineering/onepage.html
@@ -491,6 +577,24 @@ Browser
 ### クイズの実態（誤解しやすい点）
 
 `config.json` の設定を確認すると、公開ビルドと書籍版の両方で `show_quiz: false` であり、**クイズは表示されない**。全16章を通じて実在するクイズブロックは第5章（レイアウト）の1個だけで、**第10章にはクイズが存在しない**。`www/quiz-embed.iife.js` というファイルがあるのは「かつて使われた／再有効化できる」ことを示すに過ぎず、ファイルの存在をクイズの存在と取り違えてはならない。セキュリティ学習の観点でクイズの価値はほぼない。
+
+### 「表示されない」を強制している仕組み
+
+「事実として出ない」だけでなく、**どの部品が出さないようにしているか**を押さえておくと、ソースを読むときに迷わない。判定は3つの部品が連動している。
+
+``` json
+"modes": {
+    "book":    { "show_quiz": false, "show_toc": true, "show_signup": true },
+    "print":   { "show_quiz": false, "show_toc": true, "show_signup": false, "print": true },
+    "onepage": { "show_toc": true }
+}
+```
+
+- `config.json` の `modes` セクション（上記、逐語）で、`book`（＝ `browser.engineering` の通常ビルド）も `print`（書籍版）も `show_quiz: false`。
+- `infra/filter.lua` は `mc-quiz` クラスのブロックを見つけたとき、`config.show_quiz` が真のときだけクイズ化処理を呼び、**偽ならブロックごと出力から除外**する。
+- `infra/template.html` は `$if(show_quiz)$` でガードされており、無効時は `quiz_style.css` も `quiz-embed.iife.js` も**読み込まない**。
+
+つまり「ファイルは残っているがビルド設定で丸ごと無効化されている」状態である。ファイルの存在とビルド設定を取り違えないこと。
 
 ### ウィジェットの仕組みと限界
 
@@ -543,6 +647,10 @@ class WidgetXHRError extends ExpectedError {
 
 `porting.md` と `requirements.txt` は一致しない。実際に動かすなら、ビルドが参照する `requirements.txt` を正とするのが妥当。また `book/porting.md`（"Porting WBE to Recent Software Releases"）は、書籍版第1刷が Skia 87、オンライン版が Skia 138 を前提とし第15章の実装が異なる、という**版差の実例**を記録している。本書を引用するときは「オンライン版を正とし、参照日を明記する」のが安全である。
 
+具体的な版差の例として、`porting.md` の「Skia 87 への移植」節は、第15章の画像描画を扱う `parse_image_rendering` が、書籍版第1刷では**旧 `FilterQuality` API を使う別実装**だったと記録している。理由は、オンライン版が前提とする Skia 138 の `SamplingOptions` API が、書籍版第1刷が前提とする Skia 87 には存在しなかったためである。つまり**同じ関数名でも版によって中身のAPIが違う**。コードを引用・検証するときは、どの版・どのSkiaバージョンを見ているのかを必ず確認する。
+
+〔補足〕`book/porting.md` は `config.json` の `chapters` に登録されていない補助ページで、通常の章立てには現れない。clone した環境では `book/porting.md` として直接読める。
+
 ### 本文とコードでライセンスが異なる（最重要）
 
 | 対象 | ファイル | 条件 |
@@ -551,7 +659,12 @@ class WidgetXHRError extends ExpectedError {
 | 本文（各章の文章） | `book/LICENSE` | 「All rights reserved.」＝**全権留保** |
 | ウィジェットの第三者コード | `www/widgets/LICENSE` | 各々のライセンスに従う（DOMPurify等） |
 
-診断ノートや教材に転記するときは、この違いを守る。本文の文章は全権留保なので**そのまま転載してはならず**、自分の言葉で要約し章URLを出典に明記する。コードはMIT型なので断片を載せてよいが、著作権表示（`Copyright 2018-2023 Pavel Panchekha & Chris Harrelson, MIT License`）とリポジトリURLを添える。図版は本文側の成果物とみなし、転載せず自作の図に置き換える。
+診断ノートや教材に転記するときは、この違いを守る。実務上の指針を整理する。
+
+1. **本文の文章は全権留保**なので**そのまま転載してはならず**、自分の言葉で要約し章URLを出典に明記する。引用が本当に必要な箇所だけ短く、引用と分かる形にとどめる。
+2. **コードはMIT型**なので断片を載せてよいが、著作権表示（`Copyright 2018-2023 Pavel Panchekha & Chris Harrelson, MIT License`）とリポジトリURLを添える。
+3. **図版**（`www/im/*.gif` などの画像）は本文側の成果物とみなし、転載せず自作の図に置き換える。
+4. **疑義があれば著者の窓口に問い合わせる。** 著者はメール（`author@browser.engineering`）とGitHub（Issues／Discussions）で窓口を公開しており、`README.md` で「本書を使いたい教育者からの連絡をいつでも歓迎する」と述べている。教科書での利用可否について迷ったら、**直接問い合わせるのが最も確実**である。
 
 ---
 
@@ -607,6 +720,9 @@ class WidgetXHRError extends ExpectedError {
 - `runtime10.js` の `innerHTML` セッターがDOM系XSSの sink にあたる。
 - 第15章はオリジン単位でJSコンテキストを束ね、`throw_if_cross_origin` を全DOMメソッドに置く。著者自ら「woefully inadequate」と認め、実ブラウザは全JS APIの監査を要する。
 - Web層の下には site isolation（別プロセス）、rasterizerの `seccomp` サンドボックス、Spectre/Meltdown対策、高精度タイマー制限・`SharedArrayBuffer` のヘッダ要件がある。
+- 早見表には、本書が**実装しないが実ブラウザにはある**防御（CORB・canvas taint・禁止ヘッダ名）も含めた。これらは「本書のブラウザには無いが本物では効いている防御」の地図として使う。
+- SameSiteの記述には賞味期限がある。原文自身が「out of date になりうる」と断っており、実務では最新のMDNを併読する。
+- 第15章はオリジン単位でJSコンテキストを束ねるため、変数・関数は `window.` 経由で参照する必要がある。取りこぼすと `ReferenceError` が出る。
 - 本書は TLS詳細・プライバシー・JIT/WebAssembly を意図的に割愛している。次に学ぶ領域の地図として `skipped.html` が使える。
 - クイズは公開ビルドで無効、実在は第5章の1個のみ。第10章にはない。
 - ウィジェットは同一オリジン側の挙動しか再現できず、クロスオリジン攻撃はローカルでPythonを動かす必要がある。
@@ -643,6 +759,15 @@ class WidgetXHRError extends ExpectedError {
 9. 原典サイトが取得できない環境で、本文・コード・図・章末Outlineをどう手に入れるか。
    ▶ 答え: 公式リポジトリを clone する（`git clone --depth 1 https://github.com/browserengineering/book`）。本文は `book/*.md`（`<name>.md`↔`<name>.html`）、コードは `src/`、図は `www/im/`、Outlineは `python3 infra/outlines.py src/lab10.py --template book/outline.txt` で生成できる。
 
+10. 本書の教材ブラウザが「実装していないが実ブラウザにはある」防御を3つ挙げ、それぞれ何を防ぐか述べよ。
+   ▶ 答え: (1) CORB＝HTMLをCSSとして／JSONをscriptとして読み込む攻撃を、サーバの `Content-Type` を正しく設定させて防ぐ。(2) canvas taint＝クロスオリジン画像のピクセル読み出しを、クロスオリジンデータ書き込みでcanvasを汚染し読み出しメソッドをブロックして防ぐ。(3) 禁止ヘッダ名＝`setRequestHeader`/`getResponseHeader` によるcookie機構への干渉を、特定ヘッダをJSから触れなくして防ぐ。
+
+11. 本書のSameSiteの記述を実務でそのまま信じてはいけないのはなぜか。どうすべきか。
+   ▶ 答え: 原文自身が「this section may become out of date」と述べ、執筆時点でSameSite仕様がドラフト段階だったため。デフォルト値・schemeful same-site・サブドメインの扱いは後の実装で変わりうる。最新のMDN（Set-Cookie/SameSite）を併読し、対象環境の実挙動を確かめる。
+
+12. 教材ブラウザで第15章の同一オリジンフレーム間スクリプトを書くとき `window.` を付け忘れると何が起きるか。なぜか。
+   ▶ 答え: `dukpy.JSRuntimeError: ReferenceError: identifier 'Node'` のような参照エラーが出る。1つのJSコンテキストで複数ページを動かすため名前空間を `window` グローバルで分けており、変数・関数は `window.` 経由で参照する前提になっているから。
+
 ## 出典
 
 - https://browser.engineering/security.html （第10章 "Keeping Data Private"。原稿 `book/security.md`、実装 `src/lab10.py` / `src/server10.py` / `src/runtime10.js` を clone して確認）
@@ -656,11 +781,13 @@ class WidgetXHRError extends ExpectedError {
 - https://meltdownattack.com/ （Spectre / Meltdown）
 - https://www.chromium.org/Home/chromium-security/site-isolation/ （site isolation）
 - https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage （postMessage）
+- https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Set-Cookie/SameSite （SameSite。本書のSameSite記述は執筆時点のもので、最新はこのMDNを併読する）
 
-<!-- sources: https://browser.engineering/security.html, https://browser.engineering/embeds.html, https://browser.engineering/skipped.html, https://browser.engineering/onepage.html, https://browser.engineering/preface.html, https://browser.engineering/widgets/lab10-browser.html, https://github.com/browserengineering/book, https://www.oreilly.co.jp/books/9784814401574/, https://meltdownattack.com/, https://www.chromium.org/Home/chromium-security/site-isolation/, https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage -->
-<!-- terms: オリジン, 同一オリジンポリシー, cookie, XMLHttpRequest, CSRF, nonce, SameSite, HTMLエスケープ, XSS, Content-Security-Policy, sink, 信頼境界, 攻撃面, iframe, JSコンテキスト, postMessage, structured cloning, site isolation, seccomp, rasterizer, Spectre, Meltdown, SharedArrayBuffer, 高精度タイマー, CORS, HttpOnly, X-Frame-Options, フィンガープリンティング, WebAssembly, DukPy -->
+<!-- sources: https://browser.engineering/security.html, https://browser.engineering/embeds.html, https://browser.engineering/skipped.html, https://browser.engineering/onepage.html, https://browser.engineering/preface.html, https://browser.engineering/widgets/lab10-browser.html, https://github.com/browserengineering/book, https://www.oreilly.co.jp/books/9784814401574/, https://meltdownattack.com/, https://www.chromium.org/Home/chromium-security/site-isolation/, https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage, https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Set-Cookie/SameSite -->
+<!-- terms: オリジン, 同一オリジンポリシー, cookie, XMLHttpRequest, CSRF, nonce, SameSite, HTMLエスケープ, XSS, Content-Security-Policy, sink, 信頼境界, 攻撃面, iframe, JSコンテキスト, window, postMessage, structured cloning, site isolation, seccomp, rasterizer, Spectre, Meltdown, SharedArrayBuffer, 高精度タイマー, CORS, HttpOnly, X-Frame-Options, CORB, canvas taint, 禁止ヘッダ名, Intersection Observer, フィンガープリンティング, WebAssembly, DukPy -->
 
-<!-- self-read: https://browser.engineering/embeds.html | サイト側のプロキシ制限で403拒否。原稿 book/embeds.md の逐語引用にもとづく要約 -->
+<!-- self-read: https://browser.engineering/security.html | サイト側のプロキシ制限（connect_rejected="gateway answered 403 to CONNECT" / WebFetch は EGRESS_BLOCKED）。git clone は通り原稿 book/security.md と実装コードで裏取り済み。partial（HTMLページ自体は未取得） -->
+<!-- self-read: https://browser.engineering/embeds.html | サイト側のプロキシ制限で403拒否（connect_rejected / EGRESS_BLOCKED）。原稿 book/embeds.md の逐語引用にもとづく要約 -->
 <!-- self-read: https://browser.engineering/skipped.html | サイト側のプロキシ制限で403拒否。原稿 book/skipped.md にもとづく要約 -->
 <!-- self-read: https://browser.engineering/onepage.html | サイト側のプロキシ制限で403拒否。Outlineは原稿になくビルド時生成のため -->
 <!-- self-read: https://browser.engineering/widgets/lab10-browser.html | サイト側のプロキシ制限で403拒否。ウィジェットの実挙動はコード読解に基づく推論 -->

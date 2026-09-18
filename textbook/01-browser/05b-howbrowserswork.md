@@ -661,9 +661,13 @@ Resources リストとは別に、本文の各所は仕様や解説へ直接リ�
 - https://developer.chrome.com/blog/inside-browser-part1 〜 part4 （ソース `https://raw.githubusercontent.com/GoogleChrome/developer.chrome.com/HEAD/site/en/blog/inside-browser-partN/index.md` から取得）
 - http://www.w3.org/TR/CSS21/zindex.html / http://www.w3.org/TR/CSS2/box.html / http://www.w3.org/TR/CSS21/intro.html#processing-model （CSS2 仕様。記事本文が参照）
 - https://html.spec.whatwg.org/multipage/parsing.html （WHATWG HTML Standard。パースアルゴリズムの現行正本）
+- http://grosskurth.ca/papers/browser-refarch.pdf （Grosskurth, *A Reference Architecture for Web Browsers*。原典注記 (1.1)）
+- http://techcrunch.com/2011/08/01/open-web-browsers/ （TechCrunch, 2011-08-01。Preface「オープンソースブラウザがシェア半分超」の根拠リンク）
+- http://cou929.nu/docs/how-browsers-work/ ・ http://shanon-tech.blogspot.com/2011/09/web.html （日本語訳2種。いずれも2011年版）
 
 <!-- sources: https://www.html5rocks.com/tutorials/internals/howbrowserswork/, https://web.dev/articles/howbrowserswork, https://developer.mozilla.org/en-US/docs/Web/Performance/Guides/How_browsers_work, https://developer.chrome.com/blog/inside-browser-part1, http://www.w3.org/TR/CSS21/zindex.html, https://html.spec.whatwg.org/multipage/parsing.html -->
-<!-- terms: レイアウト（layout / reflow）, dirty bit, 増分レイアウト（incremental layout）, グローバルレイアウト（global layout）, 同期レイアウト強制（layout thrashing）, フローベースレイアウトモデル（flow based layout model）, viewport, 描画（painting）, 描画順序（painting order）, stacking context, z-index, canvas, CSSボックスモデル, 配置スキーム（positioning scheme）, block box, inline box, イベントループ（event loop）, preload scanner（speculative parsing）, アクセシビリティツリー（AOM）, compositing, raster thread, compositor thread, Site Isolation, サンドボックス, Same-Origin Policy, TCP slow start, Time to Interactive（TTI）, クリックジャッキング, サイドチャネル -->
+<!-- terms: レイアウト（layout / reflow）, dirty bit, 増分レイアウト（incremental layout）, グローバルレイアウト（global layout）, 同期レイアウト強制（layout thrashing）, フローベースレイアウトモデル（flow based layout model）, viewport, 描画（painting）, 描画順序（painting order）, stacking context, z-index, canvas, CSSボックスモデル, 配置スキーム（positioning scheme）, block box, inline box, baseline揃え（baseline alignment）, イベントループ（event loop）, preload scanner（speculative parsing）, アクセシビリティツリー（AOM）, compositing, raster thread, compositor thread, Servicification, Site Isolation, サンドボックス, Same-Origin Policy, TCP slow start, Time to Interactive（TTI）, クリックジャッキング, サイドチャネル, XS-Leaks -->
 <!-- self-read: https://developer.mozilla.org/en-US/docs/Web/Performance/Guides/How_browsers_work | サイト側 egress 制限で 403、内容は GitHub ソースミラーの全文にもとづく要約 -->
 <!-- self-read: https://developer.chrome.com/blog/inside-browser-part1 | developer.chrome.com が egress 制限で 403、内容は GitHub ソースミラーの全文にもとづく要約、公開URLはリポジトリ構成から導出 -->
 <!-- self-read: https://web.dev/articles/howbrowserswork | 記事本体・web.dev・web.archive.org が egress 制限で 403、図の画像CDNも 403、本文はソースミラーから確保し図はキャプションのみ -->
+<!-- self-read: http://cou929.nu/docs/how-browsers-work/ | 日本語訳。当セッションでは egress 制限で 403、記載は原典 Translations 節にもとづく。2011年版の翻訳で web.dev 版の更新は未反映 -->

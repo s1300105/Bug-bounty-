@@ -29,7 +29,7 @@ DOM Invader（ドム・インベーダー）とは、**DOM XSS をはじめと�
 
 ### 1.2 なぜこのツールが必要なのか（設計意図）
 
-DOM XSS とは、サーバではなくブラウザ内の JavaScript が、ユーザの入力（source）を危険な処理（sink）へ安全でない形で渡すことで起きる脆弱性のこと。たとえば URL の `location.hash` を読み取って `element.innerHTML` に書き込むコードがあれば、そこは DOM XSS の温床になる。
+DOM XSS とは、サーバではなくブラウザ内の JavaScript が、ユーザの入力（source）を危険な処理（sink）へ安全でない形で渡すことで起きる脆弱性のこと。〔補足〕たとえば URL の `location.hash`（`#` 以降の文字列）を読み取って `element.innerHTML` に書き込むコードがあれば、そこは DOM XSS の温床になる。この `location.hash` → `innerHTML` の例は仕組みを説明するための一般的な例であり、公式ドキュメントの原文そのものではない。
 
 公式ドキュメントはこのテストの辛さをこう述べている。
 
@@ -79,6 +79,23 @@ dom-invader/
     ├── misc            ― Misc settings
     └── canary          ― Canary settings
 ```
+
+### 1.6 公式ドキュメントの図（スクリーンショット）を探す手がかり
+
+本教科書では画像を掲載できないが、公式ドキュメントの各ページには操作画面のスクリーンショットが載っている。画像はすべて `https://portswigger.net/burp/documentation/desktop/images/<ファイル名>` の形式で置かれているので、下の代表的なファイル名を手がかりに、該当ページを開いて実物の図を確認してほしい。
+
+| ファイル名 | 対応する話題 |
+| --- | --- |
+| `dom-invader-innerHTML-sink.png` | 制御可能な `innerHTML` sink の表示 |
+| `dom-invader-payload.png` | XSS ペイロード注入の様子 |
+| `dom-invader-unescaped-chars.png` | エスケープされない特殊文字の確認 |
+| `dom-invader-settings-main.png` | Main settings 画面 |
+| `dom-invader-messages-view.png` | Messages ビュー |
+| `dom-invader-messages-details.png` | web message の詳細（origin/data/source） |
+| `dom-invader-prototype-pollution-sources.png` | prototype pollution の source 検出 |
+| `dom-invader-prototype-pollution-gadget.png` | gadget スキャン結果 |
+
+このほか `dom-invader-settings-messages.png` / `dom-invader-prototype-pollution-poc.png` / `dom-invader-dom-clobbering-enabling.png` / `dom-invader-customize-sources-and-sinks.png` / `dom-invader-settings-misc.png` / `dom-invader-callback-configuration.png` など、合計18枚ほどが同じディレクトリに置かれている。
 
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: DOM Invader 公式ドキュメント（トップ） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader
@@ -137,7 +154,7 @@ canary を手動で注入する手順は次のとおり。
 3. **Copy canary** をクリックし、追跡中の canary をクリップボードにコピーする。
 4. テストしたい入力（URL クエリパラメータ、フォームフィールドなど）に canary を貼り付ける。
 
-どこが source になりうるかは、Web Security Academy の DOM-based vulnerabilities トピックが参考になる。
+どこが source になりうるか（potential sources）を体系的に知りたいときは、Web Security Academy の DOM-based vulnerabilities トピック（**https://portswigger.net/web-security/dom-based/** ）が参考になる。source と sink の一覧や、それぞれがどんな DOM XSS につながるかがまとまっている。
 
 ### 3.2 複数の source へ一括注入
 
@@ -156,7 +173,7 @@ canary を手動で注入する手順は次のとおり。
 
 ### 3.3 制御可能な sink を特定する
 
-canary を注入すると、DOM Invader は自動的に DOM をパースして **canary が現れる sink** を特定し、**「どれだけ面白いか（how interesting they are）」の順にソートして DOM ビューに表示**する。危険度の高い sink が上に並ぶので、目grep を省ける。
+canary を注入すると、DOM Invader は自動的に DOM をパースして **canary が現れる sink** を特定し、**「どれだけ面白いか（how interesting they are）」の順にソートして DOM ビューに表示**する。危険度の高い sink が上に並ぶので、**大量のコードや要素を目視で1件ずつ探す手間を省ける**。どこに注目すべきかがランキングで一目で分かる、というのがこの機能の価値である。
 
 ### 3.4 XSS コンテキストを判定する（攻撃者が突く箇所）
 
@@ -167,6 +184,8 @@ canary を注入すると、DOM Invader は自動的に DOM をパースして *
 - **sink に到達する前にサイトがどんな検証（validation）・サニタイズ（sanitization）・その他の処理を行っているか。**
 
 DOM Invader は **sink の内容**、すなわち canary と、自分が注入した周囲の文字が DOM 上でどう見えるかを表示する。したがって **canary に特殊文字を付け足して、それがエスケープ／エンコードされているかを簡単に確認できる**。原文の例では、さまざまな有用な文字の注入に成功している様子が示されている。
+
+この「canary に付けた文字が正しくエンコードされているかを検査できる」という点は、公式ブログ "Introducing DOM Invader"（→ 8.3）でも Augmented DOM の要点として明記されている。ブログは「興味深い sink を見つけたら、そこに含まれる値とスタックトレースを見られ、canary がハイライト表示される。**独自（カスタム）の canary が正しくエンコードされているかも検査できる**」と述べており、ここで説明した XSS コンテキスト判定の機能はブログ由来の記述と対応している。
 
 sink の種類に応じて、さらに次の情報が表示される。
 
@@ -209,6 +228,8 @@ sink の種類に応じて、さらに次の情報が表示される。
 
 `postMessage()` とは、あるウィンドウ（iframe など）から別のウィンドウへメッセージを送るためのブラウザ API のこと。受け取る側がメッセージの内容や送信元を十分に検証しないと、DOM XSS やデータ窃取につながる。DOM Invader はこの経路を専門にテストできる。
 
+web message そのものの脆弱性（受信ハンドラが送信元を検証せずデータを sink に渡すパターン）を体系的に学びたいときは、Web Security Academy の **「Controlling the web message source」**（**https://portswigger.net/web-security/dom-based/controlling-the-web-message-source/** ）が実践的な入り口になる。以下の DOM Invader の各機能は、このトピックのラボとセットで練習すると理解が速い。
+
 ### 4.1 提供機能
 
 原文が挙げる3機能は次のとおり。
@@ -244,7 +265,7 @@ DOM Invader は既定で「興味深いメッセージ」を自動的に特定�
 
 | プロパティ | 読み方 |
 | --- | --- |
-| **origin accessed** | クライアントコードが `origin` に**一度もアクセスしていない**なら、**origin 検証がされていない可能性が高い**（任意の外部ドメインからクロスオリジンで送れるかもしれない）。ただしアクセスしていても**安全とは限らず**、検証をバイパスできることがある。手がかりとして DOM Invader はスタックトレース経由で該当コード行へのリンクを提供する |
+| **origin accessed** | クライアントコードが `origin` に**一度もアクセスしていない**なら、**origin 検証がされていない可能性が高い**（任意の外部ドメインからクロスオリジンで送れるかもしれない）。ただしアクセスしていても**安全とは限らず**、検証をバイパスできることがある。手がかりとして DOM Invader はスタックトレース経由で該当コード行へのリンクを提供する。origin 検証の不備を突く具体的な手口は、Web Security Academy の **「Bypassing flawed origin validation」**（**https://portswigger.net/web-security/cors/index.html#errors-parsing-origin-headers** ）が参考になる（CORS の解説の一部だが、`startsWith`/`endsWith` など緩い origin 照合を破る考え方は web message にも共通する） |
 | **data accessed** | `data` は**ペイロードを注入する場所**。JavaScript がこのプロパティにアクセスしないなら**sink に渡されようがなく、そのメッセージは無価値** |
 | **source accessed** | `source` は**送信元の `window` オブジェクトへの参照**（実務上はたいてい iframe への参照）。サイトは origin の代わりに `source` を検証することが多い（特定の信頼された iframe から来たことを保証する、より堅牢な方法だから）。ただし**アクセス＝検証、とは限らない** |
 
@@ -342,7 +363,7 @@ DOM clobbering（DOM クロバリング）とは、原文の定義によれば�
 
 > DOM clobbering is a technique in which you inject HTML into a page to manipulate the DOM in a way that enables you to change the behavior of JavaScript on the page.
 
-すなわち、**ページに HTML を注入して DOM を操作し、そのページの JavaScript の振る舞いを変えるテクニック**である。たとえば `id` や `name` 属性を持つ要素を注入すると、同名のグローバル変数を上書きできてしまうことがある。DOM Invader はこれを自動テストできる。
+すなわち、**ページに HTML を注入して DOM を操作し、そのページの JavaScript の振る舞いを変えるテクニック**である。〔補足〕たとえば `id` や `name` 属性を持つ要素を注入すると、同名のグローバル変数（`window` のプロパティ）を上書きできてしまうことがある。この `id`/`name` 属性でグローバル変数を上書きする例は仕組みを説明するための一般知識であり、公式ドキュメントの原文には含まれない。DOM Invader はこの種の脆弱性を自動テストできる。
 
 対象サイトの機能を妨げないため**既定で無効**。有効化手順は次のとおり。
 
@@ -872,6 +893,9 @@ DOM Invader の各機能は、防御にも直結する。**Scan for gadgets** �
 - https://portswigger.net/burp/documentation/desktop/tools/dom-invader/settings/canary
 - https://portswigger.net/blog/introducing-dom-invader
 - https://portswigger.net/burp/releases
+- https://portswigger.net/web-security/dom-based/
+- https://portswigger.net/web-security/dom-based/controlling-the-web-message-source/
+- https://portswigger.net/web-security/cors/index.html#errors-parsing-origin-headers
 
 <!-- sources: https://portswigger.net/burp/documentation/desktop/tools/dom-invader, https://portswigger.net/burp/documentation/desktop/tools/dom-invader/enabling, https://portswigger.net/burp/documentation/desktop/tools/dom-invader/dom-xss, https://portswigger.net/burp/documentation/desktop/tools/dom-invader/web-messages, https://portswigger.net/burp/documentation/desktop/tools/dom-invader/prototype-pollution, https://portswigger.net/burp/documentation/desktop/tools/dom-invader/dom-clobbering, https://portswigger.net/burp/documentation/desktop/tools/dom-invader/settings/main, https://portswigger.net/burp/documentation/desktop/tools/dom-invader/settings/attack-types, https://portswigger.net/burp/documentation/desktop/tools/dom-invader/settings/web-messages, https://portswigger.net/burp/documentation/desktop/tools/dom-invader/settings/prototype-pollution, https://portswigger.net/burp/documentation/desktop/tools/dom-invader/settings/misc, https://portswigger.net/burp/documentation/desktop/tools/dom-invader/settings/canary, https://portswigger.net/blog/introducing-dom-invader, https://portswigger.net/burp/releases -->
 <!-- terms: DOM Invader, canary, source, sink, augmented DOM, DOM XSS, web message, postMessage, prototype pollution, gadget, DOM clobbering, Postmessage interception, Postmessage origin spoofing, XSSコンテキスト, Frame path, Inject URL params, Inject canary into all sources, Remove CSP header, Permissions-Policy, sinkRanking, sourcesList, 計装, Burp内蔵ブラウザ -->

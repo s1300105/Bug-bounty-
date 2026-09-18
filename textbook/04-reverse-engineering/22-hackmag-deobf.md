@@ -51,7 +51,7 @@
 
 デオブフスケーション処理は、複数の二次情報が一致して次の3段階で動くと述べている。
 
-```
+```text
 難読化された JS ソース
       │
       ▼  ① Parse（構文解析）
@@ -213,6 +213,21 @@ traverse(ast, {
 
 IIFE（即時実行関数式, Immediately Invoked Function Expression）とは、定義した瞬間に自分自身を呼び出す関数のこと。回転 IIFE は起動時に配列の順序を「正しい」並びへ戻す役目を持つ。
 
+**calls transform / index shift** の像を具体的にしておく。難読化前に `"login"` と直接書かれていた文字列は、まず配列に入れられ、コードの側では「配列から取り出すアクセサ関数の呼び出し」に置き換わる。つまり、直接インデックス `arr[0]` の代わりに `_0x1234(0x0)` のようなアクセサ呼び出しが並ぶ。さらに難読化器は、この呼び出しに渡すインデックスの表現形式（16進、10進、オフセット付き加算など）を、あらかじめ用意した複数パターンのリストからランダムに選んで散らす。そのため同じ配列を指す呼び出しでも `_0x1234(0x0)`・`_0x1234(0x1a - 0x1a)` のように見た目がばらつき、「どれが同じ文字列を指すのか」を目で追いにくくしている。
+
+### 学習用の解説資料
+
+string-array 難読化の仕組みと復号を体系的に学ぶ入門資料として、KlaroSkope の解説（klaroskope.com/learn/javascript-string-array-deobfuscation）がある。string-array がどう組み立てられ、どの順に剥がすかを図解した二次資料で、本節の内容を別角度から確認したいときに向く。
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: JavaScript String Array Deobfuscation（KlaroSkope） — https://klaroskope.com/learn/javascript-string-array-deobfuscation
+> **なぜ**: 本教科書の執筆環境からは自動取得できなかった（理由: 外部ドメインが egress プロキシでブロックされた）。以下の案内は検索結果・二次情報の要約にもとづく。
+> **読みどころ**:
+> 1. string-array（抽出・エンコード・回転）がどの順に積み上がるかの全体像。
+> 2. 回転 IIFE とアクセサ関数の関係を、初学者向けに図解した部分。
+> 3. 復号を「どの層から剥がすか」の手順整理。
+> **代替手段**: DeepWiki の javascript-obfuscator 解説（String Array System / String Array Helpers 節）、webcrack のドキュメント。
+
 ### 逆変換の実務手順
 
 複数ツールが共通で採用する手順（出典: WebSearch 要約 deobfuscate-js / webcrack）。
@@ -249,6 +264,30 @@ traverse(ast, {
 
 - **webcrack**（string array / rotate / shuffle / index shift / calls transform / wrapper type / none-base64-RC4 encoding を一括処理し、webpack バンドルも復元する）。
 - **deobfuscate-js**（回転オフセット・base64/RC4・自己書き換えデコーダに対応）。
+
+### 実コードで学ぶ: ReverseJS 連載
+
+本節の逆変換パターン（文字列連結の畳み込み・定数インライン展開・文字列隠蔽の復号・デッドコード除去）は、steakenthusiast.github.io の **ReverseJS 連載**（"Deobfuscating Javascript via AST Manipulation"）が回ごとに完全な実装コードとともに解説している。本節が二次情報ベースで欠く「動く逆変換コード」を補える最良の無料資料であり、各回の対応は次のとおり。
+
+| 連載回 | カバーする内容 | 本節の対応小節 |
+|--------|----------------|----------------|
+| An Introduction to Babel | parser/traverse/generator の基礎と最初の visitor | 2・3節 |
+| Replacing References to Constant Variables | 定数インライン展開（定数伝播）の完全コード | 4節 |
+| Various String Concealing Techniques | 文字列隠蔽の各パターン（連結分割・文字コード・base64・配列参照など）ごとの逆変換 | 3・5節 |
+| Constant Folding / Binary Expression Simplification | 二項演算の定数畳み込み | 2・3節 |
+| Removing Dead or Unreachable Code | デッドコード・到達不能コードの除去 | 6節 |
+
+特に **Various String Concealing Techniques** は、文字列を隠す代表的な手口（文字列を分割して `+` で連結する、`String.fromCharCode` で組み立てる、base64 でエンコードする、配列参照に置き換える等）を一つずつ取り上げ、それぞれに対応する visitor の書き方を示している。string-array 以外の「素朴な文字列隠し」も含めて逆変換の型を身につけたいなら、この回を写経するのが近道である。
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: ReverseJS 連載「Deobfuscating Javascript via AST Manipulation」（steakenthusiast.github.io） — https://steakenthusiast.github.io/2022/05/21/Deobfuscating-Javascript-via-AST-An-Introduction-to-Babel/
+> **なぜ**: 本教科書の執筆環境からは自動取得できなかった（理由: github.io ドメインが egress プロキシでブロックされた）。本節の逆変換コードは一般知識にもとづく雛形であり、連載が示す完全な実装コードは欠落している。
+> **読みどころ**:
+> 1. 「An Introduction to Babel」= parser/traverse/generator の基礎と最初の visitor（2・3節の裏付け）。
+> 2. 「Replacing References to Constant Variables」= 定数インライン展開の完全コード（4節の裏付け）。
+> 3. 「Various String Concealing Techniques」= 文字列隠蔽の各パターン（連結分割・文字コード・base64・配列参照）ごとの逆変換コード（3・5節の裏付け）。
+> 4. 「Constant Folding」= 二項演算の畳み込み、「Removing Dead or Unreachable Code」= デッドコード除去の各回。
+> **代替手段**: trickster.dev の Babel 連載（first steps / defeating string array mapping）、nullteilerfrei「Use Babel to Deobfuscate JavaScript Malware」。
 
 ---
 
@@ -288,7 +327,7 @@ traverse(ast, {
 
 switch ベースの実装では、コードが次の形になる。
 
-```
+```text
 状態変数 state を用意
 while (true) {
   switch (state) {
@@ -371,7 +410,14 @@ traverse(ast, {
 ### 関連ツール・研究
 
 - **JStillery**（Minded Security）= 部分評価による高度デオブフス。
-- **JSimpo** = スライス記号実行 + 動的実行の構造的デオブフス（純粋な静的部分評価のスケーラビリティ問題を回避）。
+- **JSimpo** = スライス記号実行（slice + symbolic execution）と動的実行を組み合わせた構造的デオブフス。
+
+ここで使われる二つの専門用語を先に噛み砕く。
+
+- **記号実行（symbolic execution）**とは、変数に「具体的な値」ではなく「記号（未知数）」を入れたままプログラムをたどり、各地点で値がどんな式になるかを数式のように追う解析手法のこと。実際に走らせずに「この分岐に入る条件は何か」「この変数は最終的に何になるか」を割り出せる。
+- **スライシング（slicing）**とは、ある地点の値に**影響する文だけを抜き出す**技法のこと。たとえば「このデコーダ呼び出しの結果」に関係する定義・代入だけを残し、無関係なコードを切り落とす。「スライス記号実行」は、この切り出した部分（スライス）にだけ記号実行を適用する、という意味である。
+
+JSimpo がこの方式を採る**動機**は、純粋な静的部分評価の**スケーラビリティ問題（規模の壁）**を避けることにある。静的部分評価は「事前に計算できる部分をすべて計算する」ため、対象が大きく分岐や状態が多いと、たどるべき組み合わせが爆発して計算量・メモリが現実的でなくなる。そこで JSimpo は、まず解析したい値に効くコードだけをスライスで絞り込み、その狭い範囲にだけ記号実行と実際の動的実行を当てる。全体を静的に総当たりするのではなく「必要な部分だけ深く追う」ことで、大規模な難読化コードでも破綻しにくくしている。
 
 出典: WebSearch 要約 Minded Security「Advanced JS Deobfuscation via AST and Partial Evaluation」/ JStillery / academic。
 
@@ -387,14 +433,26 @@ visitor を書く前に、対象コードの AST を **AstExplorer.net** で可�
 
 | ツール | 特徴 |
 |--------|------|
-| js-deobfuscator（kuizuo） | Babel AST ベース。オンライン playground + CLI + プログラマブル API |
+| js-deobfuscator（kuizuo） | Babel AST ベース。オンライン playground + CLI + プログラマブル API。回転 IIFE・RC4 配列・別名チェーン（alias chain）の実対応 transform を持つ |
 | webcrack（j4k0xb） | javascript-obfuscator と webpack バンドルを一括アンパック。string array 系を網羅対応 |
 | deobfuscate-js（pljeroen） | string array パターン特化。回転オフセット・base64/RC4・自己書き換えデコーダ対応 |
 | babel-plugin-deobfuscate（mcountryman） | 解析用 Babel プラグイン |
-| js-confuser-deobfuscator | js-confuser 難読化への対応 |
+| js-confuser-deobfuscator | ツール名のみノートに記載（ノートに機能説明なし）。〔補足（一般知識）〕名前からは js-confuser 系難読化を対象とするツールと推測されるが、この用途はノートで裏が取れていない |
 | JStillery（Minded Security） | 部分評価による高度デオブフス |
 | deobfuscate.io / W3cubTools の JS deobfuscate | オンライン整形・簡易復号 |
 | DeepWiki の javascript-obfuscator 解説 | 難読化器の内部構造ドキュメント（逆に読むと逆変換の設計図になる） |
+
+〔補足〕**別名チェーン（alias chain）**とは、デコーダ関数に `var b = a; var c = b;` のように次々と別名を割り当てて、どれが本体のアクセサなのかを分かりにくくする手口のこと。復号ツールはこの別名の連鎖をたどり、末端の呼び出しがどのデコーダを指すかを解決する必要がある。kuizuo の js-deobfuscator は、この別名チェーン解決・回転 IIFE の実行・RC4 配列の復号を実装した transform を README と各ソースで公開している。
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: js-deobfuscator（kuizuo）— https://github.com/kuizuo/js-deobfuscator
+> **なぜ**: 本教科書の執筆環境からは自動取得できなかった（理由: 当セッションの github MCP が単一リポジトリのみ許可で、このリポジトリを取得できなかった）。以下の案内は二次情報の要約にもとづく。
+> **読みどころ**:
+> 1. 回転 IIFE を実行して string-array の順序を確定する transform の実装。
+> 2. RC4 で暗号化された配列要素をオンデマンド復号するアクセサへの対応コード。
+> 3. 別名チェーン（alias chain）を解決してアクセサ本体を突き止める処理。
+> 4. これらを組み合わせる CLI / プログラマブル API とオンライン playground の使い方。
+> **代替手段**: webcrack（github.com/j4k0xb/webcrack）、deobfuscate-js（github.com/pljeroen/deobfuscate-js）。いずれも string-array 系を網羅対応する。
 
 ### 反復適用（fixpoint）
 
@@ -522,6 +580,9 @@ visitor を書く前に、対象コードの AST を **AstExplorer.net** で可�
 - https://smsf.cs.arizona.edu/~debray/Publications/unflatten.pdf
 
 <!-- sources: https://hackmag.com/coding/js-deobfuscation, https://steakenthusiast.github.io/2022/05/21/Deobfuscating-Javascript-via-AST-An-Introduction-to-Babel/, https://www.trickster.dev/post/javascript-ast-manipulation-with-babel-defeating-string-array-mapping/, https://www.trickster.dev/post/javascript-ast-manipulation-with-babel-reducing-nestedness-unflattening-the-cfg/, https://github.com/kuizuo/js-deobfuscator, https://github.com/javascript-obfuscator/javascript-obfuscator/blob/master/README.md, https://deepwiki.com/javascript-obfuscator/javascript-obfuscator/8.1-string-array-system, https://github.com/pljeroen/deobfuscate-js, https://webcrack.netlify.app/docs/concepts/deobfuscate.html, https://blog.mindedsecurity.com/2015/10/advanced-js-deobfuscation-via-ast-and.html, https://eybisi.run/Control-Flow-Unflattening/, https://smsf.cs.arizona.edu/~debray/Publications/unflatten.pdf -->
-<!-- terms: 難読化（obfuscation）, デオブフスケーション（難読化解除）, AST（抽象構文木）, Babel, visitor パターン, path オブジェクト, 定数畳み込み（constant folding）, 定数伝播（constant propagation）, string-array（文字列配列）, 回転 IIFE, 制御フロー平坦化（Control Flow Flattening, CFF）, ディスパッチャ, 部分評価（partial evaluation）, 隔離 VM（サンドボックス）, AstExplorer, RC4, webcrack, fixpoint（不動点） -->
+<!-- terms: 難読化（obfuscation）, デオブフスケーション（難読化解除）, AST（抽象構文木）, Babel, visitor パターン, path オブジェクト, 定数畳み込み（constant folding）, 定数伝播（constant propagation）, string-array（文字列配列）, 回転 IIFE, 制御フロー平坦化（Control Flow Flattening, CFF）, ディスパッチャ, 部分評価（partial evaluation）, 隔離 VM（サンドボックス）, AstExplorer, RC4, webcrack, fixpoint（不動点）, 別名チェーン（alias chain）, calls transform, 記号実行（symbolic execution）, スライシング（slicing）, IIFE（即時実行関数式） -->
 <!-- self-read: https://hackmag.com/coding/js-deobfuscation | サイト側の egress ポリシーで CONNECT 403 拒否。archive.org ミラーも拒否。原典逐語取得不能 -->
 <!-- self-read: https://www.trickster.dev/post/javascript-ast-manipulation-with-babel-reducing-nestedness-unflattening-the-cfg/ | trickster.dev ドメインが egress プロキシでブロック。検索スニペットのみ -->
+<!-- self-read: https://steakenthusiast.github.io/2022/05/21/Deobfuscating-Javascript-via-AST-An-Introduction-to-Babel/ | github.io が egress プロキシでブロック。ReverseJS 連載（文字列隠蔽・定数畳み込み・定数伝播・デッドコード除去の主要出典）は検索スニペットのみで逐語コード欠落 -->
+<!-- self-read: https://github.com/kuizuo/js-deobfuscator | github MCP の単一リポジトリ制限で取得不能。回転IIFE/RC4配列/alias chain の実対応コードは未取得 -->
+<!-- self-read: https://klaroskope.com/learn/javascript-string-array-deobfuscation | 外部ドメインが egress プロキシでブロック。string-array 学習資料として要約のみ -->

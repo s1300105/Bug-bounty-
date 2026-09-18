@@ -27,7 +27,7 @@ Service Worker（サービスワーカー、以下SW）とは、任意のWebペ�
 
 Chromiumのセキュリティドキュメントは、SWの存在意義を次のように説明している。SWは、オフラインや断続的な接続でも動く魅力的なWebアプリ（ドキュメント編集、カタログ閲覧・購入、SNS投稿、メール作成など）を可能にする。狙いは、**Webプラットフォームをネイティブアプリと競争できるようにしつつ**、Open Web Platform（OWP）が持つ「browse-to-use（開けばすぐ使える）」でサンドボックス化された性質を本質的に保つことにある。
 
-SWは、以前から存在した古い **Application Cache API**（アプリケーションキャッシュ）の**置き換え・改良**として設計された。つまりSWは、まったく新しい危険物ではなく、既存のオフライン機能をより制御しやすい形に作り直したもの、という位置づけである。
+SWは、以前から存在した古い **Application Cache API**（アプリケーションキャッシュ）の**置き換え・改良**として設計された。つまりSWは、まったく新しい危険物ではなく、既存のオフライン機能をより制御しやすい形に作り直したもの、という位置づけである。この設計背景は、仕様策定側が公開している「Service Workers Explained」（explainer）に詳しい（`https://github.com/w3c/ServiceWorker/blob/master/explainer.md`）。なぜApplication Cacheでは不十分で、なぜプロキシ型の設計にしたのかを知りたい読者はここを読むとよい。
 
 ### 1.3 なぜ攻撃者にとって強力なのか（ここが本題）
 
@@ -48,19 +48,11 @@ SWは実質的に**ネットワークプロキシ**として機能する。い�
 - **Chrome DevTools の Application パネル**の「Service Workers」セクション。ここからSWの検査（inspect）・更新（update）・停止（stop）・登録解除（unregister）ができる。
 - **`chrome://serviceworker-internals`**。Chromiumが公開している、登録のグローバルな低レベルビュー。全オリジンのSW登録を一覧・削除できる。
 
-```text
-確認できる場所の対応
-┌───────────────────────────────┬───────────────────────────┐
-│ DevTools → Application →       │ 特定オリジンのSWを検査/更新/  │
-│   Service Workers             │ 停止/解除                   │
-├───────────────────────────────┼───────────────────────────┤
-│ chrome://serviceworker-       │ 全オリジンの登録を一覧・削除   │
-│   internals                   │ ステータス(RUNNING/STOPPED等) │
-├───────────────────────────────┼───────────────────────────┤
-│ DevTools → Application →       │ SWが植えた悪性レスポンス      │
-│   Cache Storage               │ キャッシュを確認・削除        │
-└───────────────────────────────┴───────────────────────────┘
-```
+| 確認できる場所 | 何ができるか |
+|---|---|
+| DevTools → Application → Service Workers | 特定オリジンのSWを検査 / 更新 / 停止 / 解除 |
+| `chrome://serviceworker-internals` | 全オリジンの登録を一覧・削除。ステータス（RUNNING / STOPPED / REDUNDANT 等）を確認 |
+| DevTools → Application → Cache Storage | SWが植えた悪性レスポンスキャッシュを確認・削除 |
 
 ### 2.2 プッシュ通知の許可がなぜ効くのか
 
@@ -209,27 +201,44 @@ self.importScripts(host + "/sw_extra.js")
 
 > **DOM Clobbering（DOMクロバリング）とは**、`id` や `name` 属性を持つHTML要素が、同名のグローバル変数や `document.<name>` を上書きできてしまうブラウザの挙動を悪用する手法のこと。`<script>` タグを使わずにHTMLを注入するだけで、JS変数の値を差し替えられるのでCSPを回避しやすい。
 
-SWが `importScripts` に使うURL/ドメインが**HTML要素の中にある**場合、DOM Clobbering によってそれを改変し、SWに**攻撃者のドメインからスクリプトを読み込ませる**ことができる。たとえばSWが `window.config.url` のようなDOM由来の値を `importScripts` に渡す実装だと、HTMLインジェクションだけでその値を攻撃者URLに差し替えられる。具体例はPortSwigger Research「Hijacking service workers via DOM Clobbering」を参照。
+SWが `importScripts` に使うURL/ドメインが**HTML要素の中にある**場合、DOM Clobbering によってそれを改変し、SWに**攻撃者のドメインからスクリプトを読み込ませる**ことができる。たとえばSWが `window.config.url` のようなDOM由来の値を `importScripts` に渡す実装だと、HTMLインジェクションだけでその値を攻撃者URLに差し替えられる。具体例はPortSwigger Research「Hijacking service workers via DOM Clobbering」を参照。DOM Clobbering そのものの前提（`id`/`name` 属性でグローバルを上書きする挙動）を先に固めたい読者は、下記📌の `dom-clobbering.md` を先に読むとよい。
+
+#### 攻撃チェーンの全体像
+
+まず、SW登録要件（同一オリジンから正しいMIMEのJSを返す）を満たすための**3つの足がかり**がある。どれか1つを持てば次に進める。
+
+| 足がかり | 何をするか | SW登録要件をどう満たすか |
+|---|---|---|
+| (A) 任意JSアップロード | 攻撃者のJSファイルをそのオリジンにアップロードする | 同一オリジンの正しいMIMEのJS URLが手に入る |
+| (B) JSONP callback反射 | JSONPの `callback` にJSを反射させる | 同一オリジンからJSとして解釈される応答を返せる |
+| (C) DOM Clobbering | `importScripts` に渡るDOM由来値を差し替える | 既存SWに攻撃者URLのスクリプトを読み込ませる |
+
+そのうえで、攻撃の流れは次のようになる。
 
 ```text
-攻撃チェーンの全体像
  XSS または HTMLインジェクション
         │
-        ├─(A) 任意JSアップロード ──┐
-        ├─(B) JSONP callback反射 ──┤→ 同一オリジンから正しいMIMEのJSを返せる
-        └─(C) DOM Clobbering ──────┘   （＝SW登録要件を満たす）
-                                        │
-                                        ▼
-                         navigator.serviceWorker.register()
-                                        │
-                          ┌─────────────┴─────────────┐
-                          ▼                           ▼
-                fetch イベント乗っ取り        importScripts で外部JS
-                （URL漏えい/応答改変）        （CSP回避で任意実行）
-                          │
-                          ▼
-                    オリジンの永続的制御
+        │  ＋ 上表(A)/(B)/(C) のいずれかの足がかり
+        ▼
+   navigator.serviceWorker.register()   ← SWを登録
+        │
+        ├──────────────┬──────────────┐
+        ▼                              ▼
+ fetch イベント乗っ取り        importScripts で外部JS
+ （URL漏えい / 応答改変）        （CSP回避で任意実行）
+        │
+        ▼
+   オリジンの永続的制御
 ```
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: HackTricks「DOM Clobbering」（同リポジトリ `dom-clobbering.md`） — https://github.com/HackTricks-wiki/hacktricks/blob/master/src/pentesting-web/dom-clobbering.md
+> **なぜ**: 本教科書の執筆環境からは rendered ページ（`book.hacktricks.xyz`）を自動取得できなかった（理由: サイト側の egress 制限で 403 ブロック）。以下のSW×DOM Clobbering の記述は、DOM Clobbering の基礎を前提にしている。
+> **読みどころ**:
+> 1. `id`/`name` 属性を持つHTML要素が、なぜ同名のグローバル変数や `document.<name>` を上書きできるのか（DOM Clobbering の原理）。
+> 2. `<script>` タグを使わずにJS変数の値を差し替えられるため、CSPを回避しやすい理由。
+> 3. その値が `importScripts` の引数に流れ込むと、本節のSWハイジャックに直結するという接続点。
+> **代替手段**: HackTricks公式GitHub原本 https://github.com/HackTricks-wiki/hacktricks/blob/master/src/pentesting-web/dom-clobbering.md （無料で全文読める）
 
 ---
 
@@ -258,12 +267,15 @@ SWの更新チェックは、前回の fetch が**24時間より前**に発生�
 
 **SWはレンダラプロセス（renderer processes）内で動作する。** ChromeがSWを起動するとき、SWのオリジンに関連付けられたレンダラプロセスを選ぶ。無ければ、そのオリジン用に新しい **`SiteInstance`**（`content/public/browser/site_instance.h`）を使って新規プロセスを作る。
 
+> **`SiteInstance` とは**、Chromiumが「同一サイトのドキュメント群を同じレンダラプロセスに割り当てる」ための内部的な単位のこと。ざっくり言えば「どのサイトをどのプロセスに載せるか」を管理する箱で、`content/public/browser/site_instance.h` はその定義があるソースファイルの場所を指している（初学者はファイル名まで覚える必要はなく、「サイト単位でプロセスを分ける仕組みがある」とだけ押さえればよい）。
+
 〔補足〕これは Site Isolation の一部で、SWはそのオリジン専用のプロセスに割り当てられ、他サイトのメモリに直接触れない。クロスサイトのSWは別プロセスに置かれ、Spectre のようなサイドチャネルを含む越境を難しくする。
 
 ### 6.2 SWがアクセスできるAPIは限定的
 
-- HTML仕様が「Workersが利用可能なAPI表面」を部分的に列挙している（`https://html.spec.whatwg.org/#apis-available-to-workers`）。
+- HTML仕様が「Workersが利用可能なAPI表面」を部分的に列挙している（`https://html.spec.whatwg.org/#apis-available-to-workers`）。あわせて、SW実行環境そのものを表す `ServiceWorkerGlobalScope`（SW版のグローバルオブジェクト）と、SWが制御するページ／ワーカーを表す `Client` も参照するとよい。
 - **注意：SWは同期API（synchronous APIs）にアクセスできない。**
+- ただし、他のWebプラットフォーム仕様が新しいAPI表面をworkerに追加することがある。たとえば **Permissions API** は、worker に `permissions` 属性を公開する。つまり「Workerが触れるAPIは固定の一覧ではなく、仕様が増えると広がりうる」点に注意する（攻撃面もそれに応じて増減する）。
 - SWはWebプラットフォームAPIの**サブセット**にアクセスでき、加えてワーカー／SW固有のAPIを持つ。`[Service]WorkerGlobalScope` は必ずしも `Window` の厳密なサブセットではなく、`WorkerNavigator` も `Navigator` の厳密なサブセットとは限らない。
 
 ### 6.3 SWは同一オリジンポリシーに従う
@@ -295,7 +307,15 @@ SWの更新チェックは、前回の fetch が**24時間より前**に発生�
 - あるオリジンにSWが動いていても、各ワーカーは**最後のイベントを処理した直後にシャットダウン**される。
 - ワーカーを生かし続けられるイベントには**プッシュ通知**が含まれる。
   - プッシュ通知でSWが通知を作らなければ、**ブラウザがユーザーに見える通知を自動生成**する（`push_messaging_notification_manager.cc`）。
-  - プッシュ通知は**プロンプトでオリジンに許可を付与すること**を要する。
+  - プッシュ通知は**プロンプトでオリジンに許可を付与すること**を要する。この挙動は、Chromium FAQが挙げる検証用アプリ **simple-push-demo**（`https://gauntface.github.io/simple-push-demo/`）で実際に確かめられる。
+
+〔補足〕Chromium FAQには、SWのライフサイクルを目で追う具体的な検証手順が載っている。要点は「`simple-push-demo` を開いてSWを登録し、別タブの `chrome://serviceworker-internals/` でステータスを見る」というものである。
+
+1. `https://gauntface.github.io/simple-push-demo/` を訪問する。
+2. 2つ目のタブで `chrome://serviceworker-internals/` を開き、SWが **ACTIVATED** かつ **RUNNING** になっているのを見る（許可を与えるまで、オリジンは実際にはpush通知を送れない）。
+3. 3つ目のタブで `chrome://settings/clearBrowserData` を開き、「Clear browsing data」でクリアする。
+4. `chrome://serviceworker-internals/` をリロードし、SWのステータスが **REDUNDANT** かつ **STOPPED** に変わったことを確認する。
+5. simple-push-demo のタブを閉じ、`chrome://serviceworker-internals/` を再リロードして、SWが消えたことを確認する。
 
 ### 6.6 「登録後に開発された攻撃」をSWで撃てるか
 
@@ -321,7 +341,8 @@ SWの更新チェックは、前回の fetch が**24時間より前**に発生�
 - **JPEG等の非スクリプトMIMEにSWを隠せるか**：不可。SW仕様・実装は、SWスクリプトが**正しいJavaScript MIME type**（`text/javascript` 等）を持つことを要求する。`image/jpeg` や `text/plain` で返るファイルはSWとして登録できない。これが「アップロードJSでのSW登録」に画像偽装を使えない理由である。
 - **iframe はSWを登録できるか**：Yes、ただし**そのiframe自身がセキュアコンテキスト**である場合に限る。トップレベルまで全ての親がセキュアコンテキストでなければならない。そして**サードパーティiframeが登録したSWは、そのオリジンに加えてトップレベルサイトでパーティション化（partitioned）される**。サードパーティCookieがブロックされていても同様である。これにより、`a.com` 内の `tracker.com` iframe のSWと、`b.com` 内の同じ `tracker.com` iframe のSWが別パーティションに分離され、クロスサイトのSW経由トラッキングを防ぐ。
 - **なぜ登録前に確認しないのか**：Chromeチームは、カメラ・マイク・位置情報のように単純で正確に表せるプライバシー事項はユーザーに尋ねるが、**リソース利用（キャッシュ・永続化・CPU）については尋ねない**方針である。これらは自動判断の方が適する（HTTPキャッシュも過去のGoogle Gearsも尋ねなかった）。また、iframe内オリジンのAPI呼び出しで出る許可要求を人々は十分理解できない、という非公式調査もある。
-- **SWを一切望まない場合**：ブラウザデータのクリア（`chrome://settings/clearBrowserData`）がSWも削除する。個別の登録は `chrome://serviceworker-internals/` からも削除できる。
+- **1つのオリジン、またはChrome自体はいくつのSWを起動できるか**：Chromium FAQは「**現在の仕様およびChromeの実装は、いかなる上限も定義していない**」と明言している。つまりSWの数には仕様上・実装上の上限が定められていない。これはセキュリティ前提を読むうえで重要で、「数の上限があるから安全」という仮定は成り立たない。攻撃者が多数のSWを登録するようなリソース枯渇の懸念よりも、前述の「イベントが来なければ動けない」「同一オリジン必須」といった別の制約で全体の安全性を担保している、という設計になっている。
+- **SWを一切望まない場合**：ブラウザデータのクリア（`chrome://settings/clearBrowserData`）がSWも削除する。個別の登録は `chrome://serviceworker-internals/` からも削除できる（前掲6.5の検証手順で、ACTIVATED/RUNNING から REDUNDANT/STOPPED を経て消えるまでを目視できる）。まだSWをサポートしないブラウザを使うという回避策もあるが、Open Web Platform は今後もSWを含む方向に進化していくとFAQは述べている。
 
 ### 6.9 どんなSWバグがChrome VRPの報奨対象か
 
@@ -337,7 +358,14 @@ Chromiumはこのドキュメントで示した**セキュリティ表明のい�
      *  USB, Bluetooth
 ```
 
-過去のSWセキュリティバグ一覧はChromiumバグトラッカー（`bugs.chromium.org` の `Type=Bug-Security serviceworker` クエリ）にある。バグを見つけたらSecurityテンプレートで起票する。良い報告は問題を示す最小テストケースを伴う。Chrome Security Team は1〜2営業日でトリアージする。
+過去のSWセキュリティバグ一覧はChromiumバグトラッカー（`bugs.chromium.org` の `Type=Bug-Security serviceworker` クエリ）にある。
+
+報告するときは、**「仕様のバグ」と「Chrome実装のバグ」を区別する**とよい。Chromium FAQは次のように使い分けを勧めている。
+
+- **仕様（specification）のバグ**を見つけた場合：Security テンプレートで新規にChromiumバグを起票する。加えて、**その仕様を実装している全ブラウザベンダにも起票する**のが望ましい（仕様の欠陥は1ブラウザに閉じないため、Chromeだけ直しても他ブラウザに同じ穴が残る）。
+- **Chrome実装（implementation）のバグ**を見つけた場合：同じく Security テンプレートで起票する。Chrome Security Team が1〜2営業日でトリアージする。
+
+いずれの場合も、**良い報告は問題を示す最小テストケース（minimal test case）を伴う**。
 
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: Chromium「Service Worker Security FAQ」 — https://chromium.googlesource.com/chromium/src/+/main/docs/security/service-worker-security-faq.md
@@ -392,7 +420,7 @@ Chromiumはこのドキュメントで示した**セキュリティ表明のい�
 5. `/sw-test.js` を深いパス（例 `/uploaded/sw-test.js`）に置き、`{scope: "/"}` で登録が**失敗する**ことを確認する。次に応答に `Service-Worker-Allowed: /` を付けて再試行し、成功に変わることを確認する（scope の仕組みを体感する）。
 6. SWの応答MIME type を `text/plain` にして登録を試み、**失敗する**ことを確認する（MIME要件の確認）。
 7. DevTools → Application → **Cache Storage** で、SWが植えたキャッシュを確認・削除する。
-8. `chrome://settings/clearBrowserData` でブラウザデータをクリアし、`chrome://serviceworker-internals` をリロードしてSWが REDUNDANT / STOPPED を経て消えることを確認する。
+8. Chromium FAQの検証を再現する。`https://gauntface.github.io/simple-push-demo/` を開いてSWを登録し、別タブの `chrome://serviceworker-internals/` で **ACTIVATED / RUNNING** を確認する。次に `chrome://settings/clearBrowserData` でブラウザデータをクリアし、`chrome://serviceworker-internals/` をリロードしてSWが **REDUNDANT / STOPPED** を経て消えることを確認する。
 9. 防御の確認として、SW配信を意図しないアップロードパスに対し、サーバ側で `Service-Worker` リクエストヘッダを検出して `400` を返す設定を入れ、SW登録が拒否されることを確認する。
 
 ## つまずきポイント
@@ -461,9 +489,13 @@ Chromiumはこのドキュメントで示した**セキュリティ表明のい�
 - MDN - ServiceWorkerRegistration.update() — https://developer.mozilla.org/en-US/docs/Web/API/ServiceWorkerRegistration/update
 - Service-worker kill-switch pattern — https://stackoverflow.com/a/38980776
 - Clear-Site-Data — https://www.w3.org/TR/clear-site-data/
+- Service Workers Explained（explainer） — https://github.com/w3c/ServiceWorker/blob/master/explainer.md
+- HackTricks「DOM Clobbering」原本 — https://github.com/HackTricks-wiki/hacktricks/blob/master/src/pentesting-web/dom-clobbering.md
+- Simple Push Demo（SW検証用アプリ） — https://gauntface.github.io/simple-push-demo/
 
-<!-- sources: https://book.hacktricks.xyz/pentesting-web/xss-cross-site-scripting/abusing-service-workers, https://chromium.googlesource.com/chromium/src/+/main/docs/security/service-worker-security-faq.md, https://portswigger.net/research/hijacking-service-workers-via-dom-clobbering, https://shadow-workers.github.io, https://developer.mozilla.org/en-US/docs/Web/API/ServiceWorkerRegistration/update, https://stackoverflow.com/a/38980776, https://www.w3.org/TR/clear-site-data/ -->
-<!-- terms: Service Worker, fetch イベント, importScripts, DOM Clobbering, JSONP, scope, Service-Worker-Allowed, Service-Worker ヘッダ, セキュアコンテキスト, Same-Origin Policy, Cache API, Clear-Site-Data, kill-switch SW, Shadow Workers, Site Isolation, Payment Handler, プッシュ通知, VRP, ストレージパーティショニング, foreign fetch -->
+<!-- sources: https://book.hacktricks.xyz/pentesting-web/xss-cross-site-scripting/abusing-service-workers, https://chromium.googlesource.com/chromium/src/+/main/docs/security/service-worker-security-faq.md, https://portswigger.net/research/hijacking-service-workers-via-dom-clobbering, https://shadow-workers.github.io, https://developer.mozilla.org/en-US/docs/Web/API/ServiceWorkerRegistration/update, https://stackoverflow.com/a/38980776, https://www.w3.org/TR/clear-site-data/, https://github.com/w3c/ServiceWorker/blob/master/explainer.md, https://github.com/HackTricks-wiki/hacktricks/blob/master/src/pentesting-web/dom-clobbering.md, https://gauntface.github.io/simple-push-demo/ -->
+<!-- terms: Service Worker, fetch イベント, importScripts, DOM Clobbering, JSONP, scope, Service-Worker-Allowed, Service-Worker ヘッダ, セキュアコンテキスト, Same-Origin Policy, Cache API, Clear-Site-Data, kill-switch SW, Shadow Workers, Site Isolation, SiteInstance, Payment Handler, プッシュ通知, Permissions API, ServiceWorkerGlobalScope, VRP, ストレージパーティショニング, foreign fetch -->
 
 <!-- self-read: https://book.hacktricks.xyz/pentesting-web/xss-cross-site-scripting/abusing-service-workers | サイト側の egress 制限で 403。原本Markdownは取得済みだが読者は公式GitHub原本で確認できる -->
+<!-- self-read: https://github.com/HackTricks-wiki/hacktricks/blob/master/src/pentesting-web/dom-clobbering.md | rendered ページ book.hacktricks.xyz がサイト側 egress 制限で 403。DOM Clobbering の前提補完として読者は公式GitHub原本で確認できる -->
 <!-- self-read: https://chromium.googlesource.com/chromium/src/+/main/docs/security/service-worker-security-faq.md | サイト側の egress 制限で 403。原本Markdownは取得済みだが読者は公式GitHubミラーで確認できる -->

@@ -161,7 +161,7 @@ DevTools だけでなく、専用ツールを併用すると発見効率が上�
 | --- | --- | --- |
 | postMessage-tracker | Chrome拡張 | 現在ウィンドウのリスナー数をアイコン表示。全サブフレームを追跡。短命リスナーや操作で有効化されるリスナーも捕捉。Log URL で関数と位置をログ。console 上で window 間のやり取りを replay 可能なパス付きで表示。Raven/New Relic/Rollbar/Bugsnag/jQuery ラッパーを "unpack" |
 | FancyTracker | Chrome拡張(MV3) | postMessage-tracker の Manifest V3 後継。全フレーム/オリジンのリスナーをソースコードとスタックトレース付きで表示。dedupe（既定ON）、独自ルールで危険語/安全語を色分け、minify コードの整形、code/URL・Regex によるフィルタ/ブロック、JSON import/export、外部ロギング |
-| Fransyfox | Firefox拡張 | postMessage-tracker の Firefox 版適応（FancyTracker ベース） |
+| Fransyfox | Firefox拡張 | postMessage-tracker の Firefox 版適応（FancyTracker ベース）。作者/リポジトリ提供者は GangGreenTemperTatum |
 | PwnFox | Firefox/Burp拡張 | PostMessage Logger 機能を含む |
 | Posta | Chrome拡張＋ツール | Cross-document Messaging の調査ツール（enso.security）。4ペイン構成（Tabs / Messages / Console / Exploit）。改変リプレイと window.open 経由のエクスプロイトに対応 |
 | PMHook | スクリプト/フック | ページ読込直後に `EventTarget.addEventListener` をラップし、追加される message ハンドラと受信メッセージをログ |
@@ -242,7 +242,7 @@ sink（シンク）とは、汚染された値が最終的に流れ込む「実�
 | フレーム／スクリプト | `iframe` の `src`・`srcdoc`、`script` の `src`・`text` |
 | コード評価 | `eval`, `Function`（`new Function(...)`）, `setTimeout`, `setInterval` |
 
-`setTimeout` / `setInterval` は第1引数に文字列を渡すと `eval` 相当に動くため sink になる、という点が見落とされやすい。
+`setTimeout` / `setInterval` が sink 扱いされるのは、**第1引数に文字列を渡した場合のみ**である。文字列を渡すとその文字列が `eval` 相当でコードとして実行されるため、`event.data` が文字列としてここに流れ込むと XSS になる。逆に第1引数に**関数を渡した場合はコードとして評価されない**ので、この意味では危険にならない。つまり「タイマー関数だから危険」なのではなく、「文字列を第1引数に渡したときだけ」危険になる、という条件を押さえておく。
 
 ### 4.2 sink の種類でインパクトが変わる
 
@@ -389,6 +389,19 @@ setTimeout(() => {
 
 〔補足〕さらに実務的には、`event.source` を保持して正しい相手にのみ返信する、メッセージに**型タグ / nonce** を付けてプロトコルを固定する、`JSON.parse` は try/catch で囲む、といった実装が推奨される。
 
+### 8.4 併読したい一次・二次資料
+
+ここまでの仕組みと防御は、次の2本を読むとより正確に裏取りできる。いずれも本教科書の執筆環境からは取得できなかったので、読者は自分のブラウザで開いてほしい。
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: MDN `Window.postMessage()` 公式ドキュメント — https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage ／ HackTricks「PostMessage Vulnerabilities」 — https://hacktricks.wiki/en/pentesting-web/postmessage-vulnerabilities/index.html
+> **なぜ**: 本教科書の執筆環境から両サイトとも取得できなかった（理由: `developer.mozilla.org`・`hacktricks.wiki` ともに外向き通信制限で 403 を実測）。本節の構文・引数・セキュリティ注意やバイパス手法の記述は、これらを逐語では引用しておらず、二次情報と一般知識にもとづく要約である。
+> **読みどころ**:
+> 1. MDN では `postMessage()` の**正確な引数仕様**と、公式が明記する**セキュリティ上の注意**（`targetOrigin` を `"*"` にしない、受信側で `origin` を必ず検証する）を確認する。
+> 2. HackTricks では、**オリジン検証バイパスの具体パターン**（`indexOf`/`search`/正規表現の甘さ、`e.origin` の書き換え不能性など）と、**実践的な PoC 断片**を確認する。
+> 3. 本節で「二次情報」と断った箇所（構文・ペイロード）を、この2本で突き合わせて裏を取る。
+> **代替手段**: MDN はローカライズ版（/ja/ パス）や Wayback Machine、HackTricks は GitHub ミラー（github.com/HackTricks-wiki）でも参照できる。
+
 ---
 
 ## 9. 主要ツール詳解（README 逐語ベース）
@@ -397,13 +410,13 @@ setTimeout(() => {
 
 ### 9.1 postMessage-tracker（Frans Rosén）
 
-Frans Rosén が作った Chrome 拡張で、OWASP AppSec Europe 2018 の講演「Attacking modern web technologies」で発表され、2020年5月に正式公開された。README（逐語取得）から要点を挙げる。
+Frans Rosén が作った Chrome 拡張で、OWASP AppSec Europe 2018 の講演「Attacking modern web technologies」で発表され、2020年5月に正式公開された。README には講演の録画（YouTube: https://www.youtube.com/watch?v=oJCCOnF25JU ）とスライド（SpeakerDeck: https://speakerdeck.com/fransrosen/owasp-appseceu-2018-attacking-modern-web-technologies ）へのリンクも記載されており、拡張の背景を知りたければこの2本が一次資料になる。README（逐語取得）から要点を挙げる。
 
 - 現在ウィンドウの message リスナー数を**アイコンで表示**する。
 - 全サブフレームのリスナーを追跡する。
 - **短命リスナー**や**操作（interaction）で有効化されるリスナー**も捕捉する。iframe 内で一瞬だけ有効になる隠れリスナーを発見できる。
 - **Log URL** オプションで、リスナー関数と位置を外部エンドポイントに記録し、後からまとめて精査できる。設定は `chrome://extensions` の Extension Options から行う。
-- console 上で window 間のやり取りを表示し、**replay 可能なパス**を提示する。`diffwin` を送信者/受信者に指定すると異なるウィンドウ間の通信も追跡できる。
+- console 上で window 間のやり取りを表示し、**replay 可能なパス**を提示する。ここで言う `diffwin` とは、console 上で「今見ているウィンドウとは別のウィンドウ」を指し示すためにこの拡張が用意した識別子（キーワード）のことである。送信者または受信者として `diffwin` を指定すると、同一ウィンドウ内だけでなく**異なるウィンドウ間**でやり取りされる通信も追跡・再送（replay）できる。
 - Raven / New Relic / Rollbar / Bugsnag / jQuery の**ラッパーを "unpack"** して、ラップ越しに本当のリスナーを表示する。
 - 匿名関数は Chrome が stringify できないため `bound` と表示される。
 
@@ -438,6 +451,7 @@ Firefox 版は別リポジトリ FancyTracker-FF（https://github.com/Zeetaz/Fan
 | Regex Filtering | 正規表現によるリスナーのフィルタにも対応 |
 | Import/Export | ブロックリストを JSON で保存・共有 |
 | External Logging | 全検出リスナーを自前サーバへ送信 |
+| Settings | コードブロックの**フォントサイズ**、および展開トリガー（自動で折りたたむ **max lines / code length** のしきい値）を手動で調整できる |
 
 危険語ハイライトのルールは README に逐語例がある。
 
@@ -456,6 +470,14 @@ FancyTracker は、元祖が展開しなかった多数のラッパーライブ�
 - 汎用パターン: セッションリプレイ、パフォーマンス監視、アナリティクス
 
 ライセンスは MIT（Frans Rosén の原作にもとづく adaptation）。
+
+#### 実務上の制約（To-Do / 既知の不具合）
+
+README の「To-Do」節と補足には、実務で知っておくと役立つ制約がいくつか書かれている。
+
+- **拡張のブロックリストは現状ハードコード**で、UI 設定から編集できるようにするのは今後の予定（To-Do）。
+- **カスタムのハイライト適用後に UI が強制リロードされる不具合**が特定の状況で起きる。回避策は「すぐ反映されないときは拡張を一度開き直す」こと（作者は「大した問題ではない」としている）。
+- **SPA（Single Page Application）への対応は現状不十分**で、より良い SPA サポートは将来対応するかもしれないが未定、と注記されている。動的に画面が切り替わるアプリを対象にするときは、この制約を念頭に置く。
 
 ### 9.3 Posta（enso.security）
 
@@ -610,3 +632,5 @@ Posta の実務的な価値は、5.2 節で説明した「iframe 埋め込みが
 <!-- self-read: https://www.yeswehack.com/learn-bug-bounty/introduction-postmessage-vulnerabilities | サイト側の外向き通信制限で全経路が403、二次情報ベース -->
 <!-- self-read: https://www.intigriti.com/researchers/blog/hacking-tools/exploiting-postmessage-vulnerabilities | サイト側の外向き通信制限で全経路が403、二次情報ベース -->
 <!-- self-read: https://portswigger.net/web-security/dom-based/controlling-the-web-message-source | portswigger.netが403で取得不可、ラボは読者側で実施 -->
+<!-- self-read: https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage | developer.mozilla.orgが403で取得不可、公式仕様は読者側で参照 -->
+<!-- self-read: https://hacktricks.wiki/en/pentesting-web/postmessage-vulnerabilities/index.html | hacktricks.wikiが403で取得不可、バイパス手法は読者側で参照 -->
