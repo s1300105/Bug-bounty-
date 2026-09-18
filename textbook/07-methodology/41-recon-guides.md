@@ -6,6 +6,7 @@
 > - `LinkFinder` / `SecretFinder` / `collector.py` / `jsAlert.py` など各ツールの役割と、原文の逐語コマンドを説明できる
 > - 誤記された外部importドメイン（タイポスクワッティング）を突く高インパクト経路の探し方を説明できる
 > - 総合recon（サブドメイン列挙・ポート・コンテンツ発見・GitHub dork・JS解析・通知）の6分野と、それぞれで使う実在ツールを整理できる
+> - スコープ確定・資産発見・技術フィンガープリント・クラウド露出・継続recon（差分監視）まで含めた総合reconの全体像を説明できる
 
 **元資料**: https://gist.github.com/pikpikcu/b034a7e3b8bf966a6eba95acb1fbfe08 （原典取得済 / ファイル名 `JavascriptRecon.md`、作者 pikpikcu、2021-12-21）／ https://chs.us/guides/recon/ （原典は取得できず二次情報ベース）
 **関連する節**: DOM based XSS の節、postMessage 脆弱性の節（本節の「危険シンク通知」が両者への橋渡しになる）
@@ -429,7 +430,7 @@ JavaScript reconは、より大きな「総合recon」の一分野である。�
 |---|---|---|
 | 新規サブドメイン | `subfinder`→`anew`＋cron/CI | 新しい攻撃面が生えた瞬間に触りにいく |
 | 新規JSファイル | `gau|grep .js`→`anew` | 新機能・新エンドポイントの手掛かり |
-| JS内容の変化 | `allJsToJson.py` が保存する `content` を定期取得しdiff | 追加されたエンドポイント・シークルットを捕捉 |
+| JS内容の変化 | `allJsToJson.py` が保存する `content` を定期取得しdiff | 追加されたエンドポイント・シークレットを捕捉 |
 
 `anew`（新規行のみ追記するツール）で差分だけを抽出し、`notify`（Slack/Discord/Telegram/webhook へ結果を送るツール）でアラートを飛ばす。JS内容の差分については、§5.2 の `allJsToJson.py` が本文（`content`）ごと保存している点を思い出してほしい。この保存済み `content` こそが、前回と今回を突き合わせる **diff の素材** になる。
 
@@ -458,15 +459,19 @@ JavaScript reconは、より大きな「総合recon」の一分野である。�
 
 サイト `chs.us` の著者は Carl Sampson（ハンドル @chs, GitHub `sampsonc`, 連絡先 chs@chs.us）。Burp拡張（AuthHeaderUpdater, HeaderUpdater, PassiveSearch, Perfmon など）や `PwnedCheck`、`csp_toolkit` を公開しているAppSec研究者である。`chs.us/guides/` 配下には recon 以外に ssrf, csrf, authentication, business-logic-flaws, idor, fuzzing, mobile, supply-chain, authz などの体系的ガイドが2026年時点で存在する（他リポジトリからの参照リンクで確認）。著者本人の2026年プロジェクト `sampsonc/vulnlab.dev` の記述から、これらは「著者による hands-on（実践的）ガイド群で、少なくともSSRFガイドは著者の演習ラボの土台」であることが裏付けられている。
 
-### 6.3 二次情報が補う「pikpikcuガイドに無い」高価値手法
+### 6.9 二次情報が補う「pikpikcuガイドに無い」高価値手法
 
 `dylanzonix/ambit` の recon-methodology から、本節第1〜5章では触れられていない、特に価値の高い手法をいくつか挙げる（出典明記のうえの補足）。
 
 - **ソースマップ復元**: 各JS URLに `.map` を付与（`app.js` → `app.js.map`）し、存在すれば `unwebpack-sourcemap` で元ソース（コメント・ルートテーブル含む）を復元する。pikpikcuガイドに無い高価値手法。
 - **オリジンIP発見（WAFバイパス）**: base64 faviconのMMH3ハッシュを計算し、Shodan/ZoomEye/FOFA で `http.favicon.hash:<hash>` 検索 → CDN背後の実オリジンを同一アイコンから特定する。
 - **API固有recon**: `/swagger.json` `/openapi.json` `/v2/api-docs` の探索、GraphQLのイントロスペクション `{__schema{types{name}}}`（無効なら `clairvoyance` でスキーマ再構成）。
-- **VCS露出**: `/.git/HEAD` `/.git/config` が見えれば `git-dumper`/`GitTools` で全ソース＋履歴＋シークレットを復元。他に `/.env` `/.DS_Store`。
+- **VCS露出**: `/.git/HEAD` `/.git/config` が見えれば `git-dumper`/`GitTools` で全ソース＋履歴＋シークレットを復元。他に `/.env` `/.DS_Store`（→ 詳細は §6.6）。
+- **隠しパラメータ発掘**: `arjun -u https://target/page`、`x8 -u https://target/ -w params.txt`、`ParamSpider --domain target.com` でHTMLやJSに出てこない隠れたパラメータを見つける。**なぜ重要か**: サーバがドキュメント化していない入力を受け付けている場合、mass-assignment（本来触れないはずの属性を送信して上書きする欠陥）やIDOR（他人のIDを指定して他人のデータにアクセスする欠陥）の糸口になるからである。クライアント側だけで検証している隠しフォームフィールドは改ざん候補になる。
+- **技術フィンガープリント・クラウド露出・reconフレームワーク**: これらも pikpikcu ガイドには無く、本節では §6.4 / §6.6 / §6.5 で個別に扱った。
 - **カバレッジ台帳**: `(identity, host, endpoint, param)` のマップ済/未テストを管理し、recon飽和を判定する。「未マップの面こそバグが潜む」を運用に落とす仕組み。
+
+> 〔注意〕上に挙げたのは **代表例のみ** である。二次情報 `dylanzonix/ambit` の `recon-methodology.md` は、スコープ確定・オリジンIP発見・技術フィンガープリント・API recon・クラウド露出・防御シグナルなど A〜M の多数の分野を含む。**全容は §8 出典の同ファイルを参照** すること。本節の §6.2〜6.7 はそのうち主要分野を教科書向けに再構成したものである。
 
 ---
 
@@ -506,7 +511,14 @@ JavaScript reconは、より大きな「総合recon」の一分野である。�
 - ファジングは `ffuf -u .../js/ -w jsWordlist.txt -t 200`（assetnote wordlists 推奨）。
 - 大量JSは `allJsToJson.py` で本文ごとJSON化。サイズ都合で5URLずつ `outputN.json` に分割保存し、差分監視の素材にする。
 - 総合recon（chs.us）は6分野: サブドメイン列挙・ポート・コンテンツ発見・GitHub dork・JS解析・通知。JS解析はその一分野。
-- 二次情報が補う高価値手法: ソースマップ復元（`.map`）、favicon ハッシュでのオリジンIP発見、`/swagger.json`・GraphQL introspection、`.git` 露出のダンプ。
+- 総合reconの前段に「スコープ確定・資産発見」がある。`bounty-targets-data`/`chaos` でin-scope確認、ASN発見（`amass intel -asn`）、Reverse WHOIS、`uncover` での資産検索エンジン横断。
+- サブドメイン列挙の成果物 dangling record（CNAME/SPF/MX等の宙ぶらりんレコード）はサブドメインテイクオーバーの糸口。
+- 技術フィンガープリント: `whatweb`/Wappalyzer/`wafw00f`、Cookie名（`PHPSESSID`/`JSESSIONID`/`ASP.NET_SessionId`/`laravel_session`）でスタック判別、CMSスキャナ `wpscan`/`joomscan`。
+- 継続reconの肝は差分監視: 新規サブドメイン・新規JS・JS内容変化を検知。JS内容diffの素材は `allJsToJson.py` の保存 `content`。フレームワークは `reconftw`/`osmedeus`/`reNgine`/`BBOT`、マップ後 `nuclei -t exposures/`、OOBは `interactsh`/Collaborator/`canarytokens`。
+- クラウド/ストレージ露出: S3/GCS/Azureバケット推測（`cloud_enum`, grayhatwarfare, `--no-sign-request`）、依存混乱 `confused`/`nodep`、IMDS SSRF `169.254.169.254`。
+- 防御シグナル: ワイルドカードDNS/ソフト404のベースライン取得、WAF時のパス正規化ギャップ（`//admin`, `/%2e/admin`, `/Admin`）。
+- 隠しパラメータ発掘（`arjun`/`x8`/`ParamSpider`）は mass-assignment/IDOR の糸口。
+- 二次情報が補う高価値手法: ソースマップ復元（`.map`）、favicon ハッシュでのオリジンIP発見、`/swagger.json`・GraphQL introspection、`.git` 露出のダンプ。これらは代表例で、全容は出典の ambit recon-methodology.md 参照。
 - 原文の逐語コマンドにはtypoがあり、private toolは入手不可。中身は単純なので自作・代替できる。
 
 ## 理解度チェック
@@ -531,6 +543,16 @@ JavaScript reconは、より大きな「総合recon」の一分野である。�
    ▶ 答え: ソースマップ復元（`app.js`→`app.js.map` を付けて `unwebpack-sourcemap` で元ソース復元）。ほかにfaviconハッシュでのオリジンIP発見、`.git`露出のダンプなど。
 10. 原文のSecretFinderの例コマンドの問題点は何か。
    ▶ 答え: SecretFinderの節なのにコマンド中で `linkfinder.py` を呼んでいる（typo）。実運用では `SecretFinder.py -i @ -o cli` にすべき。
+11. サブドメイン列挙を「終わり」にせず、DNSレコードまで検査すると見つかる脆弱性の糸口は何か。
+   ▶ 答え: dangling record（指し先サービスが解約済みのCNAMEなどが残った宙ぶらりんのレコード）。サブドメインテイクオーバーの糸口になる。
+12. Cookie名 `laravel_session` と `ASP.NET_SessionId` は、それぞれどのスタックを示唆するか。
+   ▶ 答え: 前者はLaravel（PHP）、後者はASP.NET。技術フィンガープリントの一手掛かり。
+13. 継続reconでJS内容の差分（diff）を取る素材はどこから得られるか。
+   ▶ 答え: §5.2 の `allJsToJson.py` が本文（`content`）ごとJSON保存しているので、それを定期取得して前回とdiffすればよい。`anew` で新規行を抽出し `notify` でアラートする。
+14. 隠しパラメータ発掘（`arjun`/`x8`）がなぜ重要か。
+   ▶ 答え: ドキュメント化されていない入力を見つけることで、mass-assignment や IDOR の糸口になるから。
+15. WAF/レート制限に当たったとき試す「パス正規化ギャップ」の例を2つ挙げよ。
+   ▶ 答え: `//admin` `/./admin` `/%2e/admin` `/Admin`、末尾に `%20`/`%09`/`;` を付ける、などのうち2つ。
 
 ## 出典
 
@@ -560,4 +582,4 @@ JavaScript reconは、より大きな「総合recon」の一分野である。�
 <!-- self-read: https://chs.us/guides/recon/ | サイト/組織のegressポリシーで403遮断・アーカイブも遮断・公開源泉に未収録のため本文取得不可、二次情報で補完 -->
 
 <!-- sources: https://gist.github.com/pikpikcu/b034a7e3b8bf966a6eba95acb1fbfe08, https://chs.us/guides/recon/, https://github.com/dylanzonix/ambit, https://github.com/lc/gau, https://github.com/GerbenJavado/LinkFinder, https://github.com/m4ll0k/SecretFinder, https://github.com/m4ll0k/Bug-Bounty-Toolz, https://github.com/tomnomnom/hacks/tree/master/anti-burl, https://github.com/ffuf/ffuf, https://wordlists.assetnote.io/ -->
-<!-- terms: JavaScript recon, gau, LinkFinder, SecretFinder, collector.py, antiburl, jsbeautify, availableForPurchase.py, jsAlert.py, allJsToJson.py, ffuf, DOM based XSS, postMessage, タイポスクワッティング, サブドメイン列挙, GitHub dork, ソースマップ, httpx, subfinder, notify, anew -->
+<!-- terms: JavaScript recon, gau, LinkFinder, SecretFinder, collector.py, antiburl, jsbeautify, availableForPurchase.py, jsAlert.py, allJsToJson.py, ffuf, DOM based XSS, postMessage, タイポスクワッティング, サブドメイン列挙, GitHub dork, ソースマップ, httpx, subfinder, notify, anew, ASN, Reverse WHOIS, uncover, dangling record, サブドメインテイクオーバー, 技術フィンガープリント, wafw00f, whatweb, WAF, reconftw, BBOT, nuclei, interactsh, カバレッジ台帳, cloud_enum, S3バケット, 依存混乱, IMDS SSRF, ソフト404, パス正規化, mass-assignment, IDOR, arjun, x8 -->

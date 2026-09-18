@@ -57,6 +57,8 @@
 
 拡張は、**ユーザーの完全な権限でホストマシンにアクセスできる**ネイティブバイナリを許可できる。ネイティブバイナリは、Flash などのプラグインが使う標準の Netscape Plugin Application Programming Interface（NPAPI）を通じて拡張コアと相互作用する。ここまで到達すれば、攻撃者はブラウザの外、OS レベルでコードを実行できる可能性がある。
 
+〔補足〕NPAPI は歴史的な仕組みで、現行の Chromium ベースブラウザでは廃止・無効化されている。ただし「拡張コア → ホストマシンのバイナリ」という橋渡し自体は今も存在し、現在は後述の**ネイティブメッセージング（native messaging）**（6.4 節）が同等の役割を担う。したがって本節の「Native Binary 層」は、現在の環境では実質的にネイティブメッセージング経由のネイティブホストと読み替えてよい。
+
 ### 2.4 Boundaries（境界）: なぜ簡単には抜けないのか
 
 拡張の各コンポーネントは**強い保護境界**で互いに分離されている。
@@ -122,6 +124,10 @@ chrome.storage.local.get("message", (result) => {
 ボタンがクリックされると `runtime.sendMessage()` で拡張ページへメッセージが飛ぶ。Content Script が API へ直接触れられないため、`storage` のような例外を除けば、機能は拡張ページへメッセージを送って代行させる。
 
 Chrome で Content Script を表示・デバッグするには、Options > More tools > Developer tools（または Ctrl + Shift + I）を開き、**Source タブ → Content Scripts タブ**を見る。ここで実行中の Content Script を観察し、ブレークポイントを置いて実行フローを追える。
+
+> **WARNING（HackTricks）**: ブラウザによって Content Script の能力は僅かに異なる。Chromium ベースのブラウザでは能力の一覧が [Chrome Developers documentation](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts)、Firefox では [MDN](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Content_scripts) にある。また Content Script は**バックグラウンドスクリプトと通信してアクションを実行させ、その応答を受け取る**こともできる。
+
+〔診断観点〕このブラウザ差は診断上も重要である。同じ拡張でも Chromium 版と Firefox 版で Content Script が使える API・挙動が違いうるため、片方でしか成立しない攻撃・防御がある。対象ブラウザの公式ドキュメントで「その Content Script に何ができるか」を必ず確認する。
 
 ### 3.2 動的注入される Content Script
 
@@ -318,7 +324,7 @@ Web ページが拡張のページ（例 `.html`）にアクセスするには�
 
 これらのページは次の形式の URL でアクセスできる:
 
-```
+```text
 chrome-extension://<extension-id>/message.html
 ```
 
@@ -430,7 +436,7 @@ if (sender.origin !== "https://app.example.com") return
 
 よくあるパス例:
 
-```
+```text
 /assets/widget/1.26.0/index.html
 /static/app-2024.12.1/
 /cdn/component/v1234/
@@ -586,7 +592,9 @@ chrome.runtime.sendNativeMessage(
 }
 ```
 
-`name` は `runtime.connectNative()` / `runtime.sendNativeMessage()` に渡す文字列、`path` はバイナリへのパス、`type` は `stdio` の1種のみ、`allowed_origins` はアクセスできる拡張を示す（**ワイルドカード不可**）。Chrome はこの json を Windows レジストリや macOS/Linux の所定パスから探す。拡張は `nativeMessaing`（原文ママ）権限も宣言する必要がある。
+`name` は `runtime.connectNative()` / `runtime.sendNativeMessage()` に渡す文字列、`path` はバイナリへのパス、`type` は `stdio` の1種のみ、`allowed_origins` はアクセスできる拡張を示す（**ワイルドカード不可**）。Chrome/Chromium はこの json を、一部の Windows レジストリと、macOS/Linux の一部の所定パスから探す（探索先の詳細は [developer.chrome.com の Native Messaging ドキュメント](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)にある）。拡張は `nativeMessaing`（原文ママ。**正しくは `nativeMessaging`**）権限も宣言する必要がある。
+
+〔注意〕原文（HackTricks）では権限名が `nativeMessaing` と綴られているが、これは誤記である。実際に manifest で宣言する権限名は `nativeMessaging` が正しい。4節の攻撃面フィールド表でも正しい綴り `nativeMessaging` を用いている。
 
 参照[13] spaceraccoon「Universal Code Execution in Browser Extensions」が示す脆弱パターン:
 
@@ -667,6 +675,8 @@ Firefox では `about:debugging#/runtime/this-firefox` で **`Load Temporary Add
 node query.js -f "metadata.user_count > 250000" "manifest.content_scripts?.length > 0 && manifest.permissions?.includes('nativeMessaging')"
 ```
 
+〔注記〕原文（HackTricks）の説明文では「25000 人超のユーザー」と書かれているが、その直後に示される実際のクエリ値は `metadata.user_count > 250000`（25 万）である。説明文とクエリ値でゼロの桁数が食い違っているので、原文を読むときは混乱しないよう注意する。ここで載せた逐語コマンドはクエリ側の `250000` が正しい。しきい値は自分の探索目的に合わせて自由に変えてよい。
+
 ### 9.2 解析ツール
 
 | ツール | 種別 | できること |
@@ -674,6 +684,8 @@ node query.js -f "metadata.user_count > 250000" "manifest.content_scripts?.lengt
 | **Tarnish**（thehackerblog.com/tarnish/） | Web 解析 | webstore リンクから拡張を取得。manifest viewer、Fingerprint 解析、Clickjacking 解析、Permission Warning viewer、Dangerous Functions（`innerHTML`, `chrome.tabs.executeScript` 等）、Entry Points、CSP 解析・バイパスチェック、Retire.js で既知脆弱ライブラリ検出、整形版 DL、レポート URL |
 | **Neto**（github.com/elevenpaths/neto） | Python 3 | Firefox/Chrome の拡張を展開し、manifest・ローカライゼーション・JS・HTML から特徴を抽出 |
 | **crxaminer**（crxaminer.tech） | Web | 要求権限などから拡張使用のリスクレベルを評価 |
+
+〔出典帰属〕HackTricks はこの拡張ペンテスト手法について、`@naivenom`（https://twitter.com/naivenom ）の協力への謝辞を記している（参照[15]）。上記の Neto を含むツール群・手法の整理はこの協力にもとづく。
 
 Tarnish の Dangerous Functions と Entry Points のスキャナは、アラートに「関連コードと行」「問題の説明」「View File」「ファイルパスと完全な chrome 拡張 URI」「ファイル種別（Background Page / Content Script / Browser Action 等）」「そのファイルが include される全ページと web_accessible_resource ステータス」を付ける。初回スキャンは遅いが2回目はキャッシュでほぼ即時になる。
 
@@ -983,6 +995,35 @@ HackTricks の逐語チェックリスト（診断・防御の両面で使える
 - ShadowPrompt (koi.ai): https://www.koi.ai/blog/shadowprompt-how-any-website-could-have-hijacked-anthropic-claude-chrome-extension
 - Universal Code Execution in Browser Extensions (spaceraccoon): https://spaceraccoon.dev/universal-code-execution-browser-extensions/
 - An Evaluation of the Google Chrome Extension Security Architecture: http://webblaze.cs.berkeley.edu/papers/Extensions.pdf
+
+### 参考資料索引（HackTricks References [1]〜[17]、逐語）
+
+深掘り用の一次資料索引。HackTricks 原典が末尾に列挙している参照リストをそのまま載せる。上の主要出典と重複するものもあるが、読者が原典をたどる際の入口になるよう省略せずに掲げる。
+
+| # | タイトル | URL |
+|---|----------|-----|
+| [1] | Introduction to Chrome Browser Extension Security Testing (cobalt.io) | https://www.cobalt.io/blog/introduction-to-chrome-browser-extension-security-testing |
+| [2] | Anatomy of a Basic Extension (palant.info) | https://palant.info/2022/08/10/anatomy-of-a-basic-extension/ |
+| [3] | Attack Surface of Extension Pages (palant.info) | https://palant.info/2022/08/24/attack-surface-of-extension-pages/ |
+| [4] | When Extension Pages Are Web-Accessible (palant.info) | https://palant.info/2022/08/31/when-extension-pages-are-web-accessible/ |
+| [5] | Content scripts - Chrome for Developers | https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts |
+| [6] | externally_connectable - Chrome for Developers | https://developer.chrome.com/docs/extensions/reference/manifest/externally-connectable |
+| [7] | Background Pages (Manifest V2) - Chrome for Developers | https://developer.chrome.com/docs/extensions/mv2/background-pages |
+| [8] | Kicking the Rims: A Guide for Securely Writing and Auditing Chrome Extensions (thehackerblog) | https://thehackerblog.com/kicking-the-rims-a-guide-for-securely-writing-and-auditing-chrome-extensions/ |
+| [9] | How to View Source of a Chrome Extension (gist) | https://gist.github.com/LongJohnCoder/9ddf5735df3a4f2e9559665fb864eac0 |
+| [10] | Moving up the Assemblyline: Exposing Malicious Code in Browser Extensions (redcanary) | https://redcanary.com/blog/threat-detection/assemblyline-browser-extensions/ |
+| [11] | ShadowPrompt: How Any Website Could Have Hijacked Anthropic's Claude Chrome Extension (koi.ai) | https://www.koi.ai/blog/shadowprompt-how-any-website-could-have-hijacked-anthropic-claude-chrome-extension |
+| [12] | An Evaluation of the Google Chrome Extension Security Architecture (Berkeley) | http://webblaze.cs.berkeley.edu/papers/Extensions.pdf |
+| [13] | Universal Code Execution in Browser Extensions (spaceraccoon) | https://spaceraccoon.dev/universal-code-execution-browser-extensions/ |
+| [14] | Opera Browser Zero-Day RCE Vulnerability on Cross-Platforms (darkrelay) | https://www.darkrelay.com/post/opera-zero-day-rce-vulnerability |
+| [15] | Thanks to @naivenom for the help with this methodology | https://twitter.com/naivenom |
+| [16] | Passbolt PBL-02 security report | https://help.passbolt.com/assets/files/PBL-02-report.pdf |
+| [17] | developer.chrome.com - Concepts - Native Messaging | https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging |
+
+OWASP チートシート側が挙げる一次情報（remote scripts 禁止など開発者向け防御の根拠）:
+
+- Google Chrome Extension Security Guide: https://developer.chrome.com/docs/extensions/mv3/security/
+- Mozilla Firefox Extension Security Best Practices: https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Security_best_practices
 
 <!-- sources: https://hacktricks.wiki/en/pentesting-web/browser-extension-pentesting-methodology/index.html, https://cheatsheetseries.owasp.org/cheatsheets/Browser_Extension_Vulnerabilities_Cheat_Sheet.html, https://spaceraccoon.dev/universal-code-execution-browser-extensions/, https://www.koi.ai/blog/shadowprompt-how-any-website-could-have-hijacked-anthropic-claude-chrome-extension, https://github.com/palant/chrome-extension-manifests-dataset -->
 <!-- terms: ブラウザ拡張, Content Script, Extension Core, Native Binary, manifest.json, externally_connectable, web_accessible_resources, host_permissions, Content Security Policy, Native Messaging, isolated world, main world, prototype pollution, DOMベースデータスキミング, Service Worker, activeTab, run_at, Tarnish, Neto, exact origin equality -->

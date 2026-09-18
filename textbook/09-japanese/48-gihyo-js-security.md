@@ -294,6 +294,14 @@ var obj = eval("(" + json + ")");
 var obj = JSON.parse(json);   // eval("(" + json + ")") は使わない
 ```
 
+そもそも `eval` に攻撃者制御の値を渡すこと自体を、OWASP は RULE #7 で強い言葉で戒めている（逐語）。
+
+> "It is always a bad idea to use a user-controlled input in dangerous sources such as eval. 99% of the time it is an indication of bad or lazy programming practice, so simply don't do it instead of trying to sanitize the input."
+> （`eval` のような危険な箇所にユーザ制御の入力を使うのは常に悪手である。99% の場合、それは下手または怠慢なコードの兆候だ。入力をサニタイズしようとするのではなく、単にそれをやめよ）
+> （出典: OWASP DOM based XSS Prevention Cheat Sheet, RULE #7）
+
+この一文が、第7回の——そして本節全体の——主張を最も端的に言い表している。**「エスケープやサニタイズを頑張る」のではなく「危険な sink をそもそも使わない」。** これが DOM-based XSS 対策の背骨である。
+
 〔補足・逆方向の罠〕「`eval` の代わりに `JSON.parse`」だけを覚えると、逆方向（オブジェクトをページに埋め込む）で `JSON.stringify` を安全だと誤解しやすい。OWASP は明確に警告している（逐語）。
 
 > "`JSON.stringify()` is **not** an output-encoding function. Its output is valid JSON but is not safe to embed directly in an HTML, HTML-attribute, or inline `<script>` context"
@@ -334,6 +342,14 @@ setTimeout((function(param) { return function() {
 
 つまり第7回の「IE9 互換ならクロージャ」という助言は、OWASP でも「クロージャこそ推奨、文字列＋多段エンコードは破綻しやすい」という形で裏付けられている。
 
+〔補足〕OWASP は、`setTimeout`／`setInterval`／`eval`／`Function` のように「渡された値を暗黙に `eval` してしまうメソッド」全般（GUIDELINE #5）について、どうしても値を渡す必要がある場合の回避策を3つ挙げている。
+
+1. 値を文字列デリミタ（引用符）で区切って、コードではなくデータとして扱わせる。
+2. クロージャで包む、または使用箇所の段数に応じて N 段の JavaScript エンコードをかける。
+3. 入力を検証・加工するカスタム関数でラップする。
+
+ただしこれらはあくまで「やむを得ない場合」の緩和策であって、本筋は前節・本節で繰り返しているとおり「暗黙 `eval` 系のメソッドに攻撃者制御の値を渡さない」ことである。
+
 ## 7. 危険な sink（4）—— `Function` コンストラクタ
 
 `Function`（Function コンストラクタ）は、文字列から動的に関数（＝コード）を生成する。`new Function("return " + userInput)` のように攻撃者制御の文字列を渡すと、`eval` と同様に任意コードが実行される。
@@ -360,6 +376,16 @@ $(text).append("<div>news</div>");
 ```
 
 `$()`（`jQuery()`）は、引数が HTML 文字列とみなされると DOM 要素を生成してしまう。`.html()` は `innerHTML` 相当で、渡された文字列を HTML として解釈する。どちらも source から来た値を渡すと XSS になる。
+
+〔補足・jQuery の sink はこれだけではない〕第7回が例に挙げるのは `$()`／`.html()`／`.append()` だが、jQuery で「文字列を HTML として解釈して DOM に挿入する」メソッドは他にもある。バグバウンティで jQuery コードを読むときは、次のメソッドに source の値が渡っていないかも確認すること。
+
+| 種類 | jQuery メソッド |
+| --- | --- |
+| 要素生成・HTML 挿入 | `$()` / `jQuery()`, `.html()`, `.append()`, `.prepend()`, `.after()`, `.before()`, `.replaceWith()`, `.wrap()` |
+| HTML パース | `$.parseHTML()` |
+| コード実行 | `$.globalEval()` |
+
+`.append()` だけでなく `.prepend()`・`.after()`・`.before()`・`.replaceWith()`・`.wrap()` も、引数を HTML 文字列として解釈して挿入するため同じ危険がある。`$.parseHTML()` は文字列を DOM ノード列に変換し、`$.globalEval()` は文字列をグローバルスコープで `eval` する（＝コード実行系 sink）。
 
 ### 8-3. どう守るのか
 
@@ -388,6 +414,12 @@ gihyo 第6回は「`innerHTML` ではなく `textContent`」を推奨した。�
 
 つまり、`<script>` 要素に対して `innerText` を使うと、その中身はスクリプトとして実行されてしまう。「テキスト系プロパティは要素が `<script>` でない限り安全」であって、`<script>` を動的に作ってそこにテキストを入れる、という使い方は危険である。
 
+〔補足・`innerText` の由来〕OWASP は `innerText` について「もともと Internet Explorer が導入し、各ブラウザベンダに採用された後、2016年に HTML 標準で正式に仕様化された」と述べている（逐語）。
+
+> "The `innerText` feature was originally introduced by Internet Explorer, and was formally specified in the HTML standard in 2016 after being adopted by all major browser vendors."
+
+IE 独自だったプロパティが後から標準に取り込まれた、という経緯を持つ。標準化されているからといって「無条件に安全」を意味しないことに注意する。
+
 ### 9-2. 安全な sink の公式リスト
 
 OWASP が「安全な sink」として挙げているもの（逐語コード）。
@@ -404,6 +436,24 @@ elem.innerHTML = DOMPurify.sanitize(dangerVar);
 ```
 
 いちばん下の行に注目してほしい。`innerHTML` に値を入れたいなら、生の値ではなく `DOMPurify.sanitize()` を通した値を入れる、という第三の道が示されている。これが次の節の話である。
+
+### 9-3. どう自動検出するか —— variant analysis と Semgrep
+
+ここまでは「人間が DevTools で source→sink を追う」方法を説明してきたが、コードベースが大きくなると手作業では追い切れない。OWASP のチートシートは、**variant analysis（バリアント解析: 一度見つかった脆弱パターンと同じ形のコードを、コードベース全体から機械的に洗い出す手法）** を使った DOM XSS の検出に触れており、次の脆弱コードを例に挙げている（逐語）。
+
+```javascript
+var x = location.hash.split("#")[1];
+document.write(x);
+```
+
+これはまさに本節 4-2 で見た「source=`location.hash` → sink=`document.write`」のパターンである。OWASP はこの形のコードを検出する Semgrep ルールへのリンクを載せている。
+
+> "Semgrep rule to identify above dom xss [link](https://semgrep.dev/s/we30)."
+> （出典: OWASP DOM based XSS Prevention Cheat Sheet, Detect DOM XSS using variant analysis）
+
+**Semgrep** とは、ソースコードを構文（パターン）で検索できる静的解析ツールのこと。「`location.*` から取った値が `document.write` などの sink に渡っている」というパターンをルールとして書いておけば、同じ形の脆弱箇所をコードベース全体から一括で見つけられる。バグハンターにとっては、`grep` のような単純な文字列検索より精度が高く、DOM-based XSS の候補を機械的に絞り込む道具になる。
+
+- Semgrep ルール（OWASP が示す例）: https://semgrep.dev/s/we30
 
 ## 10. 2016年に無かった対策 —— サニタイズと Trusted Types
 
@@ -426,7 +476,12 @@ DOMPurify は Cure53（DOM-based XSS 研究で知られるドイツのセキュ�
 
 サニタイズ後に文字列をいじると無効化されうること、ブラウザの挙動変化でバイパスが見つかるため定期的に更新することが必要である。
 
-〔補足・なぜ2016年の記事はサニタイズに触れないのか〕DOMPurify 公式 README によると、DOMPurify は Internet Explorer では「何もしない（渡された文字列をそのまま返す）」。2016年当時は IE 対応が必須の案件が多く、DOMPurify がそこで機能しなかったため、サニタイズは現実的な選択肢になりにくかった。これは推測ではなく DOMPurify 公式の仕様として説明できる。
+〔補足・なぜ2016年の記事はサニタイズに触れないのか〕DOMPurify 公式 README によると、DOMPurify は Internet Explorer では「何もしない（渡された文字列をそのまま返す）」。2016年当時は IE 対応が必須の案件が多く、DOMPurify がそこで機能しなかったため、サニタイズは現実的な選択肢になりにくかった。これは推測ではなく DOMPurify 公式の仕様として説明できる（逐語）。
+
+> "DOMPurify does nothing at all. It simply returns exactly the string that you fed it. DOMPurify exposes a property called `isSupported`, which tells you whether it will be able to do its job, so you can come up with your own backup plan."
+> （DOMPurify は何もせず、渡された文字列をそのまま返すだけである。DOMPurify は `isSupported` というプロパティを公開しており、それが仕事をできるかどうかを教えてくれるので、自前のバックアップ策を用意できる）
+
+実務では、`DOMPurify.isSupported` を見て、サニタイズが効かない環境（古い IE など）では別の対策（サーバ側での処理、機能の無効化など）に切り替える、というバックアップ策を組んでおくとよい。「サニタイズを呼んだのに何も除去されていない」という事故を防げる。
 
 ### 10-2. 規律を「ブラウザに強制させる」—— Trusted Types
 
@@ -451,7 +506,7 @@ CSP（Content Security Policy）で強制する書き方（公式 README 逐語�
 
 > "The API is available natively in browsers based on Chromium version 83 and up."
 
-Chromium 83 以降でネイティブ対応、それ以前や他ブラウザではポリフィルを使う。**「2016年に人間の規律として書かれた提言が、2020年代にプラットフォームの機能として実装された」**——これが DOM-based XSS 対策のたどった道である。
+Chromium 83 以降でネイティブ対応、それ以前や他ブラウザでは**ポリフィル（polyfill: 新しい機能を、まだ対応していないブラウザでも動くように補うライブラリ）**を使う。**「2016年に人間の規律として書かれた提言が、2020年代にプラットフォームの機能として実装された」**——これが DOM-based XSS 対策のたどった道である。
 
 ## 手を動かす
 
@@ -557,6 +612,6 @@ Chromium 83 以降でネイティブ対応、それ以前や他ブラウザで�
 - CodeZine https://codezine.jp/article/detail/17342 ／ CodeGrid https://www.codegrid.net/articles/2018-xss-1/
 
 <!-- sources: https://gihyo.jp/dev/serial/01/javascript-security/0007, https://cheatsheetseries.owasp.org/cheatsheets/DOM_based_XSS_Prevention_Cheat_Sheet.html, https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html, https://jpcertcc.github.io/OWASPdocuments/CheatSheets/DOMbasedXSSPrevention.html, https://github.com/cure53/DOMPurify, https://github.com/w3c/trusted-types, https://github.com/WebAppPentestGuidelines/WebAppPentestGuidelines, https://github.com/js-primer/js-primer, https://portswigger.net/web-security/cross-site-scripting/dom-based -->
-<!-- terms: DOM-based XSS, source, sink, HTMLエスケープ, document.write, eval, JSON.parse, setTimeout, Functionコンストラクタ, jQuery, textContent, innerHTML, dangerous contexts, サニタイズ, DOMPurify, Trusted Types, CSP, 同一オリジン, クロージャ, setAttribute -->
+<!-- terms: DOM-based XSS, source, sink, HTMLエスケープ, document.write, eval, JSON.parse, setTimeout, Functionコンストラクタ, jQuery, textContent, innerText, innerHTML, dangerous contexts, サニタイズ, DOMPurify, Trusted Types, CSP, 同一オリジン, クロージャ, setAttribute, サブコンテキスト, execution context, variant analysis, Semgrep, ポリフィル -->
 <!-- self-read: https://gihyo.jp/dev/serial/01/javascript-security/0007 | gihyo.jp が実行環境の egress プロキシで遮断され原典を自動取得できず -->
 <!-- self-read: https://portswigger.net/web-security/cross-site-scripting/dom-based/lab-document-write-sink | portswigger.net が遮断され自動取得できず、無料ラボは読者が手を動かす必要がある -->

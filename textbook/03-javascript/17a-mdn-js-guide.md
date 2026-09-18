@@ -434,8 +434,8 @@ print(["I need to do:\n", "\nMy current progress is: ", "\n"], todos, progress);
 | `\\` | Backslash character |
 | `\XXX` | The character with the Latin-1 encoding specified by up to three octal digits `XXX` between `0` and `377`. For example, `\251` is the octal sequence for the copyright symbol. |
 | `\xXX` | The character with the Latin-1 encoding specified by the two hexadecimal digits `XX` between `00` and `FF`. For example, `\xA9` is the hexadecimal sequence for the copyright symbol. |
-| `\uXXXX` | The Unicode character specified by the four hexadecimal digits `XXXX`. For example, `©` is the Unicode sequence for the copyright symbol. |
-| `\u{XXXXX}` | Unicode code point escapes. For example, `\u{2F804}` is the same as the Unicode escapes `你`. |
+| `\uXXXX` | The Unicode character specified by the four hexadecimal digits `XXXX`. For example, `\u00A9` is the Unicode sequence for the copyright symbol. |
+| `\u{XXXXX}` | Unicode code point escapes. For example, `\u{2F804}` is the same as the Unicode escapes `\uD87E\uDC04`. |
 
 文字列内にクォートを含めるにはバックスラッシュでエスケープする。
 
@@ -443,7 +443,7 @@ print(["I need to do:\n", "\nMy current progress is: ", "\n"], todos, progress);
 const quote = "He read \"The Cremation of Sam McGee\" by R.W. Service.";
 ```
 
-〔補足〕`\xXX` / `\uXXXX` / `\u{XXXXX}` の3系統は、JS 文字列コンテキストへの注入時に「バックスラッシュ経由でクォートを回避する」「ブラックリスト方式のサニタイザを Unicode エスケープで通す」といった検討に直結する。ここで正確に理解すべきは、`\u{2F804}`（コードポイント U+2F804 を1つ表すコードポイントエスケープ）が、UTF-16 では**サロゲートペア（surrogate pair）** `你` と等価だという点である。サロゲートペアとは、UTF-16 で1つのコードポイント（U+10000 以上）を**2つのコードユニット**（ここでは `\uD87E` と `\uDC04`）の組で表す方式のこと。この2ユニットが結合して初めて1つの文字 U+2F804 を表す。フィルタが1コードユニット単位で文字を検査していると、サロゲートペアを分割して片方だけを見たり、逆に2ユニットを1文字として数え損ねたりして、検査をすり抜けられる余地が生まれる。防御側は、エスケープ済み文字列を「表示前に必ず正規化し、コンテキストに応じた出力エンコードを行う」ことで、こうした表現ゆらぎを潰す。
+〔補足〕`\xXX` / `\uXXXX` / `\u{XXXXX}` の3系統は、JS 文字列コンテキストへの注入時に「バックスラッシュ経由でクォートを回避する」「ブラックリスト方式のサニタイザを Unicode エスケープで通す」といった検討に直結する。ここで正確に理解すべきは、`\u{2F804}`（コードポイント U+2F804 を1つ表すコードポイントエスケープ）が、UTF-16 では**サロゲートペア（surrogate pair）** `\uD87E\uDC04` と等価だという点である。サロゲートペアとは、UTF-16 で1つのコードポイント（U+10000 以上）を**2つのコードユニット**（ここでは `\uD87E` と `\uDC04`）の組で表す方式のこと。この2ユニットが結合して初めて1つの文字 U+2F804 を表す。フィルタが1コードユニット単位で文字を検査していると、サロゲートペアを分割して片方だけを見たり、逆に2ユニットを1文字として数え損ねたりして、検査をすり抜けられる余地が生まれる。防御側は、エスケープ済み文字列を「表示前に必ず正規化し、コンテキストに応じた出力エンコードを行う」ことで、こうした表現ゆらぎを潰す。
 
 ### 4.8 コメントの早期終了と hashbang
 
@@ -1061,7 +1061,7 @@ MyObject.prototype.getMessage = function () {
 - **ECMAScript と DOM を混同しない**。`eval`/`Function` は言語（ECMAScript）側、`innerHTML`/`document.write` は DOM 側。標準団体が別なので、仕様を当たる場所も別になる。
 - **巻き上げの向きを取り違える**。関数宣言は丸ごと巻き上がるが、`const f = function...` の関数式は TDZ に入り、宣言前アクセスは `ReferenceError`。
 - **非 strict の `this`**。通常関数のコールバックでは `this` が `window` になり得る。`this.x = ...` が黙ってグローバルを汚す。
-- **サロゲートペアを1文字と混同しない**。`\u{2F804}` は UTF-16 では `你` の2コードユニットで表され、それが結合して1コードポイントになる。1ユニット単位で検査するフィルタはこの差ですり抜けられる。
+- **サロゲートペアを1文字と混同しない**。`\u{2F804}` は UTF-16 では `\uD87E\uDC04` の2コードユニットで表され、それが結合して1コードポイントになる。1ユニット単位で検査するフィルタはこの差ですり抜けられる。
 
 ## この節のまとめ
 
@@ -1078,7 +1078,7 @@ MyObject.prototype.getMessage = function () {
 - 配列リテラルの空スロットは `undefined` と別物で、`map` は飛ばすがインデックスアクセスは `undefined` を返す。
 - オブジェクトリテラルの `__proto__:` キーはプロトタイプを設定し、`{"__proto__": {...}}` はプロトタイプ汚染の典型経路。空文字列や `!` などの名前はブラケット記法必須で、computed/shorthand/メソッド定義の省略構文もある。
 - テンプレートリテラルは複数行・`${}` 補間ができ、タグ付きテンプレートは関数呼び出しの糖衣。断片と値が分離される構造は安全なテンプレート API の基盤にも、エスケープしなければ注入点にもなる。
-- 文字列の `\xXX`/`\uXXXX`/`\u{XXXXX}` エスケープは注入とサニタイザ迂回に直結し、`\u{2F804}` は UTF-16 のサロゲートペア `你` と等価。
+- 文字列の `\xXX`/`\uXXXX`/`\u{XXXXX}` エスケープは注入とサニタイザ迂回に直結し、`\u{2F804}` は UTF-16 のサロゲートペア `\uD87E\uDC04` と等価。
 - ブロックコメントはネスト不可で `*/` により早期終了する。hashbang（`#!/usr/bin/env node`）はファイル先頭で実行エンジンを指定する第3のコメント構文。
 - `new Function(文字列)` は `eval()` 相当の動的コード実行 sink で、CSP `unsafe-eval` の対象、Trusted Types では `TrustedScript` が要求される。
 - 関数のオブジェクト・配列引数は参照が共有され、関数内での中身の変更が呼び出し元に反映される。`call()`/`apply()` は `this` を差し替えて動的に呼ぶ手段。
@@ -1116,7 +1116,7 @@ MyObject.prototype.getMessage = function () {
    ▶ 答え：`arguments` は array-like だが本物の配列ではなく、`map` などを直接呼べない。rest parameters は本物の配列で受け取るのでそのまま配列メソッドが使える。
 
 10. `\u{2F804}` はどの表現と等価か。フィルタ迂回でなぜ重要か。
-    ▶ 答え：UTF-16 のサロゲートペア `你`（2コードユニット）と等価で、この2ユニットが結合して1コードポイント U+2F804 を表す。1コードユニット単位で検査するブラックリスト方式のサニタイザは、サロゲートの分割・結合の差ですり抜けられる余地がある。
+    ▶ 答え：UTF-16 のサロゲートペア `\uD87E\uDC04`（2コードユニット）と等価で、この2ユニットが結合して1コードポイント U+2F804 を表す。1コードユニット単位で検査するブラックリスト方式のサニタイザは、サロゲートの分割・結合の差ですり抜けられる余地がある。
 
 ## 出典
 

@@ -88,19 +88,150 @@ JSON Web Token（JWT）とは、ヘッダ・ペイロード・署名の3つを�
 
 ### 1-4. その他 Miscellaneous サブカテゴリ（在庫の把握）
 
-以下は本ブロックの残りのサブカテゴリである。クライアントサイド調査の直接の主役ではないが、周辺工程で使うので在庫として把握しておく。
+以下は本ブロックの残りのサブカテゴリである。クライアントサイド調査の直接の主役ではないが、周辺工程で使うので在庫として把握しておく。原文の1行説明（逐語・英語のまま）を落とさずに表で示す。名前だけ覚えても「何をする道具か」は分からないので、逐語説明を必ず添える。
 
-- **Passwords（5件）**: `thc-hydra`, `DefaultCreds-cheat-sheet`, `changeme`, `BruteX`, `patator`。ログインクラッカーや既定認証情報のチェック。
-- **Git（7件）**: `GitTools`, `gitjacker`, `git-dumper`, `GitHunter`, `dvcs-ripper`, `Gato (Github Attack TOolkit)`, `zizmor`。Webサーバ上に露出した `.git` ディレクトリからリポジトリを丸ごと復元する系が中心。フロントのソースが手に入る攻撃面。
-- **Buckets（18件）**: `S3Scanner`, `AWSBucketDump`, `CloudScraper`, `s3viewer`, `festin`, `s3reverse`, `mass-s3-bucket-tester`, `S3BucketList`, `dirlstr`, `Burp-AnonymousCloud`, `kicks3`, `2tearsinabucket`, `s3_objects_check`, `s3tk`, `CloudBrute`, `s3cario`, `S3Cruze`, `s3dns`。とくに `kicks3`（"S3 bucket finder from html,js and bucket misconfiguration testing tool"）と `S3BucketList`（"Firefox plugin that lists Amazon S3 Buckets found in requests"）はJS/HTMLからバケット名を拾う点でクライアントサイド寄り。
-- **CMS（9件）**: `wpscan`, `WPSpider`, `wprecon`, `Temodar Agent`, `CMSmap`, `joomscan`, `pyfiscan`, `aemhacker`, `aemscan`。WordPress/Joomla/AEM など既製CMSの脆弱性スキャナ。
-- **Subdomain Takeover（13件）**: `subjack`, `SubOver`, `autoSubTakeover`, `NSBrute`, `can-i-take-over-xyz`, `cnames`, `subHijack`, `tko-subs`, `HostileSubBruteforcer`, `second-order`, `takeover`, `dnsReaper`, `subzy`。放置されたDNSレコード（dangling DNS）を乗っ取る系。
-- **Vulnerability Scanners（21件）**: `nuclei` ほか（4-5で詳述）。この中に `retire.js` と `cariddi` がクロスリストで再掲されている。
-- **Permutation（6件）**: `alterx`, `gotator`, `ripgen`, `dnsgen`, `goaltdns`, `altdns`。サブドメイン候補の並べ替え生成。
-- **Web Proxy and Traffic Interception（5件）**: `mitmproxy`, `proxify`, `FoxyProxy Browser Extension`, `zaproxy`, `hetty`。ブラウザとサーバの間に立ってHTTP/HTTPSを傍受・改変する。クライアントサイド調査の常設装備。
-- **Origin IP（2件）**: `CloudRip`, `hakoriginfinder`。CDN/WAFの裏の実サーバIPを探す。
-- **Useful（8件）**: `anew`, `gf`, `uro`, `unfurl`, `qsreplace`, `interactsh`, `CyberChef`, `notify`（4-4で詳述）。
-- **AI Agents（4件）**: `shannon`, `Darkmoon`, `PentestGPT`, `Agentic Bug Bounty Hunter`。2026年に追加された自律型ペンテストエージェント群。
+なお **Vulnerability Scanners（21件）** は本節7で、**Useful（8件）** は本節6で、それぞれ表つきで詳述するのでここでは省く。
+
+#### Passwords（5件）
+
+ログインクラッカー（ログイン試行を自動化して認証を突破する道具）や、機器の初期パスワードのチェックに使う。
+
+| ツール | URL | 原文の説明（逐語・英語のまま） |
+|--------|-----|--------------------------------|
+| `thc-hydra` | https://github.com/vanhauser-thc/thc-hydra | Hydra is a parallelized login cracker which supports numerous protocols to attack. |
+| `DefaultCreds-cheat-sheet` | https://github.com/ihebski/DefaultCreds-cheat-sheet | One place for all the default credentials to assist the Blue/Red teamers activities on finding devices with default password |
+| `changeme` | https://github.com/ztgrace/changeme | A default credential scanner. |
+| `BruteX` | https://github.com/1N3/BruteX | Automatically brute force all services running on a target. |
+| `patator` | https://github.com/lanjelot/patator | Patator is a multi-purpose brute-forcer, with a modular design and a flexible usage. |
+
+#### Git（7件）
+
+Webサーバ上に消し忘れで露出した `.git` ディレクトリからリポジトリを丸ごと復元する系が中心。フロントエンドのソースコードや履歴がまるごと手に入る攻撃面であり、クライアントサイド調査とも地続きである。
+
+| ツール | URL | 原文の説明（逐語・英語のまま） |
+|--------|-----|--------------------------------|
+| `GitTools` | https://github.com/internetwache/GitTools | A repository with 3 tools for pwn'ing websites with .git repositories available |
+| `gitjacker` | https://github.com/liamg/gitjacker | Leak git repositories from misconfigured websites |
+| `git-dumper` | https://github.com/arthaud/git-dumper | A tool to dump a git repository from a website |
+| `GitHunter` | https://github.com/digininja/GitHunter | A tool for searching a Git repository for interesting content |
+| `dvcs-ripper` | https://github.com/kost/dvcs-ripper | Rip web accessible (distributed) version control systems: SVN/GIT/HG... |
+| `Gato (Github Attack TOolkit)` | https://github.com/praetorian-inc/gato | GitHub Self-Hosted Runner Enumeration and Attack Tool |
+| `zizmor` | https://github.com/zizmorcore/zizmor | Static analysis tool for GitHub Actions |
+
+#### Buckets（18件）
+
+クラウドストレージ（Amazon S3 バケットなど）の公開ミスを見つける系。とくに `kicks3` と `S3BucketList` はJS/HTMLからバケット名を拾う点でクライアントサイド寄りである。
+
+| ツール | URL | 原文の説明（逐語・英語のまま） |
+|--------|-----|--------------------------------|
+| `S3Scanner` | https://github.com/sa7mon/S3Scanner | Scan for open AWS S3 buckets and dump the contents |
+| `AWSBucketDump` | https://github.com/jordanpotti/AWSBucketDump | Security Tool to Look For Interesting Files in S3 Buckets |
+| `CloudScraper` | https://github.com/jordanpotti/CloudScraper | CloudScraper: Tool to enumerate targets in search of cloud resources. S3 Buckets, Azure Blobs, Digital Ocean Storage Space. |
+| `s3viewer` | https://github.com/SharonBrizinov/s3viewer | Publicly Open Amazon AWS S3 Bucket Viewer |
+| `festin` | https://github.com/cr0hn/festin | FestIn - S3 Bucket Weakness Discovery |
+| `s3reverse` | https://github.com/hahwul/s3reverse | The format of various s3 buckets is convert in one format. for bugbounty and security testing. |
+| `mass-s3-bucket-tester` | https://github.com/random-robbie/mass-s3-bucket-tester | This tests a list of s3 buckets to see if they have dir listings enabled or if they are uploadable |
+| `S3BucketList` | https://github.com/AlecBlance/S3BucketList | Firefox plugin that lists Amazon S3 Buckets found in requests |
+| `dirlstr` | https://github.com/cybercdh/dirlstr | Finds Directory Listings or open S3 buckets from a list of URLs |
+| `Burp-AnonymousCloud` | https://github.com/codewatchorg/Burp-AnonymousCloud | Burp extension that performs a passive scan to identify cloud buckets and then test them for publicly accessible vulnerabilities |
+| `kicks3` | https://github.com/abuvanth/kicks3 | S3 bucket finder from html,js and bucket misconfiguration testing tool |
+| `2tearsinabucket` | https://github.com/Revenant40/2tearsinabucket | Enumerate s3 buckets for a specific target. |
+| `s3_objects_check` | https://github.com/nccgroup/s3_objects_check | Whitebox evaluation of effective S3 object permissions, to identify publicly accessible files. |
+| `s3tk` | https://github.com/ankane/s3tk | A security toolkit for Amazon S3 |
+| `CloudBrute` | https://github.com/0xsha/CloudBrute | Awesome cloud enumerator |
+| `s3cario` | https://github.com/0xspade/s3cario | This tool will get the CNAME first if it's a valid Amazon s3 bucket and if it's not, it will try to check if the domain is a bucket name. |
+| `S3Cruze` | https://github.com/JR0ch17/S3Cruze | All-in-one AWS S3 bucket tool for pentesters. |
+| `s3dns` | https://github.com/olizimmermann/s3dns | Passive DNS-based discovery of S3 (and other cloud) buckets by resolving CNAMEs and IPs during recon—ideal for stealthy and early identification of cloud storage exposures |
+
+#### CMS（9件）
+
+WordPress / Joomla / Adobe Experience Manager（AEM）など既製CMS（Content Management System、コンテンツ管理システム）の脆弱性スキャナ。
+
+| ツール | URL | 原文の説明（逐語・英語のまま） |
+|--------|-----|--------------------------------|
+| `wpscan` | https://github.com/wpscanteam/wpscan | WPScan is a free, for non-commercial use, black box WordPress security scanner |
+| `WPSpider` | https://github.com/cyc10n3/WPSpider | A centralized dashboard for running and scheduling WordPress scans powered by wpscan utility. |
+| `wprecon` | https://github.com/blackcrw/wprecon | Wordpress Recon |
+| `Temodar Agent` | https://github.com/xeloxa/temodar-agent | AI-powered WordPress plugin/theme security analysis platform with Semgrep-based static analysis and agent-assisted investigation workflows |
+| `CMSmap` | https://github.com/Dionach/CMSmap | CMSmap is a python open source CMS scanner that automates the process of detecting security flaws of the most popular CMSs. |
+| `joomscan` | https://github.com/OWASP/joomscan | OWASP Joomla Vulnerability Scanner Project |
+| `pyfiscan` | https://github.com/fgeek/pyfiscan | Free web-application vulnerability and version scanner |
+| `aemhacker` | https://github.com/0ang3el/aem-hacker | Tools to identify vulnerable Adobe Experience Manager (AEM) webapps. |
+| `aemscan` | https://github.com/Raz0r/aemscan | Adobe Experience Manager Vulnerability Scanner |
+
+#### Subdomain Takeover（13件）
+
+放置されたDNSレコード（dangling DNS、宙ぶらりんのDNS。指し先のサービスが消えたのに残っているCNAMEなど）を乗っ取る系。
+
+| ツール | URL | 原文の説明（逐語・英語のまま） |
+|--------|-----|--------------------------------|
+| `subjack` | https://github.com/haccer/subjack | Subdomain Takeover tool written in Go |
+| `SubOver` | https://github.com/Ice3man543/SubOver | A Powerful Subdomain Takeover Tool |
+| `autoSubTakeover` | https://github.com/JordyZomer/autoSubTakeover | A tool used to check if a CNAME resolves to the scope address. If the CNAME resolves to a non-scope address it might be worth checking out if subdomain takeover is possible. |
+| `NSBrute` | https://github.com/shivsahni/NSBrute | Python utility to takeover domains vulnerable to AWS NS Takeover |
+| `can-i-take-over-xyz` | https://github.com/EdOverflow/can-i-take-over-xyz | "Can I take over XYZ?" — a list of services and how to claim (sub)domains with dangling DNS records. |
+| `cnames` | https://github.com/cybercdh/cnames | take a list of resolved subdomains and output any corresponding CNAMES en masse. |
+| `subHijack` | https://github.com/vavkamil/old-repos-backup/tree/master/subHijack-master | Hijacking forgotten & misconfigured subdomains |
+| `tko-subs` | https://github.com/anshumanbh/tko-subs | A tool that can help detect and takeover subdomains with dead DNS records |
+| `HostileSubBruteforcer` | https://github.com/nahamsec/HostileSubBruteforcer | This app will bruteforce for existing subdomains and provide information if the 3rd party host has been properly setup. |
+| `second-order` | https://github.com/mhmdiaa/second-order | Second-order subdomain takeover scanner |
+| `takeover` | https://github.com/mzfr/takeover | A tool for testing subdomain takeover possibilities at a mass scale. |
+| `dnsReaper` | https://github.com/punk-security/dnsReaper | DNS Reaper is yet another sub-domain takeover tool, but with an emphasis on accuracy, speed and the number of signatures in our arsenal! |
+| `subzy` | https://github.com/PentestPad/subzy | Subdomain takeover tool which works based on matching response fingerprints from `can-i-take-over-xyz`. |
+
+#### Permutation（6件）
+
+既知のサブドメイン名を並べ替え・変異させて、新しいサブドメイン候補のワードリストを生成する系。
+
+| ツール | URL | 原文の説明（逐語・英語のまま） |
+|--------|-----|--------------------------------|
+| `alterx` | https://github.com/projectdiscovery/alterx | Fast and customizable subdomain wordlist generator using DSL. alterx takes patterns as input and generates subdomain permutation wordlist based on that pattern. |
+| `gotator` | https://github.com/Josue87/gotator | Gotator is a tool to generate DNS wordlists through permutations. |
+| `ripgen` | https://github.com/resyncgg/ripgen | Rust-based high performance domain permutation generator. |
+| `dnsgen` | https://github.com/AlephNullSK/dnsgen | DNSGen is a powerful and flexible DNS name permutation tool designed for security researchers and penetration testers. It generates intelligent domain name variations to assist in subdomain discovery and security assessments. |
+| `goaltdns` | https://github.com/subfinder/goaltdns | A permutation generation tool written in golang. |
+| `altdns` | https://github.com/infosec-au/altdns | Generates permutations, alterations and mutations of subdomains and then resolves them. |
+
+#### Web Proxy and Traffic Interception（5件）
+
+ブラウザとサーバの間に立ってHTTP/HTTPSを傍受・改変する道具。リクエストとレスポンスを手元で書き換えられるので、クライアントサイド調査の常設装備になる。
+
+| ツール | URL | 原文の説明（逐語・英語のまま） |
+|--------|-----|--------------------------------|
+| `mitmproxy` | https://github.com/mitmproxy/mitmproxy | An interactive TLS-capable intercepting HTTP proxy for penetration testers and software developers. |
+| `proxify` | https://github.com/projectdiscovery/proxify | A versatile and portable proxy for capturing, manipulating, and replaying HTTP/HTTPS traffic on the go. |
+| `FoxyProxy Browser Extension` | https://github.com/foxyproxy/browser-extension | FoxyProxy is an open-source, advanced proxy management tool that completely replaces Chrome's limited proxying capabilities. |
+| `zaproxy` | https://github.com/zaproxy/zaproxy | ZAP is what is known as a “manipulator-in-the-middle proxy.” It stands between the tester’s browser and the web application so that it can intercept and inspect messages sent between browser and web application, modify the contents if needed, and then forward those packets on to the destination. |
+| `hetty` | https://github.com/dstotijn/hetty | hetty is a free opensource alternative to Burpsuite pro |
+
+#### Origin IP（2件）
+
+CDN（Content Delivery Network、配信を代行する中継網）やWAF（Web Application Firewall、Webの防火壁）の裏に隠れた、実サーバの本当のIPアドレスを探す系。実IPが分かると防御装置を迂回できる。
+
+| ツール | URL | 原文の説明（逐語・英語のまま） |
+|--------|-----|--------------------------------|
+| `CloudRip` | https://github.com/staxsum/CloudRip | A tool that helps you find the real IP addresses hiding behind Cloudflare by checking subdomains. |
+| `hakoriginfinder` | https://github.com/hakluke/hakoriginfinder | Tool for discovering the origin host behind a reverse proxy. Useful for bypassing WAFs and other reverse proxies. |
+
+### 1-5. AI Agents（4件） — 2026年の新傾向
+
+AI Agents サブカテゴリとは、大規模言語モデル（LLM）を頭脳にして、偵察から報告までの一連の作業を自律的に進めようとするペンテスト（侵入テスト）自動化ツール群のこと。2026年時点で本カタログに新設されたサブカテゴリで、パート1の要約でも「自律型ペンテストエージェントがカタログに入り始めた」新傾向として強調した論点である。名前だけでは各ツールの正体が分からないので、原文の逐語説明をそのまま示す。
+
+| ツール | URL | 原文の説明（逐語・英語のまま） |
+|--------|-----|--------------------------------|
+| `shannon` | https://github.com/KeygraphHQ/shannon | Fully autonomous AI hacker to find actual exploits in your web apps. |
+| `Darkmoon` | https://github.com/ASCIT31/Dark-Moon | Open source (GPL-3.0) autonomous AI penetration testing platform that orchestrates 80+ tools over MCP with dedicated per-technology offensive sub-agents (GraphQL, Spring Boot, ASP.NET, Node.js, Flask, PHP, Ruby) and a per-finding evidence trail. |
+| `PentestGPT` | https://github.com/GreyDGL/PentestGPT | AI-powered penetration testing assistant that helps automate security testing workflows and vulnerability discovery. |
+| `Agentic Bug Bounty Hunter` | https://github.com/Awarexone/Agentic-Bug-Hunter | Claude Code plugin for autonomous bug bounty hunting across HackerOne, Bugcrowd, Intigriti and Immunefi — 15 skills, 33 commands and 9 agents covering recon-to-report, 21 web vuln classes, web3/meme-coin audits, LLM red-teaming, GraphQL/CORS/JWT/NoSQL scanners and persistent hunt memory. Works with or without a subscription. |
+
+逐語説明から読み取れる各ツールの識別情報は次の通りである。
+
+- **`shannon`** — 自らを "Fully autonomous AI hacker"（完全自律のAIハッカー）と名乗り、Webアプリの「実際に動く攻撃（actual exploits）」を見つけることを掲げる。
+- **`Darkmoon`** — ライセンスは GPL-3.0。**80以上のツールを MCP（Model Context Protocol、AIモデルと外部ツールをつなぐ規約）上でオーケストレーション（統括実行）**し、GraphQL / Spring Boot / ASP.NET / Node.js / Flask / PHP / Ruby という**技術スタックごとの専用サブエージェント**を持ち、発見ごとに証拠の履歴（evidence trail）を残す。
+- **`PentestGPT`** — セキュリティテストの手順と脆弱性発見を自動化するAI補助アシスタント。
+- **`Agentic Bug Bounty Hunter`** — **Claude Code のプラグイン**として動き、HackerOne / Bugcrowd / Intigriti / Immunefi をまたいで自律的にバグバウンティを行う。**15個のskill・33個のcommand・9個のagent**を備え、偵察から報告まで、21種類のWeb脆弱性クラス、web3/ミームコイン監査、**LLM の red-teaming（AIを攻撃者役でわざと試す検査）**、GraphQL/CORS/JWT/NoSQL スキャナ、持続的なハント記憶までカバーする。サブスクリプションの有無を問わず動作する。
+
+〔補足〕これらは自律実行を掲げるが、無許可の対象に走らせれば不正アクセスになる。必ず許可された範囲・自分の検証環境に限って使うこと。自律エージェントは「対象範囲（スコープ）の外に出ない」制御が特に難しいので、扱いには通常のツール以上の注意が要る。
 
 ## 2. Uncategorized ブロック（横断的な教材リポジトリ）
 
@@ -148,6 +279,15 @@ Uncategorized（未分類）には、単体ツールというより「辞書」�
         │
 (E) 既知脆弱性       古い脆弱JSライブラリをCVE照合で検出
 ```
+
+#### A〜E と、この後の節4・5・6の関係
+
+先に地図を示しておく。この A〜E は「JSという攻撃面を**収集して整理する工程**」の縦の流れである。これに対して、本節の後半（節4・5・6）はA〜Eの続きの工程ではなく、**別の軸**を扱う。
+
+- **節4（postMessage / DOM XSS）と節5（CORS / CSP）** は、A〜Eで見つけたJSの中に潜む「クライアントサイド固有の脆弱性クラス（脆弱性の種類）」そのものである。A〜Eが「どこにJSがあるか」を地図にする作業なら、節4・5は「その地図のどこにどんな穴が空きやすいか」を分類する縦割りの知識だと考えればよい。
+- **節6（パイプライン設計）** は、A〜Eの各工程を stdin→stdout でつなぐ「横断の接着剤」である。A〜Eを1本のコマンド列に組み上げるための道具立てにあたる。
+
+つまり A〜E＝工程の縦軸、節4・5＝脆弱性クラスの分類、節6＝工程をつなぐ横串、という3層で本節を読むと迷わない。
 
 ### 3-2. (A) JSファイルの収集
 
@@ -238,7 +378,9 @@ JSにハードコードされたAPIキーやトークンを見つける段階。
 |--------|-----|-----------|
 | `retire.js` | https://github.com/RetireJS/retire.js | scanner detecting the use of JavaScript libraries with known vulnerabilities |
 
-`retire.js` は脆弱ライブラリのDBを持ち、CLI・ブラウザ拡張・CIの3形態で使える。ch04の「サードパーティJSの脆弱性」節で必須の道具である。
+READMEの逐語説明は "scanner detecting the use of JavaScript libraries with known vulnerabilities"（既知の脆弱性を持つJavaScriptライブラリの使用を検出するスキャナ）のみである。つまり原文が保証しているのは「既知脆弱ライブラリの検出」までである。ch04の「サードパーティJSの脆弱性」節で必須の道具である。
+
+〔補足（一般知識）〕`retire.js` は一般に、脆弱ライブラリのDBを持ち、CLI・ブラウザ拡張・CI（継続的インテグレーション、コード変更のたびに自動検査する仕組み）の複数形態で提供されることが知られている。ただしこれはREADMEの1行説明には書かれておらず一般知識由来なので、断定せず補足として区別しておく（実際の対応形態は各自でリポジトリを確認すること）。
 
 ## 4. postMessage / DOM XSS 系（クライアントサイド固有）
 
@@ -291,6 +433,14 @@ CSPで許可されたドメインにJSONP（別オリジンからスクリプト
 
 このカタログの背骨は、ProjectDiscovery系と tomnomnom系という2つの「stdin→stdout でつながる小道具群」である。ch04で「収集→整形→検査」を1行のパイプで組む思想を教えるなら、Useful サブカテゴリが核心になる。
 
+「〜系」というのは、同じ作者（または開発チーム）が同じ設計思想で作った道具の一群、という意味である。この Useful サブカテゴリの中で言うと、**tomnomnom系**が `anew` / `gf` / `unfurl` / `qsreplace`（作者 tomnomnom）、それに近い思想の `uro`（作者 s0md3v）で、いずれも「テキストのURLリストを stdin で受け、加工して stdout に流す」極小の道具である。一方の **ProjectDiscovery系**は、この表の中では `interactsh` と `notify`（どちらも ProjectDiscovery 製）が該当し、収集の受け皿や通知といった「工程の外枠」を担う。2系統の対応を整理すると次のとおりである。
+
+| 系統 | この表での該当ツール | 役割の性格 |
+|------|--------------------|-----------|
+| tomnomnom系（＋近縁の uro） | `anew`, `gf`, `unfurl`, `qsreplace`, `uro` | URLテキストを stdin→stdout で加工する極小道具 |
+| ProjectDiscovery系 | `interactsh`, `notify` | コールバック受信・通知など工程の外枠 |
+| どちらでもない汎用 | `CyberChef` | エンコード/デコードのGUI万能ナイフ |
+
 | ツール | URL | 原文の説明 |
 |--------|-----|-----------|
 | `anew` | https://github.com/tomnomnom/anew | A tool for adding new lines to files, skipping duplicates |
@@ -338,12 +488,41 @@ waybackurls ─▶  uro / gf ─▶  qsreplace ─▶  httpx で確認
 > 6. `retire.js` — 脆弱ライブラリDBの形式と、CI/ブラウザ拡張/CLIの3形態。
 > **代替手段**: 各リポジトリのREADMEはいずれも無料公開。ライセンスも大半がOSSなので、ローカルにクローンして `--help` を読むのが最短。
 
-## 7. Vulnerability Scanners の最終段: nuclei
+## 7. Vulnerability Scanners（21件） — 収集の最終段に当てるスキャナ群
 
-- `nuclei`（https://github.com/projectdiscovery/nuclei） — "Nuclei is a fast tool for configurable targeted scanning based on templates offering massive extensibility and ease of use."
-- `nuclei-templates`（https://github.com/projectdiscovery/nuclei-templates） — "Community curated list of templates for the nuclei engine to find security vulnerabilities."
+Vulnerability Scanners（脆弱性スキャナ）サブカテゴリは、A〜Eで集めたエンドポイント群に対して「既知の穴が無いか」を機械的に当てていく最終段の道具である。本カタログでは Subdomain Enumeration・XSS Injection と並んで収録数が多く（21件）、コミュニティの工具が厚く積まれている領域である。名前だけの一行に丸めず、原文の逐語説明を全件示す。
 
-`nuclei` は**テンプレートベースのスキャナ**で、YAMLで書かれたテンプレートに従って既知脆弱性を当てる。ch04の文脈では、収集したエンドポイント群に対し「テンプレートで既知脆弱性を一括照合する」最終段として位置づく。
+| ツール | URL | 原文の説明（逐語・英語のまま） |
+|--------|-----|--------------------------------|
+| `nuclei` | https://github.com/projectdiscovery/nuclei | Nuclei is a fast tool for configurable targeted scanning based on templates offering massive extensibility and ease of use. |
+| `nuclei-templates` | https://github.com/projectdiscovery/nuclei-templates | Community curated list of templates for the nuclei engine to find security vulnerabilities. |
+| `Sn1per` | https://github.com/1N3/Sn1per | Automated pentest framework for offensive security experts |
+| `metasploit-framework` | https://github.com/rapid7/metasploit-framework | Metasploit Framework |
+| `nikto` | https://github.com/sullo/nikto | Nikto web server scanner |
+| `arachni` | https://github.com/Arachni/arachni | Web Application Security Scanner Framework |
+| `jaeles` | https://github.com/jaeles-project/jaeles | The Swiss Army knife for automated Web Application Testing |
+| `retire.js` | https://github.com/RetireJS/retire.js | scanner detecting the use of JavaScript libraries with known vulnerabilities |
+| `Osmedeus` | https://github.com/j3ssie/Osmedeus | Fully automated offensive security framework for reconnaissance and vulnerability scanning |
+| `Vigolium` | https://github.com/vigolium/vigolium | High-fidelity vulnerability scanner fusing agentic AI with native speed, modularity, and precision |
+| `getsploit` | https://github.com/vulnersCom/getsploit | Command line utility for searching and downloading exploits |
+| `flan` | https://github.com/cloudflare/flan | A pretty sweet vulnerability scanner |
+| `Findsploit` | https://github.com/1N3/Findsploit | Find exploits in local and online databases instantly |
+| `BlackWidow` | https://github.com/1N3/BlackWidow | A Python based web application scanner to gather OSINT and fuzz for OWASP vulnerabilities on a target website. |
+| `backslash-powered-scanner` | https://github.com/PortSwigger/backslash-powered-scanner | Finds unknown classes of injection vulnerabilities |
+| `Eagle` | https://github.com/BitTheByte/Eagle | Multithreaded Plugin based vulnerability scanner for mass detection of web-based applications vulnerabilities |
+| `cariddi` | https://github.com/edoardottt/cariddi | Take a list of domains, crawl urls and scan for endpoints, secrets, api keys, file extensions, tokens and more... |
+| `OWASP ZAP` | https://github.com/zaproxy/zaproxy | World’s most popular free web security tools and is actively maintained by a dedicated international team of volunteers |
+| `SSTImap` | https://github.com/vladko312/SSTImap | SSTImap is a penetration testing software that can check websites for Code Injection and Server-Side Template Injection vulnerabilities and exploit them, giving access to the operating system itself. |
+| `Lonkero` | https://github.com/bountyyfi/lonkero | Enterprise-grade web vulnerability scanner with 60+ attack modules, built in Rust for penetration testing and security assessments. |
+| `OWASP PTK` | https://github.com/DenisPodgurskii/pentestkit | Browser-based vulnerability scanner for bug bounty and pentesting workflows, combining DAST, SAST, IAST, and SCA capabilities to detect runtime, source-level, interactive, and dependency-related security issues. |
+
+### 7-1. 表の読みどころ
+
+- この表の中で **`retire.js` と `cariddi` はクロスリスト（複数カテゴリへの再掲）**である。`retire.js` は Technologies（節3-6）から、`cariddi` は Secrets（節1-1・節3-4）から、それぞれここにも顔を出している。同じツールが「JSライブラリのCVE照合」「シークレット/エンドポイント抽出」「脆弱性スキャナ」という複数の役割で数えられている、ということである。
+- **`OWASP ZAP` と `zaproxy` は実体が同じ ZAP**（同一URL `zaproxy/zaproxy`）だが、本カタログでは Vulnerability Scanners では "OWASP ZAP"、Web Proxy では "zaproxy" という別名・別説明で二重に載っている（節8の不整合#2を参照）。
+- **`Vigolium` や `OWASP PTK` のように、AIやブラウザ内実行（DAST/SAST/IAST/SCA）を掲げる新顔**も入っており、脆弱性スキャナの領域にも2026年的な傾向が現れている。
+- **`nuclei`** は**テンプレートベースのスキャナ**で、YAML（設定を書くための読みやすい記法）で書かれたテンプレートに従って既知脆弱性を当てる。ch04の文脈では、収集したエンドポイント群に対し「テンプレートで既知脆弱性を一括照合する」最終段として位置づく。テンプレート集の `nuclei-templates` とセットで使う。
+- ここでの `SSTImap` は Server-Side Template Injection（サーバ側テンプレートインジェクション）向けで、厳密にはサーバサイドの穴だが、クロスリストで本サブカテゴリにも再掲されている。
 
 ## 8. 原文の不整合・注意点（引用時の心得）
 

@@ -1026,7 +1026,7 @@ cd SecretFinder && pip3 install -r requirements.txt && cd ..
 cat > test.js <<'EOF'
 var cfg = {
   gmap: "AIza_REDACTED_EXAMPLE",
-  stripe: "sk_live_REDACTED_EXAMPLE_KEY_EXAMPLE_KEY_EXAMPLE_KEY",
+  stripe: "sk_live_REDACTED_EXAMPLE_KEY_EXAMPLE_KEY_EXAMPLE_KEY_EXAMPLE_KEY",
   token: "eyJ.REDACTED_EXAMPLE_JWT"
 };
 EOF

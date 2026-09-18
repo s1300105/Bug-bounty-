@@ -734,7 +734,10 @@ WAF（Web Application Firewall, Webアプリケーション・ファイアウォ
 - サブカテゴリの収録数は「コミュニティの労力配分の一次データ」であり、Subdomain Enumeration（42）と XSS Injection（40）が二大巨頭である。
 - recon の背骨は ProjectDiscovery系（subfinder/dnsx/httpx/katana など）と tomnomnom系（assetfinder/waybackurls など）で、いずれも stdin→stdout でつながる小道具群である。
 - クライアントサイド脆弱性ハンティングの一次索引は、Links（JSからのリンク抽出・17件）、Content Discovery（15件）、Technologies（12件）、Parameters（6件）である。
+- JavaScript 攻撃面は (A)JSファイル収集→(B)エンドポイント抽出→(D)クロール基盤→(E)脆弱ライブラリ検出の段階に分けて考えると、各ツールの使い所が整理できる。`getJS` が (A) の起点、`xnLinkFinder` は (B) でエンドポイント・潜在パラメータ・標的固有ワードリストまで生成する。
 - Links の中でも `jsluice`（BishopFox）は「見た目」でなく「使われ方（AST解析）」で抽出する点が、正規表現ベースの `LinkFinder` と決定的に異なる。
+- 総エントリは412件だがユニークURLは400件で、差の12件は原文が同じツールを複数カテゴリに載せる意図的なクロスリスト（`ground-control` ×3、`httprebind` は SSRF 内で2回など）である。転記ミスではない。
+- 原文には軽微な誤りも含まれる（`param-miner` の「web alterx poisoning」は web cache poisoning の誤記、`smugglex` のリンクは `https://` 欠落、`crt.go` は表示名とURLの不一致）。逐語引用しつつ〔補足〕で訂正を添えてある。
 - Technologies の `retire.js` は脆弱JSライブラリを検出し、攻撃側の発見にも防御側のCIチェックにも同じツールが使える。
 - Content Discovery の `katana` はヘッドレス/JSクロールで SPA のエンドポイントを掘れる、近代Web向けの要のツールである。
 - Exploitation 側でクライアントサイドに直結するのは CORS Misconfiguration（5）、Open Redirect（4）、XSS Injection（40）で、XSS には DOM系・Blind系・CSPバイパスまで揃う。
@@ -772,6 +775,12 @@ WAF（Web Application Firewall, Webアプリケーション・ファイアウォ
 
 10. DOM系XSSを追跡するときの「source」と「sink」とは何か。可視化を助けるツールを1つ挙げよ。
     ▶ 答え: source は攻撃者が制御できる入力（例: `location.hash`）、sink は実行につながる危険な出力（例: `innerHTML`）。source から sink への流れを追う。可視化ツールは `tracy`（nccgroup）。
+
+11. カタログの総エントリは412件なのに「ユニークURLは400件」と書かれている。12件の差はなぜ生じるか。
+    ▶ 答え: 原文が1つのツールを複数のサブカテゴリに意図的に再掲している（クロスリスト）ため。たとえば `ground-control` は SSRF/XSS/XXE の3カテゴリに、`httprebind` は SSRF 内で2回登場する。転記ミスではない。
+
+12. 原文表の `param-miner` の説明にある「web alterx poisoning vulnerabilities」をどう扱うべきか。
+    ▶ 答え: これは原文の誤記で、実在しない用語。一般には web cache poisoning（Webキャッシュ・ポイズニング）を指すとみられる。逐語引用は残しつつ、実在の脆弱性クラスと誤認しないよう訂正の補足を添える。
 
 ## 出典
 

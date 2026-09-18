@@ -19,6 +19,8 @@ Sourcesパネルとは、DevTools のなかで JavaScript をデバッグする�
 
 ブレークポイント（breakpoint）とは、コード実行を意図的に停止させる地点のこと。停止中はその瞬間の全変数値を検査できる。line-of-code（行）／conditional（条件付き）／logpoint（ログ）／DOM／XHR-fetch／event listener／exception／function／Trusted Type の9種類がある（詳細は本節前半パート）。
 
+本パートで最終的に扱う目標のひとつが DOM XSS の起点特定である。DOM XSS（DOM-based Cross-Site Scripting）とは、サーバではなく**ブラウザ内の JavaScript が DOM を操作する過程**で、攻撃者の入力が任意スクリプトとして実行されてしまう脆弱性のこと。たとえば URL の `#...`（フラグメント）に入れた文字列を、ページの JavaScript がそのまま `element.innerHTML` に代入すると、そこに書いたスクリプトが動いてしまう。この「入力（source）が危険な出力先（sink）に届く経路」を追うことが本パートの応用の中心になる（§8 で詳説）。
+
 本パートでは、これら中核機能の**周辺にある道具**（Snippets、Local Overrides、source maps、Ignore List、Console Utilities API）と、それらを**脆弱性ハンティングへどう応用するか**を扱う。
 
 ---
@@ -82,7 +84,17 @@ function f() {
 
 Snippets（スニペット）とは、Sources パネル内で作成・実行できる小さなスクリプトのこと。任意のページからアクセス・実行でき、**実行すると現在開いているページのコンテキストで実行される**。原文いわく「bookmarklet の代替」であり、Console で同じコードを繰り返し実行しているなら Snippet として保存するとよい。Sources パネルで作成し、任意のページおよびシークレットモードでも実行できる。
 
-サンプル Snippet（原文のまま逐語）。
+原文が最初に挙げる動機の例は、jQuery のようなライブラリをページに注入する次のような Console コードである（原文のまま逐語）。こういう「毎回打つ定型コード」こそ Snippet に保存する候補になる。
+
+```js
+let script = document.createElement('script');
+script.src = 'https://code.jquery.com/jquery-3.2.1.min.js';
+script.crossOrigin = 'anonymous';
+script.integrity = 'sha256-hwg4gsxgFZhOsEEamdOYGBf13FyQuiTwlAQgxVSNgt4=';
+document.head.appendChild(script);
+```
+
+Snippets の入門用サンプルとしては、次の `Hello, Snippets!` コードが原文に載っている（原文のまま逐語）。
 
 ```js
 console.log('Hello, Snippets!');
@@ -104,7 +116,11 @@ Snippet の実行方法。
 - **Sources パネルで実行**: Snippet 名をクリックし、エディタ下部のアクションバーの **Run**、または `Control`+`Enter`（Windows/Linux）／`Command`+`Enter`（Mac）。
 - **Command Menu から実行**: `Control`+`O`（Windows/Linux）または `Command`+`O`（Mac）で開き、`!` 文字に続けて Snippet 名を入力して `Enter`。
 
-作成・編集・改名・削除は Snippets ペインでの操作、または Command Menu の **Create new snippet** から行う。編集中は snippet 名の隣のアスタリスクが未保存の変更を示す。
+Snippets ペインは snippet を**アルファベット順**に並べる。作成・編集・改名・削除は Snippets ペインでの操作、または Command Menu の **Create new snippet** から行う。編集中は snippet 名の隣のアスタリスクが未保存の変更を示す。具体的なメニュー名は次のとおり。
+
+- **作成**: Snippets ペインで **New snippet**、または Command Menu で **Create new snippet**。
+- **改名**: Snippets ペインで snippet 名を**右クリック**し **Rename** を選ぶ。
+- **削除**: Snippets ペインで snippet 名を**右クリック**し **Remove** を選ぶ。
 
 > **保存先についての原文の食い違い**: Sources パネル概要ページには「DevTools は Snippet をファイルシステムに保存する」とある。一方 Snippets 専用ページには次の Aside がある。「**DevTools は snippet をローカルの preferences として保存する。設定と一緒に同期（sync）せず、ファイルシステム経由でアクセスすることもできない。**」原文が両ページで食い違っているため、ここでは両方を記録しておく。少なくとも「他人と再現手順を共有する用途には向かない」と理解しておくのが安全。
 

