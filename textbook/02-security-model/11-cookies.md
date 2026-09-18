@@ -148,17 +148,46 @@ Set-Cookie: <cookie-name>=<cookie-value>; Domain=<domain-value>; Secure; HttpOnl
 
 | 属性 | 必須/任意 | 意味と規則 |
 | --- | --- | --- |
-| `<cookie-name>=<cookie-value>` | 必須 | name-value ペアで始まる。名前に使えるのは制御文字・区切り文字を除く US-ASCII。値はダブルクォートで囲んでもよいが、制御文字・空白・`"`・`,`・`;`・`\` は不可。名前によっては**プレフィックス**が特別な制約を課す（§8）。 |
-| `Domain=<domain-value>` | 任意 | どのホストに送られるかを定義。**設定するとそのドメインと全サブドメインに送られる**。**省略すると送信したホストにのみ返る（host-only cookie。より制限が強い）**。値は自分のドメインか親ドメインでなければならず、`com` / `co.uk` / `github.io` のような **public suffix は不可**。規則を破る Cookie は無視される。先頭のドット（`.example.com`）は無視される。 |
-| `Expires=<date>` | 任意 | 最大寿命を HTTP-date で示す。**未指定なら session cookie**（クライアント終了で削除）。ただし多くのブラウザには**セッション復元**機能があり session cookie も復元されることに注意。時計ずれは `Date` ヘッダから補正される。 |
+| `<cookie-name>=<cookie-value>` | 必須 | name-value ペアで始まる。名前に使えるのは制御文字・区切り文字を除く US-ASCII。値はダブルクォートで囲んでもよいが、制御文字・空白・`"`・`,`・`;`・`\` は不可。名前によっては**プレフィックス**が特別な制約を課す（§8）。**エンコーディング**: 多くの実装が値に**パーセントエンコーディング**（`%` と 16 進で文字を表す方式。たとえば空白は `%20`）を行うが、**RFC はこれを要求していない**。パーセントエンコーディングは、上記の許容文字要件を満たす助けになる（禁止文字を安全な表現に置き換えられる）ため使われる。 |
+| `Domain=<domain-value>` | 任意 | どのホストに送られるかを定義。**設定するとそのドメインと全サブドメインに送られる**。**省略すると送信したホストにのみ返る（host-only cookie。より制限が強い）**。値は自分のドメインか親ドメインでなければならず、`com` / `co.uk` / `github.io` のような **public suffix は不可**。規則を破る Cookie は無視される。先頭のドット（`.example.com`）は無視される。**具体例は §4.2.1 を見よ**。 |
+| `Expires=<date>` | 任意 | 最大寿命を HTTP-date で示す。**未指定なら session cookie**（クライアント終了で削除）。ただし多くのブラウザには**セッション復元**機能があり session cookie も復元されることに注意。`Expires` はサーバが自分の内部時計を基準に設定するのでクライアント時計と差があり得るが、**Firefox と Chromium 系は内部的に、時計差を補正した expiry（max-age）値を使い、サーバが意図した時刻で保存・失効させる**。時計ずれの補正は `Date` ヘッダの値から計算される。 |
 | `Max-Age=<number>` | 任意 | 失効までの**秒数**。**0 または負なら即時失効**。`Expires` と両方あれば **`Max-Age` が優先**。 |
-| `Partitioned` | 任意 | パーティション化ストレージ（CHIPS）に保存。**`Secure` 必須**。 |
-| `Path=<path-value>` | 任意 | `Cookie` を送るために URL に必要なパス。省略時は設定リクエストの URL のディレクトリ。`/` はディレクトリ区切りでサブディレクトリもマッチ。**セキュリティ手段として意図されておらず、別パスからの読み取りを防がない**。 |
+| `Partitioned` | 任意 | パーティション化ストレージ（CHIPS）に保存。**`Secure` 必須**。詳しくは §8.3。 |
+| `Path=<path-value>` | 任意 | `Cookie` を送るために URL に必要なパス。省略時は設定リクエストの URL のディレクトリ。`/` はディレクトリ区切りでサブディレクトリもマッチ。**セキュリティ手段として意図されておらず、別パスからの読み取りを防がない**。**具体例は §4.2.2 を見よ**。 |
 | `SameSite=<value>` | 任意 | クロスサイトリクエスト（scheme も含めて別 site 由来）で送るかを制御。CSRF を含む一部の攻撃への保護になる。値は `Strict`/`Lax`/`None`。 |
 | `Secure` | 任意 | **`https:` のリクエストでのみ**送る（**localhost は例外**）。MITM（manipulator in the middle、通信経路上の攻撃者）耐性が上がる。**ただし全アクセスを防ぐと思い込むな**: ディスクアクセスや `HttpOnly` 無しの JS からは読める。**`http:` からは `Secure` 付き Cookie を設定できない**。 |
 | `HttpOnly` | 任意 | **JavaScript から Cookie へのアクセスを禁じる**（`document.cookie` 経由など）。ただし **JS 起点のリクエスト（`fetch()` / `XMLHttpRequest.send()`）では送信される**。XSS での窃取を緩和する。 |
 
 〔補足〕`Domain` の設計意図と落とし穴を押さえておく。`Domain` を**省略した方が安全**（host-only で、サブドメインへ漏れない）。逆に `Domain=example.com` のように広く設定すると、すべてのサブドメインへ送られ、後述の cookie tossing の的になる。RFC の警告として、一部の古い UA は `Domain` 無しを「現在のホスト名の `Domain` があるかのように」扱い、`www.site.example` にも誤って送ることがある。
+
+#### 4.2.1 `Domain` の受理・拒否の具体例
+
+規則を言葉だけで覚えるより、実例で「どこまで広げられるか」を掴むほうが速い。MDN の例（原文どおり）:
+
+- **`api.example.com` からのレスポンス**が設定できる `Domain`:
+  - 可: `Domain=api.example.com`（自ホスト） / `Domain=example.com`（親ドメイン）
+  - 不可: `Domain=beta.api.example.com`（自分より**下位**のサブドメイン） / `Domain=other.example.com`（**兄弟**ホスト） / `Domain=com`（**public suffix**）
+- **`shop.example.co.uk` からのレスポンス**が設定できる `Domain`:
+  - 可: `Domain=shop.example.co.uk` / `Domain=example.co.uk`
+  - 不可: `Domain=co.uk` ── **`co.uk` は Public Suffix List に載る public suffix** だから
+
+つまり `Domain` は「**自ホストか、その祖先のうち public suffix の 1 つ手前まで**」しか指定できない。`co.uk` や `github.io` のような public suffix を境に、Cookie は別サイトへ漏れないよう遮断される（§3 の site 境界と同じ考え方）。診断では「`Domain` が登録可能ドメイン（例 `example.com`）まで広げられていないか」を必ず見る。広いほど兄弟サブドメインからの cookie tossing（§9.2）を受けやすい。
+
+#### 4.2.2 `Path` のマッチの具体例
+
+`Path=/docs` を設定した Cookie が、どの URL パスに送られるかの具体例（MDN、原文どおり）:
+
+| リクエストのパス | `Path=/docs` にマッチするか |
+| --- | --- |
+| `/docs` | ✓ マッチ |
+| `/docs/` | ✓ マッチ |
+| `/docs/Web/` | ✓ マッチ |
+| `/docs/Web/HTTP` | ✓ マッチ |
+| `/` | ✗ 非マッチ |
+| `/docsets` | ✗ 非マッチ（前方一致でも区切りが `/` でない） |
+| `/fr/docs` | ✗ 非マッチ（先頭が一致しない） |
+
+ポイントは 2 つ。`/docsets` が**非マッチ**なのは、`/docs` の直後が `/` かパス終端でないと「サブディレクトリ」とみなされないから。そして繰り返すが、これは**送信の制御であってセキュリティ境界ではない**。`document.cookie` は path を越えて Cookie を露出し得る（§9.1）ので、「別パスに置いたから安全」とは考えないこと。
 
 ### 4.3 `Set-Cookie` の例（原文のまま）
 
@@ -192,7 +221,15 @@ Set-Cookie: sessionId=e8bb43229de9; Domain=foo.example.com
 
 ### 4.4 ABNF と規範的な注意点（RFC 6265bis）
 
-規格（RFC 6265bis。RFC 6265 の後継ドラフトで、Cookie の現行の正確な挙動を定める文書）の `Set-Cookie` の ABNF（構文定義の記法）は次のとおり:
+規格（RFC 6265bis。RFC 6265 の後継ドラフトで、Cookie の現行の正確な挙動を定める文書）の `Set-Cookie` の ABNF（Augmented Backus-Naur Form。構文を記号で定義する記法）は次のとおり。全部を暗記する必要はなく、**読み方の要点だけ**押さえればよい。
+
+- `BWS` / `OWS` = 省略可能な空白（Bad/Optional WhiteSpace。あってもなくてもよいスペースやタブ）。
+- `DQUOTE` = ダブルクォート `"`。
+- `1*DIGIT` = 「1 個以上の数字」、`*cookie-octet` = 「0 個以上の cookie-octet」。`*` は「0 回以上の繰り返し」を表す。
+- `%x21` のような `%x` 表記は文字コードを 16 進で示す（`%x21` は `!`）。
+- `/` は「または」。たとえば `samesite-value = "Strict" / "Lax" / "None"` は「3 つのうちどれか」の意味。
+
+要するに下記は「**cookie-name は token（記号を除く文字列）、値は限定された文字集合、属性はセミコロン区切りで並ぶ**」と読めれば十分だ。細部は規格を参照し、診断に効く規範だけを ABNF の下にまとめる。
 
 ```abnf
 set-cookie        = set-cookie-string
@@ -233,15 +270,18 @@ av-octet          = %x20-3A / %x3C-7E
 - **属性名は大文字小文字を区別しない**（`httponly`, `Httponly`, `hTTPoNLY` も受理）。
 - **同一レスポンス内に同じ cookie-name の `Set-Cookie` を複数含めてはならない（MUST NOT）**。
 - **同一 set-cookie-string 内に同名の属性を 2 つ生成してはならない（MUST NOT）**。
+- **複数のレスポンスを同時に送る**（複数ソケットを使う等）と **race condition（競合状態。処理順序が確定せず結果が変わる状態）** になり、どの `Set-Cookie` が最終的に残るか**予測不能**になる。Cookie を確実に設定したいなら、順序に依存しない作りにする。
 - 年は 4 桁（rfc1123-date）を使うべき（SHOULD）。一部 UA は日付を 32-bit UNIX time_t として扱い **2038 年以降**を誤処理し得る。
 
 ### 4.5 UA の受理・保存・取得（ざっくり仕様）
 
 UA が `Set-Cookie` を受け取ると Cookie と属性を保存し、以後の HTTP リクエストで**該当する未失効の Cookie を `Cookie` ヘッダに含める**。同じ **cookie-name・domain・path** の Cookie を新たに受け取ると、既存を追い出して置き換える。サーバは**過去日時の `Expires`** を送れば Cookie を削除できる。**UA は認識できない属性を無視する（Cookie 全体は捨てない）**。
 
+〔補足〕**どのステータスコードの応答で `Set-Cookie` が効くか**は診断で重要だ。UA は **100 番台（情報レスポンス）の `Set-Cookie` は無視してよい（MAY）**が、**それ以外は 400 番台・500 番台のエラー応答も含めて処理すべき（SHOULD）**。つまり「エラーページだから Cookie は設定されない」と思い込むのは危険で、**500 応答でセッション固定用の Cookie が撒かれる**ような経路も起こり得る。
+
 取得（Cookie を送るかどうか）の判定は、RFC 6265bis の「取得アルゴリズム」で規範化されている（原文のまま）:
 
-```
+```text
 3. Let cookie-list be the set of cookies from the cookie store that meets all
    of the following requirements:
 
@@ -270,7 +310,27 @@ UA が `Set-Cookie` を受け取ると Cookie と属性を保存し、以後の 
 
 〔補足〕この最後の 5 行が `SameSite` の心臓部だ。「same-site-flag が `None` でなく、リクエストが cross-site なら、**HTTP かつ Lax/Default かつ safe メソッドかつトップレベル**という 4 条件が全部揃わない限り Cookie を除外する」と読める。これが次章以降の `Lax` 挙動そのものである。
 
-なお UA は「**localhost を信頼されたホスト**」「**https を secure な scheme**」とみなすのが典型（規格は "secure" の厳密な定義を UA に委ねている）。ソート順は「**path が長い Cookie を先に**、同長なら**作成が早い方を先に**」（SHOULD）。実装上限は「**ドメイン当たり最低 50、全体で最低 3000**」を提供すべき（SHOULD）で、UA はいつでも任意の Cookie を evict（追い出し）してよい。Cookie の寿命は **400 日（34560000 秒）に丸められる**（`Expires`/`Max-Age` がそれを超えれば MUST で削減）。
+前の段落は「取得の条件」だが、そもそも「**どのオリジンが same-site の基準になるか**」（＝ site for cookies）を決める判定側は別に規定されている。次の §4.5.1 で見る。それに続いて、取得の細かな補足（§4.5.2）と、保存の上限・寿命（§4.5.3）を分けて整理する。
+
+#### 4.5.1 何を基準に「same-site」を判定するか（site for cookies）
+
+`SameSite` の判定は、リクエストの **client（発行元の文書など）の「site for cookies（Cookie 用サイト）」** と、リクエスト先 URL のオリジンを比べて行う。両者が same-site なら same-site リクエスト、そうでなければ cross-site だ。この「site for cookies」がどう決まるかに、攻撃・防御の勘所がある。
+
+- **トップレベル文書**（アドレスバーに出ている一番外側のページ）の site for cookies は、その **top-level origin**（アドレスバーのオリジン）そのもの。
+- **入れ子文書（iframe など）** では、**すべての祖先文書のオリジンを監査**する。文書の site for cookies が top-level origin になるのは、**top-level origin が、その文書自身と全祖先文書のオリジンと同一 site である場合に限る**。1 つでもクロスサイトの祖先が挟まれば、site for cookies は **opaque origin（不透明オリジン。どのサイトとも same-site にならない特別なオリジン）** になる。
+  - つまり **`a.example` のページに埋め込まれた `b.example` の iframe の中に、さらに `a.example` の iframe を入れる**ような「サンドイッチ」構造では、一番内側の `a.example` でも祖先に `b.example` が挟まるため opaque になり、`SameSite=Strict/Lax` Cookie は送られない。これは CSRF 防御を回避しにくくする設計だが、逆に「iframe のネスト次第で Cookie が送られる/送られない」が変わる点は診断で意識する。
+- **Dedicated Worker / Shared Worker**: dedicated worker は 1 文書に束縛され、worker のオリジンがその文書の site for cookies と same-site なら文書の site for cookies を継ぐ（そうでなければ opaque）。shared worker は複数文書に束縛され得るので、**すべての束縛先が worker のオリジンと same-site でなければ opaque**。
+- **Service Worker**: 登録元 Document とほぼ独立した実行コンテキストなので扱いが複雑で、UA によって差があり得るが、規格は Service Workers 仕様に合わせるべき（SHOULD）としている。
+
+#### 4.5.2 取得の補足
+
+- UA は「**localhost を信頼されたホスト**」「**https を secure な scheme**」とみなすのが典型（規格は "secure" の厳密な定義を UA に委ねている）。
+- ソート順は「**path が長い Cookie を先に**、同長なら**作成が早い方を先に**」（SHOULD）。歴史的にこの順序に（誤って）依存するサーバがあったための規定で、順序に依存する設計は避ける。
+
+#### 4.5.3 保存の上限と寿命
+
+- 実装上限は「**ドメイン当たり最低 50、全体で最低 3000**」を提供すべき（SHOULD）。UA はいつでも任意の Cookie を **evict（追い出し）** してよいので、サーバは Cookie の保持に依拠すべきでない。
+- Cookie の寿命は **400 日（34560000 秒）に丸められる**（`Expires`/`Max-Age` がそれを超えれば MUST で削減）。
 
 ## 5. `SameSite` 属性で「送る文脈」を宣言する
 
@@ -321,6 +381,16 @@ MDN による `Lax` の 2 条件（両方満たすクロスサイトリクエス
 | `Lax` | 送る | 送らない | 送る | 送らない |
 | `None`（`Secure` 必須） | 送る | 送る | 送る | 送る |
 
+### 5.5 `SameSite` は「送信」だけでなく「生成（set）」も制御する
+
+`SameSite` を**送信制御の属性**とだけ覚えると、攻撃面を半分見落とす。規格（RFC 6265bis §9.2 / 保存モデル step 18）は明言している ──「**`SameSite` 属性は配信だけでなく Cookie の生成（creation）にも影響する**」。
+
+具体的には、次が規範だ。
+
+- **`SameSite=Lax` または `SameSite=Strict` を主張する Cookie は、クロスサイトの「サブリソース応答」や「入れ子ナビゲーション（iframe 内の遷移など）」への `Set-Cookie` では設定できない**（無視される）。
+- ただし**トップレベルナビゲーションであれば、クロスサイトかどうかに関わらず、任意の `SameSite` 値で Cookie を設定できる**。規格の注記どおり「トップレベルナビゲーションは、たとえその Cookie が既に存在していてもそのリクエストでは送られなかったであろう場合でも、任意の `SameSite` 値で Cookie を作成できる」。
+
+なぜこれが攻撃面か。攻撃者はサブリソースやサンドイッチ iframe からは `Lax/Strict` Cookie を**設定できない**が、被害者を**トップレベルで自分のページへ遷移させる**（リンク・`window.open`・リダイレクト）ことができれば、**クロスサイトでも任意の `SameSite` 値の Cookie を書ける**。これは **Cookie 注入・セッション固定（session fixation）** の足がかりになる。「`SameSite=Strict` だから外部から書き込めない」は誤りで、トップレベル遷移という抜け道が残る。防御側は、**セッション Cookie を `__Host-` プレフィックス（§8）で保護**し、サーバ側でセッション ID の**再生成（ログイン成功時に必ず貼り直す）**を徹底することで、注入された Cookie が固定に使われるのを防ぐ。
 ## 6. 既定値の変遷 ── 「無指定＝Lax」への転換
 
 `SameSite` は広くサポートされたが**開発者にほとんど採用されなかった**。「どこにでも送る」というオープンな既定は全ユースケースを動かす一方、**ユーザーを CSRF と意図しない情報漏洩にさらす**。そこで IETF 提案「Incrementally Better Cookies」が 2 つの変更を示した（原文のまま）:
@@ -447,7 +517,7 @@ const base::TimeDelta kShortLaxAllowUnsafeMaxAge = base::Seconds(10);
 
 規格の受理/拒否例（`__Host-`、原文のまま。**常に拒否**される例）:
 
-```
+```text
 Set-Cookie: __Host-SID=12345
 Set-Cookie: __Host-SID=12345; Secure
 Set-Cookie: __Host-SID=12345; Domain=site.example
@@ -457,25 +527,86 @@ Set-Cookie: __Host-SID=12345; Secure; Domain=site.example; Path=/
 
 secure origin から設定されれば**受理**される例:
 
-```
+```text
 Set-Cookie: __Host-SID=12345; Secure; Path=/
 ```
+
+`__Secure-` の受理/拒否例（MDN、原文のまま）。`__Secure-id=1` は **`Secure` が無い**ので拒否される。
+
+```text
+// secure origin（HTTPS）からならどちらも受理
+Set-Cookie: __Secure-ID=123; Secure; Domain=example.com
+Set-Cookie: __Host-ID=123; Secure; Path=/
+
+// Secure が無いので拒否
+Set-Cookie: __Secure-id=1
+
+// Path=/ が無いので拒否
+Set-Cookie: __Host-id=1; Secure
+
+// Domain を付けたので拒否
+Set-Cookie: __Host-id=1; Secure; Path=/; Domain=example.com
+
+// __Http- / __Host-Http- は Set-Cookie 経由でのみ設定可能（JS からは不可）
+Set-Cookie: __Http-ID=123; Secure; Domain=example.com
+Set-Cookie: __Host-Http-ID=123; Secure; Path=/
+```
+
+`__Http-` は `Secure` + `HttpOnly` を要求し、「この Cookie は `Set-Cookie` ヘッダ経由で設定された（＝ `document.cookie` や Cookie Store API のような JS からは作れない）」ことをサーバに保証する。`__Host-Http-` はそれに `__Host-` の制約（`Domain` なし・`Path=/`）を重ねる。
+
+#### 8.1.1 Partitioned Cookie（CHIPS）と `__Host-` の結び付き
+
+`Partitioned` 属性を付けた Cookie（CHIPS: Cookies Having Independent Partitioned State、トップレベルサイトごとに独立した区画に保存される Cookie）の実例（MDN、原文のまま）:
+
+```text
+Set-Cookie: __Host-example=34d8g; SameSite=None; Secure; Path=/; Partitioned;
+```
+
+規格の NOTE（訳）: **Partitioned Cookie は `Secure` 付きで設定されなければならない**。加えて、**`__Host-`（または `__Host-Http-`）プレフィックスの使用が推奨**される ── 登録可能ドメインではなく**ホスト名に束縛**するためだ。CHIPS の狙いは「サードパーティ埋め込みでも、埋め込み先のトップレベルサイトごとに区画が分かれ、サイト横断トラッキングに使えない Cookie」を作ることにある。`__Host-` と結びつけることで、その Cookie がホストに固定され区画を越えて漏れないことを保証しやすくなる。
 
 ### 8.2 大文字小文字の落とし穴（攻撃者の抜け道）
 
 UA は**プレフィックスを case-insensitive にマッチしなければならない（MUST）**。理由は攻撃だ。もし UA が case-sensitive に判定すると、サーバ側は Cookie 名を case-insensitive に処理しがちなので、**大文字小文字を崩したなりすまし**が通る。既に `__Secure-SID=12345` があるとき攻撃者が次を送らせると:
 
-```
+```text
 Set-Cookie: __SeCuRe-SID=evil
 ```
 
 次回、UA は**両方を送る**:
 
-```
+```text
 Cookie: __Secure-SID=12345; __SeCuRe-SID=evil
 ```
 
 サーバは両者を区別できず**侵害され得る**。だから UA は MUST で case-insensitive にマッチする。プレフィックス非対応の古いブラウザではこれらの保証が効かず、**プレフィックス付き Cookie も常に受理されてしまう**点にも注意。
+
+大文字小文字を崩しても**要件は等しく適用される**。規格の受理/拒否例（原文のまま）で確認しておく。まず**拒否される**例（`__Secure-` 系は `Secure` 欠如、`__Host-` 系は `Path=/` 欠如や `Domain` 指定などが理由）:
+
+```text
+Set-Cookie: __Secure-SID=12345; Domain=site.example
+Set-Cookie: __secure-SID=12345; Domain=site.example
+Set-Cookie: __SECURE-SID=12345; Domain=site.example
+Set-Cookie: __Host-SID=12345
+Set-Cookie: __host-SID=12345; Secure
+Set-Cookie: __host-SID=12345; Domain=site.example
+Set-Cookie: __HOST-SID=12345; Domain=site.example; Path=/
+Set-Cookie: __Host-SID=12345; Secure; Domain=site.example; Path=/
+Set-Cookie: __host-SID=12345; Secure; Domain=site.example; Path=/
+Set-Cookie: __HOST-SID=12345; Secure; Domain=site.example; Path=/
+```
+
+secure origin から要件を満たして設定されれば、**大文字小文字にかかわらず受理される**例:
+
+```text
+Set-Cookie: __Secure-SID=12345; Domain=site.example; Secure
+Set-Cookie: __secure-SID=12345; Domain=site.example; Secure
+Set-Cookie: __SECURE-SID=12345; Domain=site.example; Secure
+Set-Cookie: __Host-SID=12345; Secure; Path=/
+Set-Cookie: __host-SID=12345; Secure; Path=/
+Set-Cookie: __HOST-SID=12345; Secure; Path=/
+```
+
+なお、**名前の大文字小文字が違えば UA にとっては別の Cookie**なので、`__Secure-foo=bar` と `__secure-foo=baz` は同時に別々に存在でき、**どちらにも `__Secure-` の要件（`Secure` 必須など）が等しく適用される**。「小文字にすればプレフィックス制約を回避できる」という抜け道は無い。
 
 ## 9. Weak Confidentiality と Weak Integrity ── cookie tossing の根
 
@@ -785,4 +916,4 @@ RFC は Lax の限界も明言する。Lax は unsafe メソッド依存の CSRF
 <!-- self-read: https://web.dev/articles/samesite-cookies-explained | web.dev への直アクセスがネットワーク制限でブロック。本文は記事原稿から取得済みだが図版・シリーズナビ等の公開ページ固有要素は未取得 -->
 
 <!-- sources: https://web.dev/articles/samesite-cookies-explained, https://web.dev/articles/understanding-cookies, https://web.dev/articles/samesite-cookie-recipes, https://web.dev/articles/schemeful-samesite, https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie, https://datatracker.ietf.org/doc/draft-ietf-httpbis-rfc6265bis/, https://github.com/httpwg/http-extensions, https://github.com/chromium/chromium, https://publicsuffix.org/, https://github.com/GoogleChromeLabs/samesite-examples, https://www.chromium.org/updates/same-site, https://www.chromium.org/updates/same-site/incompatible-clients, https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html, https://medium.com/swlh/secure-httponly-samesite-http-cookies-attributes-and-set-cookie-explained-fc3c753dfeb6 -->
-<!-- terms: Cookie, Set-Cookie, Cookie ヘッダ, document.cookie, ファーストパーティ Cookie, サードパーティ Cookie, site, same-site, cross-site, Public Suffix List, 登録可能ドメイン, Domain 属性, Path 属性, Expires, Max-Age, Secure, HttpOnly, Partitioned, CHIPS, SameSite, SameSite=Strict, SameSite=Lax, SameSite=None, Default (same-site-flag), Lax-allowing-unsafe, Lax+POST, kLaxAllowUnsafeMaxAge, safe メソッド, unsafe メソッド, トップレベルナビゲーション, __Secure- プレフィックス, __Host- プレフィックス, __Http- プレフィックス, __Host-Http- プレフィックス, Cookie プレフィックス, Weak Confidentiality, Weak Integrity, cookie tossing, cookie fixing, CSRF, CSRF トークン, XSS, Schemeful Same-Site, HSTS, MITM, host-only cookie, session cookie, TTFB, IdP, SSO, forbidden response header name -->
+<!-- terms: Cookie, Set-Cookie, Cookie ヘッダ, document.cookie, ファーストパーティ Cookie, サードパーティ Cookie, site, same-site, cross-site, Public Suffix List, 登録可能ドメイン, Domain 属性, Path 属性, Expires, Max-Age, Secure, HttpOnly, Partitioned, CHIPS, SameSite, SameSite=Strict, SameSite=Lax, SameSite=None, Default (same-site-flag), Lax-allowing-unsafe, Lax+POST, kLaxAllowUnsafeMaxAge, safe メソッド, unsafe メソッド, トップレベルナビゲーション, __Secure- プレフィックス, __Host- プレフィックス, __Http- プレフィックス, __Host-Http- プレフィックス, Cookie プレフィックス, Weak Confidentiality, Weak Integrity, cookie tossing, cookie fixing, CSRF, CSRF トークン, XSS, Schemeful Same-Site, HSTS, MITM, host-only cookie, session cookie, TTFB, IdP, SSO, forbidden response header name, site for cookies, opaque origin, Dedicated Worker, Shared Worker, Service Worker, session fixation, race condition, パーセントエンコーディング -->

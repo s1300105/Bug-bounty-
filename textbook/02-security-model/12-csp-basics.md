@@ -80,7 +80,7 @@ CSPをブラウザに届ける方法は3つある。設計意図（何のため�
 | 配信方法 | 書き方 | 特徴・制限 |
 |---|---|---|
 | `Content-Security-Policy`ヘッダ | HTTPレスポンスヘッダ | **推奨。CSPの全機能をサポート**。強制（ブロック）モード。indexページだけでなくすべてのHTTPレスポンスで送る。 |
-| `Content-Security-Policy-Report-Only`ヘッダ | HTTPレスポンスヘッダ | **強制されない（非ブロッキング／"fail open"）**。違反はコンソールに出力され、`report-to`/`report-uri`があればレポートが送られる。強制展開の前段としてよく使う。 |
+| `Content-Security-Policy-Report-Only`ヘッダ | HTTPレスポンスヘッダ | **強制されない（非ブロッキング／"fail open"＝違反を検知しても読み込みを止めない・防御としては開いたまま）**。違反はコンソールに出力され、`report-to`/`report-uri`があればレポートが送られる。強制展開の前段としてよく使う。 |
 | `<meta http-equiv="...">`タグ | HTMLマークアップ内 | ヘッダを制御できないCDNデプロイ等で使う。ただし**`frame-ancestors`・`sandbox`・レポート系（`report-to`）は使えない**。 |
 
 meta配信の書き方は次のとおり。
@@ -100,6 +100,27 @@ meta配信の書き方は次のとおり。
 古いチュートリアルには`X-WebKit-CSP`や`X-Content-Security-Policy`が出てくるが、**これらは使ってはならない（DO NOT）**。OWASP原文は「実装がobsolete（Firefox 23以降・Chrome 25以降で廃止）、限定的、非一貫的で、信じられないほどバグが多い（incredibly buggy）」と明言している。プレフィクス無しの`Content-Security-Policy`を使う。
 
 〔補足〕診断の観点では、`X-`プレフィクス版だけが設定されているサイトは「CSPを設定したつもりで実質無防備」であることが多い。ヘッダ名を正確に見ること。
+
+### 2.3 ブラウザ対応と普及状況
+
+CSPは新しい技術ではなく、主要ブラウザで長く実装されてきた。導入をためらう理由はほぼない、という点を押さえておく。
+
+- **CSP 1**はChrome・Safari・Firefoxでかなり実用的だが、**IE 10ではサポートが非常に限定的**だった。
+- **CSP Level 2はChrome 40以降**で利用可能。
+- 標準の`Content-Security-Policy` / `Content-Security-Policy-Report-Only`ヘッダは**Firefox 23+・Chrome 25+・Opera 19+**でサポートされる（W3C Specの標準ヘッダ）。
+- **TwitterやFacebookのような巨大サイトがすでにこのヘッダを展開済み**である。Twitterのケーススタディが公開されている（blog.twitter.com、下記📌参照）。
+
+つまり「対応ブラウザが少ないから入れない」という言い訳は現状成り立たない。標準は自サイトへ展開を始められる状態にある。
+
+〔補足〕`strict-dynamic`を含むCSP Level 3の機能も、現在は主要なモダンブラウザエンジンで広くサポートされている（§7・§8参照）。
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: Twitter Engineering「Improving browser security with CSP」 — https://blog.twitter.com/engineering/en_us/a/2011/improving-browser-security-with-csp.html
+> **なぜ**: 本教科書の執筆環境からは自動取得できなかった（理由: 外部サイトのため未取得。web.dev原稿が参照として挙げていたもの）。以下の記述はweb.dev原稿の言及にもとづく。
+> **読みどころ**:
+> 1. 大規模サイトが実運用でCSPをどう段階展開したか（Report-Onlyから強制へ）の実例。
+> 2. インラインスクリプトの排除で直面した実務上の課題。
+> **代替手段**: web.dev「Content security policy」（https://web.dev/articles/csp ）のReal World Usage節が同等の内容を要約している。
 
 ---
 
@@ -200,8 +221,8 @@ Fetch系は「ブラウザが信頼してリソースを読み込む場所」を
 | `style-src` | スタイルが適用される場所（`<link>`、`@import`、`Link`ヘッダ由来）。 |
 | `style-src-elem` / `style-src-attr` | インライン属性を除くスタイル／スタイル属性を制御。 |
 | `connect-src` | fetch、XHR、eventsource、beacon、websockets接続を制御。 |
-| `img-src` / `font-src` / `media-src` | 画像／フォント／動画・音声・text trackの読み込み元。 |
-| `child-src` | ネストしたブラウジングコンテキストとworker実行コンテキスト。 |
+| `img-src` / `font-src` / `media-src` | 画像／フォント／動画・音声・text trackの読み込み元。たとえばGoogleのWebフォントは`font-src https://themes.googleusercontent.com`で有効化できる。 |
+| `child-src` | ネストしたブラウジングコンテキスト（フレーム）とworker実行コンテキストの読み込み元。たとえば`child-src https://youtube.com`とすると、YouTubeからの動画埋め込みは許可されるが他オリジンからはできない。 |
 | `object-src` | プラグインを読み込めるURL。 |
 | `manifest-src` | アプリケーションマニフェストの読み込み元。 |
 | `prefetch-src` | prefetch/prerender用の**実験的**ディレクティブだった。**CSP Level 3仕様から削除され、モダンブラウザでは無視される**。防御目的で依存してはならない。 |
@@ -230,12 +251,14 @@ CSPの落とし穴として、**設定しなかったディレクティブは既
 | ディレクティブ | 分類 | 説明 |
 |---|---|---|
 | `base-uri` | Document | `<base>`要素が使えるURLを制限。`<base>`注入を防ぐ。 |
-| `plugin-types` | Document | 読み込めるリソースの種類（例`application/pdf`）を制限。 |
+| `plugin-types` | Document | ドキュメントに読み込めるリソースの**種類（type）**を制限（例`application/pdf`）。対象の`<embed>`・`<object>`には3つのルールが適用される。(1)要素は自分のtypeを明示的に宣言する必要がある。(2)要素のtypeは宣言されたtypeと一致する必要がある。(3)要素のリソースは宣言されたtypeと一致する必要がある。 |
 | `sandbox` | Document | フォーム送信などページの動作を制限。**`Content-Security-Policy`ヘッダと共に使う場合のみ適用**。値なし（`sandbox;`）だと全制限が有効。 |
 | `form-action` | Navigation | フォームの送信先URLを制限。フィッシングフォーム注入を防ぐ。 |
 | `frame-ancestors` | Navigation | 自ページを`<frame>`/`<iframe>`/`<object>`/`<embed>`/`<applet>`に埋め込めるURLを制限。 |
 
-`frame-ancestors`には重要な性質が3つある。(1)`<meta>`タグで指定された場合は無視される。(2)`default-src`にフォールバックしない。(3)`X-Frame-Options`はこのディレクティブによってobsoleteとなり、UAに無視される。クリックジャッキングやcross-site leaks（xs-leaks）を防ぐ主役である。
+`frame-ancestors`には重要な性質が3つある。(1)`<meta>`タグで指定された場合は無視される。(2)`default-src`にフォールバックしない。(3)`X-Frame-Options`はこのディレクティブによってobsoleteとなり、UAに無視される。クリックジャッキングやクロスサイトリーク（cross-site leaks, xs-leaks）を防ぐ主役である。
+
+**クロスサイトリーク（xs-leaks）**とは、あるサイトが別サイトの状態（ログイン有無・特定ユーザーかどうか等）を、読み込み時間やフレーム挙動などのサイドチャネル（本来の通信経路以外から漏れる手がかり）を通じて推測する、クロスサイトの情報漏えい系攻撃のこと。自ページを勝手にフレーム埋め込みさせないことが、こうした計測の足場を奪う防御になる。
 
 `sandbox`は少し毛色が違い、「ページが読み込めるリソース」ではなく「ページが取れる動作（actions）」に制限をかける。これがあると、ページは`sandbox`属性付き`<iframe>`の中に読み込まれたかのように扱われ、一意のオリジン（unique origin）に強制されたりフォーム送信を防いだりする。
 
@@ -253,6 +276,42 @@ Reporting系は違反を指定の場所へ送る。**単独では意味を持た
 ```http
 Content-Security-Policy: report-uri https://example.com/csp-reports
 ```
+
+### 4.5 実世界の3つのユースケース（完成ポリシー雛形）
+
+抽象的なディレクティブ説明だけでは、いざ自分のサイトに書こうとすると手が止まる。web.dev原文は「まず`default-src 'none'`から始め、コンソールを見ながら、必要なリソースを1つずつ許可していく」手順を推奨したうえで、代表的な3つの完成ポリシーを示している。これらは実務で最初に真似する雛形として役に立つ。
+
+#### ユースケース1: ソーシャルメディアウィジェット
+
+Google +1・Facebook Like・Twitter（当時）のTweetボタンを載せる場合。要点は次のとおり。
+
+- **Facebook**のLikeボタンは`<iframe>`版が推奨（サイトの他の部分から安全にサンドボックスされるため）。動かすには`child-src https://facebook.com`が必要。既定でFacebookが提供する`<iframe>`は相対URL`//facebook.com`を読み込むので、**明示的にHTTPSを指定して`https://facebook.com`に変える**こと。
+- **Twitter**のTweetボタンはスクリプトとフレームの両方が`https://platform.twitter.com`に依存する。`script-src https://platform.twitter.com; child-src https://platform.twitter.com`で対応する（提供されるインラインスニペットは外部JSファイルへ移す）。
+- コツは、**まず`default-src 'none'`にしてコンソールを見ながら、ウィジェットを動かすのに必要なリソースを判定する**こと。
+
+3つのウィジェットをすべて使うなら、同種リソースを1つのディレクティブにまとめて次のようになる。
+
+```http
+script-src https://apis.google.com https://platform.twitter.com; child-src https://plusone.google.com https://facebook.com https://platform.twitter.com
+```
+
+#### ユースケース2: ロックダウン（銀行など）
+
+**自分たちが書いたリソースしか読み込ませたくない**場合。`default-src 'none'`（すべてブロック）から始めて積み上げる。画像・スタイル・スクリプトをCDN`https://cdn.mybank.net`から、XHRを`https://api.mybank.com/`へ、フレームはサイトローカルのみ、という前提での最も制限的なヘッダはこうなる。
+
+```http
+Content-Security-Policy: default-src 'none'; script-src https://cdn.mybank.net; style-src https://cdn.mybank.net; img-src https://cdn.mybank.net; connect-src https://api.mybank.com; child-src 'self'
+```
+
+#### ユースケース3: SSLのみ
+
+第三者製フォーラムソフトを使っていてインラインを消す能力はないが、**すべてのリソースを安全なチャネル経由でのみ**読み込ませたい場合。次が効果的。
+
+```http
+Content-Security-Policy: default-src https:; script-src https: 'unsafe-inline'; style-src https: 'unsafe-inline'
+```
+
+**重要な注意**: `default-src`に`https:`を指定していても、`script-src`と`style-src`はそのソースを自動的に継承しない。**各ディレクティブは、その特定のリソース種別についての既定値を完全に上書きする（Each directive completely overwrites the default for that specific type of resource.）**。だから`script-src https: 'unsafe-inline'`のように毎回明示する必要がある。この挙動はCSP全体で共通の重要ポイントなので、§4.2・§12でも繰り返し確認する。
 
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: OWASP Content Security Policy Cheat Sheet — https://cheatsheetseries.owasp.org/cheatsheets/Content_Security_Policy_Cheat_Sheet.html
@@ -340,7 +399,7 @@ setTimeout(function () {
 ```
 
 - JSONは`eval`ではなく組み込みの`JSON.parse`でパースする（IE8以降で利用可能・完全に安全）。
-- 実行時テンプレーティングを避ける。多くのテンプレートライブラリは`new Function()`を多用するため危険。プリコンパイルを提供する言語（Handlebarsのプリコンパイル等）を選ぶ。
+- 実行時テンプレーティングを避ける。多くのテンプレートライブラリは`new Function()`を多用するため危険。プリコンパイルを提供する言語（Handlebarsのプリコンパイル等）を選ぶ。CSPを標準サポートし、`eval`がない環境では堅牢なパーサーにフォールバックするフレームワークもある。**AngularJSの`ng-csp`ディレクティブ**（https://docs.angularjs.org/api/ng/directive/ngCsp ）がその好例で、これを付けるとAngularJSが`eval`／`new Function`を使わないCSP互換モードで動く。
 - どうしても`eval`が必要なら`script-src`に`'unsafe-eval'`を足せば有効化できるが、web.dev原文は**強く非推奨（strongly discourage）**とする。
 
 ### 5.3 OWASPが挙げるCSPの5つの防御効果
@@ -356,6 +415,18 @@ OWASPチートシートは、CSPがXSSを防ぐ仕組みを具体的な注入例
 | objectの制限 | 悪意あるflash/Java/レガシー実行可能物を`<object>`で注入する攻撃 |
 
 `frame-ancestors`によるフレーミング攻撃（クリックジャッキング、xs-leaks）の防御も加わる。歴史的には`X-Frame-Options`が使われたが、`frame-ancestors`がそれをobsoleteにした。
+
+### 5.4 Subresource Integrity（SRI）の強制
+
+**Subresource Integrity（SRI）**とは、`<script>`や`<link>`に`integrity`属性でリソースのハッシュを書いておき、ダウンロードした中身がそのハッシュと一致したときだけ実行・適用する仕組みのこと。中身が1バイトでも変われば読み込みが拒否される。
+
+OWASPチートシートは、**ユーザー入力を一切受け付けない完全な静的サイトであっても、CSPを使ってSRIの使用を強制できる**と述べている。これが効くのは次のような場面である。
+
+- アナリティクスや広告などの**第三者スクリプトをホストしているサイトの1つが侵害され**、配信ファイルが差し替えられた場合。SRIを強制していれば、ハッシュ不一致でその改竄スクリプトはブロックされ、自サイト上で実行されない。
+
+つまりSRIは「許可リストに載っているホストが乗っ取られた」という、ホスト許可リスト型CSPだけでは防げない事態への追加の一手になる。多層防御の一部として、静的サイトでも検討する価値がある。
+
+〔補足〕SRIハッシュの生成方法や`integrity`属性の書式そのものはCSPの範囲外だが、CSPと組み合わせると「信頼したホストであっても、中身が想定どおりのときだけ実行する」という強い保証になる。
 
 ---
 
@@ -411,6 +482,14 @@ OWASPが挙げるhash generatorは https://report-uri.com/home/hash 。
 ---
 
 ## 7. 許可リスト型 vs strict CSP — なぜ後者が推奨か
+
+### 7.0 strict CSPが守る攻撃対象
+
+先に「何のためにstrict CSPを入れるのか」を明確にしておく。OWASPチートシートは、strict policyの役割を**古典的なstored XSS・reflected XSS・および一部のDOM XSS攻撃から保護すること**と定め、**CSPを実装しようとするあらゆるチームにとって最適な目標であるべき**だとしている。
+
+- **stored XSS（格納型XSS）**: 攻撃者の入力がサーバーに保存され、他ユーザーの閲覧時に実行されるXSS。
+- **reflected XSS（反射型XSS）**: URLパラメータなどの入力が同じレスポンスにそのまま反映されて実行されるXSS。
+- **一部のDOM XSS**: JavaScriptがsourceからsinkへ危険なデータを流すことで起きるXSS（残りはTrusted Typesで補う。§10・§11参照）。
 
 ### 7.1 許可リスト型は「ほとんどバイパス可能」
 
@@ -518,6 +597,8 @@ app.get('/', function(request, response) {
 }
 ```
 
+nonce生成はサーバーサイドフレームワーク側の機能を使うのが実務的である。web.dev原文は上のExpress（JavaScript）に加え、**Django（Python）の`django-csp`**（https://django-csp.readthedocs.io/en/latest/nonce.html ）を例として挙げている。自分のスタックに用意された仕組みを使えば、レスポンスごとの再生成やテンプレートへのnonce注入を安全に扱える。
+
 すべての`<script>`要素にこのnonceを付ける（全スクリプトが同じnonceでよい）。
 
 許可される例:
@@ -544,6 +625,13 @@ scripts.forEach(function(scriptUrl) {
 ```
 
 このインラインのSHA-256ハッシュは https://strict-csp-codelab.glitch.me/csp_sha256_util.html で計算できる。
+
+上のスニペットのコメントや細部には、動作を理解するうえで大事な点が詰まっている。原文の補足を噛み砕くと次のとおり。
+
+- `s.async = false`は、（barが先にダウンロードされても）fooをbarより先に実行させ、**実行順序を保つ**ための指定である。
+- ただし**このスニペットでは`s.async = false`はスクリプト読み込み中にパーサーをブロックしない**。スクリプトが動的に追加されているためで、パーサーは`async`スクリプトと同様、スクリプトが実行されるときにのみ止まる。
+- そのため片方または両方のスクリプトが**ドキュメントのダウンロード完了前に実行される可能性がある**。実行時にDOMが準備済みであってほしければ、appendする前に`DOMContentLoaded`イベントを待つ。それがパフォーマンス問題（ダウンロード開始が遅すぎる）を起こすなら、ページのより早い位置で**preloadタグ**を使う。
+- **`<script>`に`defer = true`を付けても、この動的追加の書き方では何もしない**。deferの挙動が必要なら、実行したいタイミングで手動でスクリプトを走らせる必要がある。
 
 ### 8.3 Step 3: 非互換パターンのリファクタリング
 
@@ -584,6 +672,8 @@ Content-Security-Policy:
 2. 破壊がないと確信できたら`Content-Security-Policy`で強制展開。**ここで初めてCSPがXSSから保護し始める**。
 
 展開時のgotcha: 使っているCSPが本当に"strict"かを**CSP Evaluator（https://csp-evaluator.withgoogle.com ）またはLighthouse**で確認する。ポリシーのわずかな変更でもセキュリティが大幅に下がりうる。本番では拡張やマルウェア由来のノイズが違反レポートに混じる点にも注意。
+
+**Lighthouseの使い方（補足）**: このプロセス全体を通じて、**Lighthouse（v7.3.0以上）**の**Best Practices監査**を使うと、サイトにCSPがあるか、そしてXSSに対して有効なほどstrictかを確認できる。実験的なCSP監査を有効にするには`--preset=experimental`フラグを付けて実行する。CSPが未設定・非強制の場合、レポートには「no CSP is found in enforcement mode（強制モードのCSPが見つからない）」のような警告が出る。診断でもこの監査は「対象サイトがReport-Onlyのまま放置していないか」を素早く見る手掛かりになる。
 
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: web.dev「Mitigate cross-site scripting (XSS) with a strict Content Security Policy (CSP)」 — https://web.dev/strict-csp/
@@ -674,7 +764,25 @@ anElement.innerHTML = aTrustedHTML;     // Trusted Typeオブジェクトなら�
 
 ### 11.3 展開手順
 
-まずreport-onlyで導入し、動作を止めずに違反を集める。
+#### 準備: 違反レポートを受け取れるようにする
+
+report-onlyヘッダを付ける前に、まず**違反レポートをどこで受けるか**を用意しておく。web.dev原文が挙げる選択肢は次のとおり。
+
+- オープンソースのレポートコレクタ**go-csp-collector**（https://github.com/jacobbednarz/go-csp-collector ）を立てるか、商用の同等品を使う。
+- 手早く様子を見たいなら、**ブラウザ内で違反イベントを直接ログに出す**方法もある。次の1行をページに入れておくと、Trusted Types違反を含むCSP違反がコンソールに出る。
+
+```js
+document.addEventListener('securitypolicyviolation',
+    console.error.bind(console));
+```
+
+〔補足〕`securitypolicyviolation`イベントは、Trusted Typesに限らずCSP違反全般で発火する。診断で「このページは何をブロックしているか」を手元でざっと観察するのにも使える。
+
+なお、DOM XSSにつながる怪しいsink利用の多くは、実行前に**静的リンタ**でも見つけられる。web.dev原文は`eslint-plugin-no-unsanitized`（https://github.com/mozilla/eslint-plugin-no-unsanitized ）をコードベースに走らせることを勧めている。ただし**CSP違反レポートも併せて分析すべき**である。理由は、リンタが拾えるのは静的に見えるコードだけなのに対し、CSP違反は**非準拠のコードが実際に実行されたときにトリガーされる**ため、動的に組み立てられる危険な経路を実行時に捕捉できるからである。
+
+#### report-onlyで観測 → 強制へ
+
+準備ができたら、まずreport-onlyで導入し、動作を止めずに違反を集める。
 
 ```text
 Content-Security-Policy-Report-Only: require-trusted-types-for 'script'; report-uri //my-csp-endpoint.example
@@ -697,6 +805,19 @@ Trusted TypesはHTTPSや`localhost`のようなsecure contextでのみ利用可�
 }
 }
 ```
+
+§9のCSP違反レポートと同じく、主要なキーの意味を押さえておくと、届いたレポートから「コードのどこがDOM XSSを持ち込んでいるか」を素早く特定できる。
+
+| キー | 意味 |
+|---|---|
+| `violated-directive` | 違反されたディレクティブ。ここでは`require-trusted-types-for`。 |
+| `disposition` | 適用モード。`report`ならreport-only（観測中で未ブロック）、`enforce`なら強制（実際にブロックした）。 |
+| `blocked-uri` | 何がブロックされたか。Trusted Types違反では`trusted-types-sink`という特別な値になり、「危険なsinkに素の文字列が渡された」ことを表す。 |
+| `line-number` / `column-number` | 違反を起こしたコードの行・桁。 |
+| `source-file` | 違反を起こしたスクリプトファイルのURL。 |
+| `script-sample` | 問題の入力の断片（例: `Element innerHTML <img src=x`）。どんなペイロードがsinkに渡ったかの手掛かり。 |
+
+〔補足〕`disposition`が`report`のままなら、それは**まだ何もブロックしていない**（fail open）という意味である。§2の`Content-Security-Policy-Report-Only`と同じく、防御として数えるには強制モードへ切り替える必要がある。
 
 違反を全部潰したら強制へ切り替える。
 
@@ -739,7 +860,7 @@ if (window.trustedTypes && trustedTypes.createPolicy) { // Feature testing
 
 〔補足〕以下は上記4本の原典の事実を「CSPの評価手順」として並べ替えたものである（新しい事実の追加ではない）。**許可された診断・バグバウンティ・自分で立てた検証環境**を前提に使う。CSPは防御の話でもあるので、各項目は「攻撃者が突く点」と「守り方」を対にして読む。
 
-1. **ヘッダを確認する**: `Content-Security-Policy`か`-Report-Only`か。後者は強制されないのでXSS緩和として数えない。`<meta>`配信なら`frame-ancestors`/`sandbox`/レポート系が効かない。
+1. **ヘッダを確認する**: `Content-Security-Policy`か`-Report-Only`か。後者は**fail open（＝違反を検知しても止めない・防御としては開いたまま）**なのでXSS緩和として数えない。`<meta>`配信なら`frame-ancestors`/`sandbox`/レポート系が効かない。
 2. **`script-src`（なければ`default-src`）を見る**: `'unsafe-inline'`があり（かつnonce/hashがなければ）インライン注入で即実行。`'unsafe-eval'`があれば`eval()`/`setTimeout(string)`/`new Function()`経路が開く。
 3. **nonce/hashの有無と品質**: nonceが毎レスポンスで変わるか（同一値の再利用は無価値）。推測不能な長さ・生成方法か（推奨は128bit以上・Base64）。
 4. **許可リスト型かどうか**: ホスト名列挙型は「ほとんどの構成でバイパス可能」（pub45542）。`csp-evaluator.withgoogle.com`やLighthouse Best Practicesで評価する。
@@ -833,11 +954,17 @@ if (window.trustedTypes && trustedTypes.createPolicy) { // Feature testing
 - https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy
 - https://report-uri.com/home/hash
 - https://github.com/cure53/DOMPurify
+- https://blog.twitter.com/engineering/en_us/a/2011/improving-browser-security-with-csp.html
+- https://docs.angularjs.org/api/ng/directive/ngCsp
+- https://django-csp.readthedocs.io/en/latest/nonce.html
+- https://github.com/jacobbednarz/go-csp-collector
+- https://github.com/mozilla/eslint-plugin-no-unsanitized
 
-<!-- sources: https://web.dev/articles/csp, https://cheatsheetseries.owasp.org/cheatsheets/Content_Security_Policy_Cheat_Sheet.html, https://web.dev/strict-csp/, https://web.dev/trusted-types/, https://research.google/pubs/pub45542/, https://csp-evaluator.withgoogle.com/, https://www.w3.org/TR/CSP3/ -->
-<!-- terms: コンテンツセキュリティポリシー（CSP）, 同一オリジンポリシー（SOP）, XSS, DOM-based XSS, 多層防御（defense in depth）, ソース許可リスト（allowlist）, ディレクティブ, default-src, script-src, object-src, base-uri, frame-ancestors, form-action, unsafe-inline, unsafe-eval, nonce, hash, strict-dynamic, strict CSP, Content-Security-Policy-Report-Only, report-uri, report-to, Trusted Types, require-trusted-types-for, sink, source, CSP Evaluator, DOMPurify -->
+<!-- sources: https://web.dev/articles/csp, https://cheatsheetseries.owasp.org/cheatsheets/Content_Security_Policy_Cheat_Sheet.html, https://web.dev/strict-csp/, https://web.dev/trusted-types/, https://research.google/pubs/pub45542/, https://csp-evaluator.withgoogle.com/, https://www.w3.org/TR/CSP3/, https://blog.twitter.com/engineering/en_us/a/2011/improving-browser-security-with-csp.html -->
+<!-- terms: コンテンツセキュリティポリシー（CSP）, 同一オリジンポリシー（SOP）, XSS, stored XSS, reflected XSS, DOM-based XSS, 多層防御（defense in depth）, ソース許可リスト（allowlist）, ディレクティブ, default-src, script-src, object-src, base-uri, frame-ancestors, form-action, plugin-types, child-src, font-src, unsafe-inline, unsafe-eval, nonce, hash, strict-dynamic, strict CSP, Content-Security-Policy-Report-Only, fail open, report-uri, report-to, Trusted Types, require-trusted-types-for, sink, source, Subresource Integrity（SRI）, クロスサイトリーク（xs-leaks）, CSP Evaluator, Lighthouse, DOMPurify, go-csp-collector, eslint-plugin-no-unsanitized, ng-csp -->
 
 <!-- self-read: https://web.dev/articles/csp | サイト側egress制限で403拒否・原稿Markdownからの二次情報ベース -->
 <!-- self-read: https://cheatsheetseries.owasp.org/cheatsheets/Content_Security_Policy_Cheat_Sheet.html | サイト側egress制限で403拒否・原稿Markdownからの二次情報ベース -->
 <!-- self-read: https://web.dev/strict-csp/ | サイト側egress制限で403拒否・原稿Markdownからの二次情報ベース -->
 <!-- self-read: https://web.dev/trusted-types/ | サイト側egress制限で403拒否・原稿Markdownからの二次情報ベース -->
+<!-- self-read: https://blog.twitter.com/engineering/en_us/a/2011/improving-browser-security-with-csp.html | 外部サイトで未取得・web.dev原稿の言及ベース -->

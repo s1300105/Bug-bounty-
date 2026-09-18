@@ -112,7 +112,7 @@ sandbox="allow-scripts allow-forms allow-same-origin ..."   ゆるい
 | `allow-orientation-lock` | 画面の向きのロックを許可 |
 | `allow-pointer-lock` | Pointer Lock API の使用を許可 |
 | `allow-popups` | ポップアップ（`Window.open()` や `target="_blank"` 等）を許可。未指定なら黙って失敗（silently fail）する |
-| `allow-popups-to-escape-sandbox` | サンドボックス化された文書が、サンドボックスフラグを強制せずに新しいブラウジングコンテキストを開くことを許可。無ければリダイレクト先・ポップアップ・新規タブは元の `<iframe>` と同じ制限を受ける |
+| `allow-popups-to-escape-sandbox` | サンドボックス化された文書が、サンドボックスフラグを強制せずに新しいブラウジングコンテキストを開くことを許可。具体的なユースケースとして MDN は「サードパーティ広告を安全にサンドボックス化しつつ、広告のリンク先ページには同じ制限を強制しない」場合を挙げる。無ければリダイレクト先・ポップアップ・新規タブは元の `<iframe>` と同じ制限を受ける |
 | `allow-presentation` | iframe が presentation session を開始できるかを埋め込み側が制御することを許可 |
 | `allow-same-origin` | このトークンを使わない場合、リソースは「常に SOP に失敗する特別なオリジン」から来たものとして扱われる（ストレージ／Cookie や一部 JS API を阻止） |
 | `allow-scripts` | スクリプト実行を許可（ただしポップアップ作成は許可しない）。未指定なら不許可 |
@@ -197,6 +197,8 @@ MDN はさらに2つの落とし穴を挙げる（逐語訳）。
 | 11 | `X-DNS-Prefetch-Control` | `off` |
 | 12 | `X-Frame-Options` | `deny` |
 | 13 | `X-Permitted-Cross-Domain-Policies` | `none` |
+
+`Permissions-Policy`（#7）の値は逐語で載せると1セルが極端に長くなるが、要点は「各機能を `()`（空の許可リスト＝どのオリジンにも許可しない）で**無効化**している」点にある。とくに **`geolocation=()`, `camera=()`, `microphone=()`** の3つ（位置情報・カメラ・マイクの無効化）が診断で真っ先に確認する要点である。全機能を1つずつ潰していく書き方なので、必要な機能だけを `(self)` などに開ければよい（例では `sync-xhr=(self)` だけが自オリジンに開かれている）。
 
 ### 4.2 チートシート本文との結びつき
 
@@ -297,7 +299,9 @@ chosen to use `rel="noreferrer"`, the use of `rel="noopener"` isn't required.
 
 Reverse tabnabbing とは、対象ページからリンクされたページが、**その対象ページ（元のタブ）を書き換えられる**攻撃である。たとえば元のタブをフィッシングサイトに置き換える。ユーザーは元々正しいページにいたので、それがすり替わったことに気づきにくい。ユーザーがこの偽ページに認証すると、資格情報は正規サイトではなくフィッシングサイトへ送られる。
 
-とくに重要な留保が2つある。
+記事は攻撃が**典型的に成立する前提条件**も明示している。すなわち、発信元サイトが html リンクの `target` 命令で「target loading location」（現在のロケーションを置き換えずに読み込む先）を指定し、**現在のウィンドウ／タブを利用可能なまま残し**、かつ後述の予防策（`rel="noopener"` 等）を**いずれも含んでいない**場合である。この3条件がそろって初めて攻撃が成り立つので、診断ではまずこの前提が満たされているか（開いた新タブから元タブがまだ触れるか）を確認する。
+
+そのうえで、とくに重要な留保が2つある。
 
 - リンク先サイト自身が上書きできるだけでなく、**ユーザーが安全でないネットワーク（公共 WiFi 等）にいる場合、任意の http リンクが偽装されて対象ページを上書きできる**。しかも**対象サイトが https のみで提供されていてもこの攻撃は成立する**。攻撃者はリンク先の http サイトを偽装すればよいだけだからだ。つまり「自サイトが HTTPS なら関係ない」は誤りで、**リンク先が http の外部サイト**なら中間者がレスポンスを差し替えて `window.opener.location` を書ける。
 - **`window.open` javascript 関数で開かれたリンクでも同様に成立する**（前述のとおり暗黙 noopener の対象外なので、こちらは今でも生きている）。
@@ -359,7 +363,19 @@ Reverse tabnabbing とは、対象ページからリンクされたページが�
 > 2. 教科書の Tabnabbing 図を自作する際の参考にする。
 > **代替手段**: `https://raw.githubusercontent.com/OWASP/www-community/master/assets/images/` から直接取得できる可能性が高い（同リポジトリの Markdown は取得成功済み）。
 
-記事末尾には参考文献一覧があり、暗黙 noopener の一次情報として WHATWG issue #4078、Caniuse、Chrome Platform Status、各ブラウザのバグトラッカー（Chromium 898942 / Mozilla 1522083 / WebKit 190481）が挙げられている。
+### 5.7 記事末尾の参照一覧（原典リンク）
+
+記事末尾には参考文献一覧があり、暗黙 noopener の一次情報として WHATWG issue #4078、Caniuse、Chrome Platform Status、各ブラウザのバグトラッカー（Chromium 898942 / Mozilla 1522083 / WebKit 190481）が挙げられている。それに加えて、Reverse Tabnabbing を実例・デモで学ぶための一次リンクが次のとおり列挙されている。バグバウンティで攻撃を実証したり、報告書に一次情報を添えたりするときに直接あたるとよい。
+
+| 参照（逐語タイトル） | URL |
+| --- | --- |
+| The `target="_blank"` vulnerability by example（dev.to） | https://dev.to/ben/the-targetblank-vulnerability-by-example |
+| About `rel="noopener"` attribute values（Mathias Bynens） | https://mathiasbynens.github.io/rel-noopener/ |
+| `target="_blank"` — the most underestimated vulnerability ever（Medium / jitbit） | https://medium.com/@jitbit/target-blank-the-most-underestimated-vulnerability-ever-96e328301f4c |
+| Cure53 Browser Security WhitePaper | https://github.com/cure53/browser-sec-whitepaper/raw/master/browser-security-whitepaper.pdf |
+| Reverse tabnabbing and blankshield demo | https://danielstjules.github.io/blankshield/ |
+
+このうち Mathias Bynens の `rel-noopener` は暗黙 noopener が標準化される前から `rel="noopener"` の効果を解説した定番資料で、blankshield demo は攻撃を実際に体験できる。Cure53 の WhitePaper はブラウザセキュリティ全般の網羅的な一次資料で、Tabnabbing 以外の攻撃面も俯瞰できる。
 
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: Caniuse — implicit `rel="noopener"` when using `target="_blank"` — https://caniuse.com/mdn-html_elements_a_implicit_noopener
@@ -374,6 +390,8 @@ Reverse tabnabbing とは、対象ページからリンクされたページが�
 ## 6. WebSocket 認証の根本原則 — 旧版チートシートが持っていた設計指針
 
 2025年10月の改訂で WebSocket の詳細記述はチートシートから削除され、独立した WebSocket Security Cheat Sheet へ移動した。しかし**削除された旧版にだけ明示されていた設計原則**があり、これが CSWSH（Cross-Site WebSocket Hijacking）の根本対策を理解する鍵になる。Git 履歴から旧版を取り出して確認した。
+
+削除の規模は数値で見ると実感しやすい。旧版（`28151e3^` = SHA `9e82856…`）は **985行 / 48,915バイト**あり、そのうち WebSocket 実装ヒントだけで数百行を占めていた。対して現行版は **160行 / 16,118バイト**にまで縮んでいる。つまり旧版の6割以上が削られ、その大半が Java の実装コード付き WebSocket 節だった。以下ではその削られた散文部分を Git 履歴から取り出して補う（Java コード本体は分量が大きく現行版にも存在しないため、成果物の見出し・行位置・役割の一覧として示す）。
 
 ### 6.1 「ブラウザが自動送信しないトークン」原則
 
@@ -392,6 +410,26 @@ HMAC digests are the simplest method, and [JSON Web Token](https://jwt.io/introd
 1. WebSocket を通信チャネルに使う場合、「**ブラウザによって自動的に送られるのではなく、クライアントコードが各やり取りのたびに明示的に送らなければならない**」アクセス *Token* をユーザーが受け取る認証方式を使うことが重要である。
 2. **HMAC ダイジェストが最も単純**、**JWT（JSON Web Token）が機能豊富な良い代替**。JWT はステートレスかつ改変不可能な形でアクセスチケット情報を運べ、さらに有効期間を定義できる。
 3. **JSON Validation Schema** を使って、入力メッセージと出力メッセージの**両方**について期待される内容を定義し検証する。
+
+#### 旧版が持っていた認証まわりの Java 成果物（インベントリ）
+
+旧版はこの認証方式を、動く Java コードの成果物として提示していた。コード本体は数百行あり現行版にも存在しないため全文引用はしないが、**どんな部品で WebSocket 認証を組んでいたか**の全体像は、見出し・旧版での行位置・役割の一覧として押さえておく価値がある（サンプルアプリ全体は `https://github.com/righettod/poc-websocket`）。
+
+| 成果物（原文の太字見出し） | 旧版の行 | 役割（原文の説明） |
+| --- | --- | --- |
+| **Authentication Web Socket endpoint** | 248 | 認証のやり取りを可能にする WebSocket エンドポイントを提供する |
+| **Authentication message handler** | 328 | すべての認証リクエストを処理する |
+| **Utility class to manage JWT** | 416 | アクセストークンの発行と検証を扱う（例では単純な JWT を使用） |
+| **JSON schema of the input and output authentication message** | 479 | 認証エンドポイントの視点から、入力・出力メッセージの期待される構造を定義する |
+| **Authentication message decoder and encoder** | 526 | 専用の JSON Schema を使って JSON のシリアライズ／デシリアライズと入出力検証を行い、エンドポイントが受信・送信する全メッセージが期待構造を厳密に守ることを体系的に保証する |
+
+ここで押さえるべき設計原則が、旧版の節末に逐語で書かれている。
+
+```text
+Note that the same approach is used in the messages handling part of the POC. All messages exchanged between the client and the server are systematically validated using the same way, using dedicated JSON schemas linked to messages dedicated Encoder/Decoder (serialization/deserialization).
+```
+
+つまり、この JSON スキーマ＋Encoder/Decoder による検証は認証メッセージだけの話ではない。**クライアントとサーバ間で交換される「すべてのメッセージ」が、メッセージ専用の Encoder/Decoder に紐づけた専用 JSON スキーマによって、体系的に同じ方法で検証される**——という原則で POC 全体が貫かれていた。診断観点では「入力だけでなく出力も」「一部のメッセージだけでなく全メッセージを」スキーマ検証しているか、を見るとこの設計思想に沿っているかが判定できる。
 
 ### 6.2 なぜこれが CSWSH の根本対策なのか
 
@@ -431,7 +469,14 @@ It also helps the user to revoke itself of current access if a malicious concurr
 3. トークンの有効期間は長いことが多い（1時間超もよくある）ため、ユーザーが「もうやり取りは終わった」とシステムに伝えてセッションを閉じる手段が重要。
 4. 同じトークンでの悪意ある同時アクセス（トークン盗用）が検出された場合、ユーザー自身がアクセスを取り消せる。
 
-削除された Java コードの成果物として **Token denylist**（旧版740行付近）があり、その役割は「使用を許可しなくなったトークンの**ハッシュ**の一時リストを、**メモリ上の時間制限付きキャッシュ**で維持する」ことだった。診断観点では「denylist にトークンそのものではなく**ハッシュ**を入れる」「TTL 付きキャッシュで持つ」の2点が、ログアウト実装をレビューする際の具体的チェック項目になる。
+この認可・失効の仕組みも、旧版では Java 成果物として提示されていた（コード本体は未引用。見出し・行位置・役割を一覧で示す）。
+
+| 成果物（原文の太字見出し） | 旧版の行 | 役割（原文の説明） |
+| --- | --- | --- |
+| **Token denylist** | 740 | 使用を許可しなくなったトークンの**ハッシュ**の一時リストを、**メモリ上の時間制限付きキャッシュ（memory and time limited Caching）**で維持する |
+| **Message handling** | 827 | リストへのメッセージ追加要求を処理する。**認可検証アプローチの実例**を示す |
+
+診断観点では「denylist にトークンそのものではなく**ハッシュ**を入れる」「**TTL 付きキャッシュ**で持つ（トークンの有効期限より長く保持する必要はない）」の2点が、ログアウト実装をレビューする際の具体的チェック項目になる。現行版（WebSocket 委譲先）が言う「ユーザーがログアウトしたら全 WebSocket 接続を直ちに閉じる」の**実装レベルの中身**が、この denylist 設計にあたる。
 
 ### 6.4 機密性・完全性 — `ws://` の危険を1行で示す
 
@@ -477,7 +522,7 @@ public void start(Session session) {
 }
 ```
 
-`@OnOpen` で `session.isSecure()` が真のときだけメッセージハンドラを取り付け、偽なら `CloseReason.CloseCodes.CANNOT_ACCEPT` と理由文字列 `"Insecure channel used !"` でセッションを明示的に閉じている。診断観点では、サーバが `wss://` を**強制しているか**を見る。TLS 終端をリバースプロキシに任せていてアプリ側から `isSecure()` が偽に見える構成や、逆に平文 `ws://` を受け付けてしまう構成は実務で頻出する。結論として、WebSocket エンドポイントは `wss://` のみで公開する。
+`@OnOpen` で `session.isSecure()` が真のときだけメッセージハンドラを取り付け、偽なら `CloseReason.CloseCodes.CANNOT_ACCEPT` と理由文字列 `"Insecure channel used !"` でセッションを明示的に閉じている。診断観点では、サーバが `wss://` を**強制しているか**を見る。ここで `isSecure()` が偽になる仕組みを補っておく。`isSecure()` は「アプリのコンテナが受け取っている接続そのものが TLS で暗号化されているか」を返すメソッドである。ところが実務では、TLS 終端（暗号化の解除）を前段のリバースプロキシ（例: Nginx）に任せる構成が多い。この場合、プロキシがブラウザとの間を `https`/`wss` で暗号化し、**プロキシから後ろの Java コンテナへは平文で転送する**ため、コンテナから見た接続は平文になり `isSecure()` は `false` を返してしまう。ブラウザ側は暗号化されているのに、アプリ側のこのチェックだけを信じると正常な接続まで拒否したり、逆にこのチェックを外して**本当に平文の `ws://` まで受け付けてしまう**、という取り違えが起きやすい（プロキシ経由の暗号化は `X-Forwarded-Proto` ヘッダ等で判定する必要がある）。結論として、WebSocket エンドポイントは `wss://` のみで公開する。
 
 ### 6.5 旧版と現行版は入れ替えではなく相補的
 
@@ -487,6 +532,9 @@ public void start(Session session) {
 | Authentication and I/O validation（「自動送信されないトークン」原則、JWT、JSON Schema） | WebSocket 委譲先 トークン認証 / 入力検証 | 一部希薄化。**原則の明示は現行版にない**（本節が唯一の記録） |
 | Authorization and token explicit invalidation（JWT claim、denylist、明示的失効） | WebSocket 委譲先 Message-Level Authorization / ログアウト時全接続クローズ | 一部希薄化。denylist のハッシュ／TTL という実装粒度は現行版にない |
 | Confidentiality and Integrity（`ws://` の pcap grep、`isSecure()`） | WebSocket 委譲先 Always Use WSS | 保持されたが実例は削除 |
+| （旧版に無し・現行版の新規追加） | WebSocket 委譲先: `permessage-deflate` の無効化（CRIME・BREACH 対策）、バックプレッシャー・DoS 対策、ロギング、テスト、フレームワーク別ベストプラクティス | **新規**。旧版にはなかった観点。詳細は基礎編（part 1）の WebSocket 節を参照 |
+
+この最終行は「削除」ではなく「追加」の記録である。旧版が持たず現行版で新たに加わった観点（圧縮に絡む CRIME/BREACH 対策としての `permessage-deflate` 無効化、DoS を防ぐバックプレッシャー制御など）がここに入る。したがって旧版と現行版の関係は、削られた部分（上4行）と加わった部分（この行）の両方向がある。
 
 WebSocket の防御を書くなら、現行版を骨格にしつつ、旧版から (a)「自動送信されない資格情報」原則、(b) `ws://` の pcap grep 実演、(c) トークン明示失効の denylist 設計、の3点を「旧版の記述」と明記して補うのが最も内容が濃くなる。
 

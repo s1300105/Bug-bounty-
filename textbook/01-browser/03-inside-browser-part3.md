@@ -21,6 +21,8 @@
 
 このシリーズは全4部構成で、part1 がマルチプロセスアーキテクチャ、part2 がナビゲーションフロー、本稿 part3 がレンダラプロセス内部、part4 が入力（マウス移動・クリック）とコンポジタを扱う。本稿の中核テーマは、レンダラプロセスが **HTML・CSS・JavaScript を、ユーザが操作できる Web ページに変換する**という仕事そのものである。
 
+原典の記事は Google Chrome チームの Mariko Kosaka によるもので、2018-09-20 に公開され、2020-08-18 に更新されている。ブラウザ内部の設計は年月とともに細部が変わり得るため、こうした原典の年代・著者を押さえておくと、記述が「いつの時点の Chrome の話か」を判断しやすくなる。
+
 ### 1-2. レンダラプロセスの中には4種類のスレッドがある
 
 レンダラプロセスは単一のスレッドで動くのではなく、内部に複数のスレッドを抱えている。スレッド（thread）とは、1つのプロセスの中で並行して走る処理の流れのこと。ここでは以下の4種類が登場する。
@@ -36,7 +38,7 @@
 Figure 1: Renderer process with a main thread, worker threads, a compositor thread, and a raster thread inside
 ```
 
-つまり、メインスレッド／複数のワーカスレッド／コンポジタスレッド／ラスタスレッドを内部に持つのがレンダラプロセスである。レンダラプロセスは Web パフォーマンスの多くの側面に触れており、この記事はあくまで概観にすぎない。より深く知るには Web Fundamentals の Performance セクションが案内されている。
+つまり、メインスレッド／複数のワーカスレッド／コンポジタスレッド／ラスタスレッドを内部に持つのがレンダラプロセスである。レンダラプロセスは Web パフォーマンスの多くの側面に触れており、この記事はあくまで概観にすぎない。より深く知るには Web Fundamentals の Performance セクション（https://developers.google.com/web/fundamentals/performance/why-performance-matters/ ）が案内されている。
 
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: Inside look at modern web browser (part 3)（レンダリング済みページ） — https://developer.chrome.com/blog/inside-browser-part3
@@ -205,6 +207,8 @@ https://cs.chromium.org/chromium/src/third_party/blink/renderer/core/html/resour
 ```text
 Figure 4: A person standing in front of a painting, phone line connected to the other person
 ```
+
+この図には原文で "game of human fax machine"（人間ファックス機のゲーム）という alt テキストが付いている。片方が絵を言葉で伝え、もう片方がそれを聞いて絵を再現する伝言ゲーム、という比喩である。言葉だけでは正確な位置や大きさが伝わらない、という点が要点だ。
 
 ### 7-2. レイアウトは要素の幾何を求めるプロセス
 
@@ -442,14 +446,19 @@ HTML バイト列
    │  (layout tree を歩く)
    ├──► paint records（描画順）
    └──► layer tree（レイヤ分割）
-             │  commit（→ コンポジタスレッド）
+             │
+========= ここまでメインスレッド =========
+             │  commit（layer tree + paint order をコンポジタスレッドへ渡す。ここでメインスレッドの責務が終わる）
              ▼
-        タイル分割 ──► ラスタスレッドがラスタ ──► GPU メモリ
+========= ここからコンポジタ／ラスタスレッド =========
+        タイル分割（コンポジタスレッド） ──► ラスタスレッドがラスタ ──► GPU メモリ
              ▼
         draw quads を集約 ──► compositor frame ──(IPC)──► ブラウザプロセス ──► GPU ──► 画面
 ```
 
-本稿はパースからコンポジットまでのレンダリングパイプラインを見た。次回（シリーズ最終回 part4）では、コンポジタスレッドをより詳しく見て、`mouse move` や `click` のようなユーザ入力が来たときに何が起きるかを扱う（次回リンク: https://developers.google.com/web/updates/2018/09/inside-browser-part4 、ボタンラベル "Next: Input is coming to the compositor"）。
+この `commit` が、メインスレッドとコンポジタスレッドの責務の境界線である。commit 以降のタイル分割・ラスタライズ・draw quads の集約・compositor frame の生成は、いずれもメインスレッドの外で進む。だからこそメインスレッドが JavaScript で詰まっていても、スクロールなどのコンポジットは滑らかに進み得る（この非対称性は 10-5 と後の XS-Leaks 章の要点である）。
+
+本稿はパースからコンポジットまでのレンダリングパイプラインを見た。次回（シリーズ最終回 part4）では、コンポジタスレッドをより詳しく見て、`mouse move` や `click` のようなユーザ入力が来たときに何が起きるかを扱う（次回リンク: https://developers.google.com/web/updates/2018/09/inside-browser-part4 、ボタンラベル "Next: Input is coming to the compositor"）。なお原文の著者 Mariko Kosaka の連絡先として、記事末尾には Twitter `@kosamari`（https://twitter.com/kosamari ）が示されている。
 
 〔補足〕原文中の `developers.google.com/web/updates/...` や `www.html5rocks.com` 系の URL は、現在 `web.dev` / `developer.chrome.com` へリダイレクトされることが多い。参照する際は原文の URL をそのまま示しつつ、リンク切れの可能性に留意するとよい。
 
@@ -525,12 +534,17 @@ HTML バイト列
 ## 出典
 
 - https://developer.chrome.com/blog/inside-browser-part3
+- https://developers.google.com/web/updates/2018/09/inside-browser-part1
+- https://developers.google.com/web/updates/2018/09/inside-browser-part2
+- https://developers.google.com/web/updates/2018/09/inside-browser-part4
+- https://developers.google.com/web/fundamentals/performance/why-performance-matters/
 - https://html.spec.whatwg.org/
 - https://html.spec.whatwg.org/multipage/parsing.html#an-introduction-to-error-handling-and-strange-cases-in-the-parser
 - https://html.spec.whatwg.org/multipage/parsing.html#overview-of-the-parsing-model
 - https://mathiasbynens.be/notes/shapes-ics
 - https://developer.mozilla.org/docs/Web/HTML/Element/script#attr-async
 - https://developer.mozilla.org/docs/Web/HTML/Element/script#attr-defer
+- https://developers.google.com/web/fundamentals/primers/modules
 - https://developers.google.com/web/fundamentals/performance/resource-prioritization
 - https://cs.chromium.org/chromium/src/third_party/blink/renderer/core/html/resources/html.css
 - https://www.youtube.com/watch?v=Y5Xa4H2wtVA
@@ -539,7 +553,7 @@ HTML バイト列
 - https://blog.logrocket.com/eliminate-content-repaints-with-the-new-layers-panel-in-chrome-e2c306d4d752?gi=cd6271834cea
 - https://developers.google.com/web/fundamentals/performance/rendering/stick-to-compositor-only-properties-and-manage-layer-count
 - https://www.html5rocks.com/en/tutorials/speed/high-performance-animations/
-- https://developers.google.com/web/updates/2018/09/inside-browser-part4
+- https://twitter.com/kosamari
 
 <!-- sources: https://developer.chrome.com/blog/inside-browser-part3, https://html.spec.whatwg.org/, https://html.spec.whatwg.org/multipage/parsing.html#an-introduction-to-error-handling-and-strange-cases-in-the-parser, https://html.spec.whatwg.org/multipage/parsing.html#overview-of-the-parsing-model, https://cs.chromium.org/chromium/src/third_party/blink/renderer/core/html/resources/html.css, https://developers.google.com/web/fundamentals/performance/rendering/optimize-javascript-execution, https://www.html5rocks.com/en/tutorials/speed/high-performance-animations/ -->
 <!-- terms: レンダラプロセス, メインスレッド, コンポジタスレッド, ラスタスレッド, DOM, preload scanner, computed style, layout tree, paint records, layer tree, ラスタライズ, コンポジット, draw quads, compositor frame, mXSS, パーサ差異, XS-Leaks, requestAnimationFrame, will-change, z-index -->

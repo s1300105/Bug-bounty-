@@ -244,7 +244,7 @@ const socket = new WebSocket('wss://app.example.com/socket');
 // const socket = new WebSocket('ws://app.example.com/socket');
 ```
 
-- **モダンなプロトコルバージョンを使う**: RFC 6455（現行標準）のみをサポートし、既知の脆弱性がある Hixie-76 や hybi-00 への後方互換を捨てる。
+- **モダンなプロトコルバージョンを使う**: RFC 6455（現行の WebSocket 標準、https://datatracker.ietf.org/doc/html/rfc6455 ）のみをサポートし、既知の脆弱性がある Hixie-76（https://datatracker.ietf.org/doc/html/draft-hixie-thewebsocketprotocol-76 ）や hybi-00（https://datatracker.ietf.org/doc/html/draft-ietf-hybi-thewebsocketprotocol-00 ）への後方互換を捨てる。
 - **圧縮のセキュリティ**: 特に必要でない限り `permessage-deflate` 圧縮を無効化する。圧縮は CRIME/BREACH に似た脆弱性（圧縮と秘密データの組み合わせで情報が漏れる）を持ち込み得る。
 
 ```javascript
@@ -255,6 +255,8 @@ const wss = new WebSocket.Server({
 ```
 
 インフラ設定として、リバースプロキシ・ロードバランサ・CDN が HTTP/1.1 の upgrade を扱えるよう `Upgrade` および `Connection: upgrade` ヘッダを正しく通し、長寿命接続向けに read timeout を設定する。WAF が最初のハンドシェイクを越えて WebSocket トラフィックを検査できるかも確認する。
+
+参照: OWASP Transport Layer Security Cheat Sheet（WSS の土台となる TLS 設定の指針）。
 
 ### 6.4 認証・認可と CSWSH
 
@@ -322,12 +324,49 @@ ws.on('message', (data) => {
 
 ### 6.5 入力検証（すべて untrusted input）
 
-WebSocket メッセージは SQLi・XSS・コマンドインジェクションのペイロードを運べる。
+WebSocket メッセージは SQLi・XSS・コマンドインジェクションのペイロードを運べる。すべてのメッセージを untrusted input（信頼できない入力）として扱う。
 
-- JSON スキーマと allow-list で構造と内容を検証し、妥当なサイズ制限（典型的には 64KB 以下）とレートリミットを設ける。
-- バイナリは content-type ヘッダを信用せず magic number でファイルタイプを検証する。
-- リプレイ攻撃を防ぐため、タイムスタンプまたは nonce を含め、重複を拒否する。
-- **JSON 処理には常に `eval()` ではなく `JSON.parse()` を使う。**
+**構造とサイズの検証**: JSON スキーマと allow-list で構造と内容を検証し、妥当なサイズ制限（典型的には 64KB 以下）とレートリミットを設ける。
+
+**バイナリデータの検証**: content-type ヘッダを信用せず magic number でファイルタイプを検証する。magic number（マジックナンバー）とは、ファイル先頭にある種類を示す数バイトの並びのこと。たとえば PNG なら先頭が `89 50 4E 47` で始まる。拡張子や宣言された content-type は偽装できるが、この先頭バイトを見れば実体を確かめられる。加えて、**必要に応じてアップロードをマルウェアスキャンし、protobuf や MessagePack のようなプロトコルには安全なデシリアライズを使う**（デシリアライズ処理そのものが任意コード実行の入口になり得るため）。
+
+```javascript
+ws.on('message', (data, isBinary) => {
+  if (isBinary) {
+    // Validate binary data
+    if (data.length > MAX_BINARY_SIZE) {
+      ws.close(1009, 'Message too large');
+      return;
+    }
+
+    // Check file type by magic numbers
+    if (!isValidFileType(data)) {
+      ws.close(1008, 'Invalid file type');
+      return;
+    }
+  }
+
+  processBinaryData(data);
+});
+```
+
+**リプレイ攻撃の防止**: リプレイ攻撃とは、正規のメッセージを攻撃者が横取りして後からそのまま再送する攻撃のこと。防ぐには、メッセージにタイムスタンプまたは nonce（ノンス、使い捨ての一意な値）を含め、重複を拒否して古いメッセージが再送されないようにする。
+
+```javascript
+ws.on('message', (data) => {
+  const message = JSON.parse(data);
+
+  // Check timestamp or nonce to prevent replay
+  if (!isValidNonce(message.nonce)) {
+    ws.close(1008, 'Replay detected');
+    return;
+  }
+
+  processMessage(message);
+});
+```
+
+**JSON の安全な処理**: JSON 処理には常に `eval()` ではなく `JSON.parse()` を使う。`eval()` は信頼できない入力からのコード実行を可能にしてしまう。
 
 ```javascript
 // Safe
@@ -336,6 +375,8 @@ const message = JSON.parse(data);
 // Dangerous - enables code execution
 // const message = eval('(' + data + ')');
 ```
+
+参照: OWASP Input Validation Cheat Sheet（入力検証全般の指針。WebSocket に限らず適用できる）。
 
 ### 6.6 サービストンネリングのリスク
 
@@ -346,7 +387,7 @@ WebSocket は TCP サービス（VNC, FTP, SSH）をトンネルできるが、�
 - 総接続数を制限し、ユーザー単位（推奨）または IP 単位で制限する。
 - メッセージサイズ制限（典型的には 64KB 以下）とレートリミット（毎分100メッセージが出発点）。
 - アイドルタイムアウトで非アクティブ接続を閉じ、ping/pong ハートビートで死んだ接続を検出する。
-- バックプレッシャー制御を実装する。多くの WebSocket 実装は適切なフロー制御を欠いており、処理より速くメッセージを送られるとメモリを圧倒される。
+- バックプレッシャー（送信が処理より速いときに流量を絞る仕組み）を実装する。バックプレッシャー（backpressure）とは、受け手が処理しきれないほど速くデータが来たとき、送り手に「待て」と伝えて流入量を抑える制御のこと。多くの WebSocket 実装は適切なフロー制御を欠いており、攻撃者が処理速度より速くメッセージを送るとサーバのメモリを圧倒できる。
 
 ```javascript
 const wss = new WebSocket.Server({
@@ -357,6 +398,8 @@ const wss = new WebSocket.Server({
 ### 6.8 監視とログ
 
 HTTP アクセスログは最初の upgrade しか捕捉しないため、認証失敗・インジェクション試行・レートリミット違反を取り逃す。接続の確立と終了（ユーザー識別情報・IP・origin を含む）、認証・認可イベント、セキュリティ違反、異常な切断をログする。一方でメッセージ内容全体・認証トークン・セッションID・個人情報はログしない。
+
+参照: OWASP Logging Cheat Sheet（何を・どのように記録すべきかの指針）。
 
 ### 6.9 テスト項目とツール
 
@@ -379,7 +422,15 @@ HTTP アクセスログは最初の upgrade しか捕捉しないため、認証
 | Java Spring | 許可オリジンを明示設定し、Spring Security を統合。メッセージサイズ制限を設定 |
 | Go | Gorilla WebSocket の `CheckOrigin` に検証を実装する — 単に `true` を返してはいけない。read limit・タイムアウト・context cancellation を使う |
 
-ライブラリ（`ws`、Spring STOMP、Python `websockets`）は定期更新する。過去バージョンには DoS や RCE を含む重大脆弱性があった。参照: **CWE-1385: Missing Origin Validation in WebSockets** — https://cwe.mitre.org/data/definitions/1385.html
+ライブラリ（`ws`、Spring STOMP、Python `websockets`）は定期更新する。過去バージョンには DoS や RCE を含む重大脆弱性があった。
+
+原文（WebSocket Security Cheat Sheet）の References 一覧（逐語）:
+
+- Cross Site Scripting Prevention Cheat Sheet（WebSocket メッセージ由来の XSS 対策）
+- SQL Injection Prevention Cheat Sheet（メッセージ内容を DB クエリに使う場合）
+- Authentication Cheat Sheet（トークンベース認証の設計）
+- Session Management Cheat Sheet（長寿命接続のセッション扱い）
+- **CWE-1385: Missing Origin Validation in WebSockets** — https://cwe.mitre.org/data/definitions/1385.html
 
 ---
 
@@ -473,6 +524,11 @@ Tabnabbing（Reverse Tabnabbing、リバース・タブナビング）とは、`
 - **クロスブラウザ対応を最大化する設定**: HTML リンクは**すべてのリンクに** `rel="noopener noreferrer"` を追加。JavaScript は下記の関数を使う。加えて、送信するすべての HTTP レスポンスに `Referrer-Policy: no-referrer` を付ける。参照: https://owasp.org/www-project-secure-headers/
 
 referrer（リファラ）とは、リンク元のURLを次のページに伝える情報のこと。`Referrer-Policy` はそれをどこまで送るかを制御するHTTPヘッダである。
+
+**防御側の推奨と診断側の重大度評価を分けて考える**。これは初学者が混同しやすい点なので明示しておく。
+
+- **防御側（実装者）の立場**: 上記のとおり、外部サイトへ開くリンクには `rel="noopener noreferrer"` を付けるのが正しい。多層防御として、古いブラウザやライブラリ生成の動的リンクでも確実に守るため、無条件に付けておく価値がある。
+- **診断側（バグバウンティ・脆弱性評価）の立場**: モダンな evergreen ブラウザでは `target="_blank"` に暗黙の `rel="noopener"` が付き（HTML 標準の一部、概ね 2018 年以降）、この問題は実質的に修正済みである。そのため、`rel` 未指定のリンクを1件見つけただけでは重大度は低く、単独では Informational（情報提供レベル）と判定されがちである。実害を主張するには、対象が実際に古いブラウザ／WebView を想定している、あるいは `opener` 経由で機微な操作ができる、といった上乗せの条件が要る。なお `rel="noreferrer"` は `rel="noopener"` を含意するため、両者の併記は referrer も切りたい場合の表現であって、opener 対策としては `noopener` だけでも足りる。
 
 ### 10.3 コード（原文のまま逐語）
 
@@ -670,7 +726,7 @@ The section below will propose some implementation hints for every area and will
 The complete source code of the example application is available [here](https://github.com/righettod/poc-websocket).
 ```
 
-旧「Access filtering」節の要点: ハンドシェイク時、ブラウザは発信元ドメインを含む `Origin` HTTP リクエストヘッダを送る。このヘッダは（ブラウザ以外からの）偽造リクエストでは偽装できるが、ブラウザのコンテキストでは上書き・強制ができない。したがって allow-list によるフィルタリングの良い候補になる。このベクタを使った攻撃が Cross-Site WebSocket Hijacking (CSWSH) である。
+旧「Access filtering」節の要点: ハンドシェイク時、ブラウザは発信元ドメインを含む `Origin` HTTP リクエストヘッダを送る。このヘッダは（ブラウザ以外からの）偽造リクエストでは偽装できるが、ブラウザのコンテキストでは上書き・強制ができない。したがって allow-list によるフィルタリングの良い候補になる。このベクタを使った攻撃が Cross-Site WebSocket Hijacking (CSWSH) であり、旧版は原典として Christian Schneider の解説記事 https://www.christian-schneider.net/CrossSiteWebSocketHijacking.html を挙げていた（CSWSH の初出解説。検出方法と PoC の作り方まで踏み込んでいる）。
 
 旧版が載せていた Java 実装例（`ServerEndpointConfig.Configurator` の `checkOrigin` による allow-list 検証。原文のまま逐語）:
 
@@ -889,7 +945,7 @@ wscat -c "wss://target.example/socket" -o "https://attacker.example"
 - https://github.com/websockets/wscat
 
 <!-- sources: https://cheatsheetseries.owasp.org/cheatsheets/HTML5_Security_Cheat_Sheet.html, https://raw.githubusercontent.com/OWASP/CheatSheetSeries/master/cheatsheets/HTML5_Security_Cheat_Sheet.md, https://cheatsheetseries.owasp.org/cheatsheets/WebSocket_Security_Cheat_Sheet.html, https://raw.githubusercontent.com/OWASP/CheatSheetSeries/master/cheatsheets/WebSocket_Security_Cheat_Sheet.md, https://owasp.org/www-project-secure-headers/, https://owasp.org/www-community/attacks/Reverse_Tabnabbing, https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API, https://cwe.mitre.org/data/definitions/1385.html -->
-<!-- terms: HTML5 Security Cheat Sheet, Web Messaging, postMessage, targetOrigin, MessageEvent, オリジン, 同一オリジンポリシー, CORS, Access-Control-Allow-Origin, プリフライト, Server-Sent Events, EventSource, WebSocket, WSS, RFC 6455, CSWSH, Origin検証, permessage-deflate, maxPayload, JSON.parse, Local Storage, sessionStorage, httpOnly, IndexedDB, Web SQL Database, OPFS, sqlite-wasm, Web Crypto CryptoKey, Geolocation, Web Worker, Tabnabnabbing, noopener, noreferrer, Referrer-Policy, opener, sandbox iframe, X-Frame-Options, Clickjacking, framebusting, autocomplete, Service Worker, Cache API, Application Cache, Cache-Control no-store, Service-Worker-Allowed, Progressive Enhancement, OWASP Secure Headers, CWE-1385 -->
+<!-- terms: HTML5 Security Cheat Sheet, Web Messaging, postMessage, targetOrigin, MessageEvent, オリジン, 同一オリジンポリシー, CORS, Access-Control-Allow-Origin, プリフライト, Server-Sent Events, EventSource, WebSocket, WSS, RFC 6455, CSWSH, Origin検証, permessage-deflate, maxPayload, JSON.parse, magic number, nonce, リプレイ攻撃, バックプレッシャー, protobuf, MessagePack, Local Storage, sessionStorage, httpOnly, IndexedDB, Web SQL Database, OPFS, sqlite-wasm, Web Crypto CryptoKey, Geolocation, Web Worker, Tabnabbing, noopener, noreferrer, Referrer-Policy, opener, sandbox iframe, X-Frame-Options, Clickjacking, framebusting, autocomplete, Service Worker, Cache API, Application Cache, Cache-Control no-store, Service-Worker-Allowed, Progressive Enhancement, OWASP Secure Headers, CWE-1385 -->
 <!-- self-read: https://cheatsheetseries.owasp.org/cheatsheets/HTML5_Security_Cheat_Sheet.html | 描画版がエグレスポリシーで取得不可。同一内容の正典Markdownで代替 -->
 <!-- self-read: https://cheatsheetseries.owasp.org/cheatsheets/WebSocket_Security_Cheat_Sheet.html | 描画版がエグレスポリシーで取得不可。同一内容の正典Markdownで代替 -->
 <!-- self-read: https://owasp.org/www-community/attacks/Reverse_Tabnabbing | 描画版がエグレスポリシーで取得不可。図版2枚とUpdate 2023の留保は自分で開いて確認 -->

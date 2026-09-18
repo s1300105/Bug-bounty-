@@ -21,6 +21,10 @@
 
 〔補足〕本記事は著者 Tali Garsiel（イスラエルの開発者）が自分のサイトで公開した研究を、html5rocks 編集部（Paul Irish ら）が整理して再掲したものである。html5rocks.com はすでに閉鎖され、現在の正本は web.dev 側にある。
 
+Tali Garsiel は 2000年に Web 開発を始め、Netscape の "evil"（悪名高い）レイヤモデルに出会ったのがきっかけだったという。物理学者 Richard Feynmann と同じく「物事の仕組みを解明すること」に魅せられ、公開されている全データをレビューしブラウザのソースコードを大量に読んで、ブラウザ内部を掘り下げた（原文の著者略歴による）。この研究はもともと著者個人サイト `http://taligarsiel.com/` で公開され、html5rocks / web.dev 版はそれを編集して再掲した二次掲載である（Preface に "Tali published her research on her site … we've cleaned it up and republished it here." と明記）。原初の出典は著者サイトであり、注記番号や出典URLをたどるときはこの出自を念頭に置くとよい。
+
+〔補足〕Preface で Tali は「IE が 90% を支配していた年月にはブラウザを『ブラックボックス』とみなすしかなかったが、今やオープンソースブラウザが利用シェアの半分以上を持つようになった」と述べ、この「半分以上」という主張には原文でリンクが張られている。リンク先は `http://techcrunch.com/2011/08/01/open-web-browsers/`（TechCrunch, 2011-08-01）で、これが「オープンソースブラウザがシェア半分超」という数字の根拠である。ただし 2011年時点のスナップショットなので、現在のシェアとしては引用してはならない。
+
 ---
 
 ## 1. レイアウト（layout / reflow）
@@ -39,7 +43,7 @@ HTML は **フローベースのレイアウトモデル（flow based layout mod
 
 レイアウトは **再帰的なプロセス**である。座標系はルート frame に対する相対で、`top` と `left` の座標が使われる。
 
-```
+```text
 Layout の再帰
   ルート renderer（<html> に対応, 位置 0,0, 寸法 = viewport）
     └─ layout() を呼ぶ
@@ -74,7 +78,7 @@ Layout の再帰
 
 増分レイアウトは renderer が dirty になったときに **非同期に** トリガされる。たとえば、ネットワークから追加コンテンツが届いて DOM ツリーに追加され、新しい renderer が render tree に加わったときである。
 
-```
+```text
 Incremental layout
   変更なしの枝 ── そのまま（再計算されない）
   dirty な renderer ──┐
@@ -92,7 +96,12 @@ Incremental layout
 
 **攻撃者はどこを突くのか**: この「スクリプトによる同期レイアウト強制」は、パフォーマンスの世界では **layout thrashing（強制同期レイアウト）** と呼ばれ、Web性能診断の中心概念である。同時に、レイアウトや描画にかかる **計測時間の差**を利用したクライアントサイドの **サイドチャネル**（レンダリングにかかる時間の違いから、直接は読めないはずの状態を推測する手法）の技術的土台にもなる。原典はパフォーマンスの文脈でしか述べていないが、「特定の要素をレイアウトさせると時間がかかる／かからない」という差が観測できるなら、それが情報の漏れ口になりうる、という発想につながる。
 
-〔補足〕この時間差サイドチャネルは、後の章で扱う `:visited` リンクの状態推測（訪問履歴の漏洩）や、クロスオリジンのサイズ推測（XS-Leaks）の一族と地続きの考え方である。原典はそこまでは書いていない。
+〔補足〕具体的に何が観測でき、何が推測されるのかを一例で示す。攻撃者のページに、状態によってレイアウトコストが変わる要素を置く。`requestAnimationFrame` の間隔や `performance.now()` で「1フレーム描くのにかかった時間」を測ると、**攻撃者が測れるのは所要ミリ秒だけ**だが、その大小から**本来は直接読めないはずの状態**を推測できる。
+
+- **`:visited`（訪問履歴の漏洩）**: リンクが訪問済みだと `:visited` のスタイルが適用され、大量のリンクを一斉に再スタイル・再レイアウトさせると、訪問済みリンクが多いほど処理時間が延びる。時間差から「そのユーザがそのURLを訪れたか」を推測する。ブラウザは `getComputedStyle` で `:visited` の色を読めなくする対策を入れたが、レンダリング時間という間接ルートが残った、という歴史がある。
+- **XS-Leaks（クロスサイト漏洩）**: 別オリジンのページを `<iframe>` で埋め込み、その中身の量やレイアウトの重さの差を描画時間として観測し、「検索結果が0件か1件以上か」「ログイン済みか否か」といった1ビットを推測する手法群。
+
+いずれも「レイアウト／描画にかかる時間の差＝情報の漏れ口」という、この節の `offsetHeight` 同期レイアウトと地続きの発想である。後方参照として後の章で詳しく扱う。原典はパフォーマンスの文脈しか書いていない。
 
 ### 1.6 レイアウトプロセスの手順
 
@@ -268,7 +277,11 @@ none: no box is generated.
 - **Block box（ブロックボックス）**: ブロックを形成する。ブラウザウィンドウ内に自分自身の矩形を持つ。
 - **Inline box（インラインボックス）**: 自分自身のブロックを持たないが、containing block（内包ブロック）の内側にある。
 
-ブロックは垂直に次々と整形され、インラインは水平に整形される。インラインボックスは行（lines / "line boxes"）の内側に置かれる。行は少なくとも最も高いボックスと同じ高さだが、ボックスが "baseline" で揃えられる場合はもっと高くなりうる。コンテナ幅が足りなければインラインは複数行に配置される（段落で通常起こること）。
+ブロックは垂直に次々と整形され、インラインは水平に整形される。インラインボックスは行（lines / "line boxes"）の内側に置かれる。行は少なくとも最も高いボックスと同じ高さだが、ボックスが "baseline"（ベースライン）で揃えられる場合はもっと高くなりうる。
+
+ここで **baseline 揃え（baseline alignment）** とは、原文の定義によれば「ある要素の下部（bottom）が、別のボックスの下部**以外**の点に揃えられること」を指す。たとえば大きい文字と小さい文字が並ぶとき、両者は文字の「足元のライン」で揃うのであって、行の底で揃うわけではない。揃える基準線がボックスの底とずれるため、行はいちばん高いボックスの高さより余白の分だけ高くなりうる、というわけである。これが「行がもっと高くなりうる」理由である。
+
+コンテナ幅が足りなければインラインは複数行に配置される（段落で通常起こること）。
 
 ### 3.5 具体的な配置 ― relative / float / absolute・fixed
 
@@ -375,6 +388,8 @@ stack は z-index プロパティに従って順序付けられる。z-index プ
 
 **描画と compositing の分離、フレーム予算**: 「スムーズなスクロールとアニメーションのためには、スタイル計算・reflow・paint を含むメインスレッドの処理を **16.67ms 未満**で終える必要がある」「2048×1536 の iPad では **3,145,000 ピクセル超**を描画する必要がある」。`<video>`・`<canvas>`、および `opacity`・3D `transform`・`will-change` などを持つ要素は自分自身のレイヤに描画される（子孫も一緒に）。「レイヤは性能を改善するがメモリ管理の観点では高コストなので、乱用すべきでない」。
 
+**compositing と reflow の因果**: MDN は compositing を「文書の各部が別レイヤに描かれて重なるとき、正しい順序で画面に合成する処理」と位置づけたうえで、**reflow（レイアウトのやり直し）は repaint（再描画）と re-composite（再合成）を引き起こす**、と因果を明示する。つまりレイアウトが一度崩れると、その先の描画も合成も連鎖してやり直しになる。MDN が挙げる典型例が **「画像の寸法（width/height）を指定していれば、その reflow は不要だった」** というものである。`<img>` に寸法を書かずに読み込むと、画像が届いた瞬間に占有面積が確定して周囲が押しやられ reflow が走るが、あらかじめ寸法を指定しておけば場所が最初から確保され、この reflow → repaint → re-composite の連鎖を丸ごと避けられる、という教訓である。
+
 **Interactivity / TTI**: Time to Interactive は、最初のリクエスト（DNS lookup と TCP接続）からページがインタラクティブになるまでの計測。インタラクティブとは First Contentful Paint 以降で、ユーザ操作に 50ms 以内で応答する時点。メインスレッドが JavaScript のパース・コンパイル・実行で占有されているとこの応答ができない。
 
 > ### 📌 ここは自分で開いて読んでください
@@ -399,16 +414,23 @@ stack は z-index プロパティに従って順序付けられる。z-index プ
 | Plugin | サイトが使うプラグイン（例: flash） |
 | GPU | GPUタスクを他プロセスから隔離して扱う |
 
+〔補足〕この表は主要4プロセスだが、実際にはこれ以外に **Extension プロセス**や **utility プロセス**なども動く。実物は Chrome のタスク マネージャー（後述の「手を動かす」の手順4）で一覧できる。
+
 - **マルチプロセスの利点**: ①1つのタブが応答しなくなっても他のタブは生きている、②セキュリティとサンドボックス化。「OS がプロセスの権限を制限する手段を提供しているので、ブラウザは特定のプロセスを特定の機能からサンドボックスできる。たとえば Chrome は、レンダラプロセスのように任意のユーザ入力を扱うプロセスに対して、任意のファイルアクセスを制限している」。
 - **コスト**: プロセスは各自のプライベートメモリ空間を持つため、V8 のような共通インフラのコピーを各プロセスが持つ。そのため Chrome は起動できるプロセス数に上限を設けており、上限に達すると同一サイトの複数タブを1つのプロセスにまとめる。
+- **Servicification（サービス化）**: Chrome はブラウザプロセスの各部を「サービス」として動かす設計を採る。これにより、**強力なハードウェアでは機能ごとにプロセスを分割して安定性を高め、逆にリソース制約のあるデバイス（メモリの少ない端末など）では複数のサービスを1プロセスに統合してメモリを節約する**、という切り替えができる。同じ Chrome でも動く端末によってプロセスの分かれ方が違うのはこのためである。
 - **Site Isolation**: 「クロスサイトの iframe ごとに別のレンダラプロセスを走らせる機能」。公式資料は次のように述べる。「**Same Origin Policy はWebの中核的セキュリティモデルであり、あるサイトが同意なく他サイトのデータにアクセスできないことを保証する。このポリシーのバイパスはセキュリティ攻撃の主要な目標である。プロセス分離はサイトを分離する最も効果的な方法である。**」「Meltdown と Spectre によって、プロセスを使ってサイトを分離する必要性がいっそう明白になった。」「デスクトップでは Chrome 67 以降、Site Isolation がデフォルトで有効。タブ内の各クロスサイト iframe が別のレンダラプロセスを得る。」
+  - 公式資料はさらに、Site Isolation の実現が**複数年にわたるエンジニアリング努力**だったと述べる。これは単にプロセスを増やすだけの話ではなく、**iframe 同士の通信方法を根本的に変える**ものであり、DevTools も、ページ内を Ctrl+F で検索することさえ、**異なるレンダラプロセスを跨いで**行えるように作り直す必要があった。「オリジンごとにプロセスを分ける」という一見単純な方針が、ブラウザ内部の連携を広範に作り替える大工事だった、という点は、なぜプロセス分離がすぐには普及しなかったのかを理解する助けになる。
 
 **part 3 ― レンダリングパイプライン（原典の「レンダリングエンジン」章の現代版）**。ここが原典の「シングルスレッド」記述を最も明確に更新する。
 
 - **レンダラプロセスの内部スレッド構成**: main thread（メインスレッド）／ worker threads（web worker・service worker）／ compositor thread（コンポジタスレッド）／ raster thread（ラスタスレッド）。原典の「レンダリングエンジンはシングルスレッド」がもはや成り立たない具体的中身がこれである。
 - **preload scanner の実装**: 「`<img>` や `<link>` のようなものが HTML 文書にあると、preload scanner は HTML パーサが生成したトークンを覗き見し（peeks at tokens generated by HTML parser）、ブラウザプロセス内の network thread にリクエストを送る」。
 - **なぜ JavaScript がパースをブロックするのか**: 「JavaScript は `document.write()` のようなもので文書の形を変えられるから」。原典の「再入可能性（reentrant）」と同じ理由を、HTML仕様の `https://html.spec.whatwg.org/multipage/parsing.html#overview-of-the-parsing-model` へのリンク付きで説明している。
+- **ブラウザのデフォルトスタイルシートの実体**: 原典が「ブラウザのデフォルトスタイルシート」と抽象的に呼ぶものの実体は、Chromium では **`third_party/blink/renderer/core/html/resources/html.css`** というソースファイルである（part 3 に Chromium ソースへのリンクつきで示されている）。`div` のデフォルト display が block である、といった「著者が何も書かなくても効くスタイル」は、この実在のファイルに書かれている、と具体的に知っておくと、スタイルのカスケードを追うときに迷いにくい。
+- **レイヤツリーの構築**: 「どの要素がどのレイヤに入るべきかを決めるため、**メインスレッドが layout tree を歩いて layer tree を作る**」。DevTools の Performance パネルではこの処理が **"Update Layer Tree"** と表示される。別レイヤになるべき部分がレイヤを得ていない場合は CSS の `will-change` でヒントを与えられる。
 - **ラスタライズと合成**: 「layer tree が作られ描画順が決まると、メインスレッドはその情報を compositor thread にコミットする。compositor thread は各レイヤをラスタライズする。レイヤはページ全長のように大きいことがあるので、compositor thread はそれらを tile（タイル）に分割し、各タイルを raster thread に送る。raster thread が各タイルをラスタライズし、GPUメモリに格納する。」
+- **パイプラインの依存関係**: part 3 は「各ステップで前の処理の結果が次の処理の入力になる」と明言する。**layout tree で何かが変われば、その影響を受ける範囲について Paint の順序（描画順）を作り直す必要がある**。つまり Style → Layout → Paint → Composite は一方向の依存で連なっており、上流（レイアウト）が動くと下流（描画順・合成）まで再生成が波及する。この依存関係が、前掲 6.1 の「reflow が repaint と re-composite を引き起こす」という MDN の記述と表裏一体である。
 - **Compositing の定義**: 「ページの各部をレイヤに分離し、それぞれを個別にラスタライズし、compositor thread という別スレッドでページとして合成する技法。」スクロールやアニメーションはレイヤを動かして新フレームを合成するだけで済む。
 - **フレーム予算**: 「ほとんどのディスプレイは毎秒60回（60fps）画面を更新する。フレーム間でアニメーションが取りこぼされるとページは "janky"（カクつく）に見える。」対策として `requestAnimationFrame()` による分割、Web Workers。
 
@@ -458,6 +480,12 @@ stack は z-index プロパティに従って順序付けられる。z-index プ
 
 原典は本文・図キャプションに注記番号 `(1.1)` `(2.2)` `(3.1)` `(3.5)` `(3.6)` `(4.1)` を埋め込み、末尾の Resources リストへアンカーリンクしている。これらは原典HTMLの `id` 属性（`id="1_1"` など）で確定しており、推測ではない。**web.dev 版ではこの注記番号がすべて削除されている**ため、「どの記述がどの一次文献に由来するか」を追うには html5rocks 版（またはそのソース）を見る必要がある。
 
+**版差分の細部**（教科書で版を語るとき用）:
+
+- **注記番号の削除**: web.dev 版は本文・図キャプションから `(3.6)` `(3.1)` `(2.2)` `(3.5)` などをすべて除去している。Resources リスト自体は残るが、本文のどの記述がどの文献に由来するかは追えなくなっている。
+- **目次（TOC）**: html5rocks 版は記事冒頭に3階層の `<ol class="toc">` による Table of Contents を持ち、**本文には存在しない章見出し「Parsing and DOM tree construction」**で HTML パーサ群をまとめている。web.dev 版に TOC はない。
+- **注記・補足の表現**: html5rocks 版は通常の段落と `<blockquote>` で書くが、web.dev 版は Eleventy のショートコード **`{% Aside %}`（計6箇所）** と `{% Blockquote %}` に整理している。`{% Aside %}` が使われる6箇所は、①Preface の Tali の引用、②Parsing example の key-term（"Our language can include integers, plus signs and minus signs."）、③"A too deep tag hierarchy" の WebKit コメント（liceo.edu.mx / 20タグ）、④"Misplaced html or body end tags" の WebKit コメント、⑤"Absolute and fixed" の「fixed ボックスは文書がスクロールされても動かない！」、⑥末尾の著者略歴、である。同じ内容が版によって「素の段落」か「Aside の囲み」かで見え方が変わるので、2つの版を読み比べるときの目印になる。
+
 本節に関係する注記は次の一次文献を指す。
 
 | 注記 | 指す文献 | 本文中の位置 |
@@ -466,21 +494,54 @@ stack は z-index プロパティに従って順序付けられる。z-index プ
 | (3.6) | Chris Waterson, *Gecko Overview* | 図「Gecko main flow」／「Incremental layout …」 |
 | (4.1) | David Hyatt, *Implementing CSS(part 1)* | 「95%以上の規則を除外する」最適化（05a側） |
 
-Firefox グループ・WebKit グループの主要文献は次のとおり（レイアウトと描画をさらに深掘りする次の一歩）。
+原典末尾の Resources リストは6つのグループから成る。この見出しは「完全再現」を掲げているので、**群構成をそのまま再掲する**（レイアウト・描画をさらに深掘りする次の一歩でもある）。
 
-| 番号 | 文献 |
+| 番号 | グループ | 文献 |
+| --- | --- | --- |
+| 1 | **Browser architecture（ブラウザアーキテクチャ）** | |
+| 1.1 | | Grosskurth, Alan. *A Reference Architecture for Web Browsers (pdf)* `http://grosskurth.ca/papers/browser-refarch.pdf` ― 本文注記 (1.1)「主要コンポーネントは…」が指す一次文献 |
+| 1.2 | | Gupta, Vineet. *How Browsers Work - Part 1 - Architecture* `http://www.vineetgupta.com/2010/11/how-browsers-work-part-1-architecture/` |
+| 2 | **Parsing（パース）** | |
+| 2.1 | | Aho, Sethi, Ullman, *Compilers: Principles, Techniques, and Tools*（通称 "Dragon book"）, Addison-Wesley, 1986 ― コンパイラ理論の古典 |
+| 2.2 | | Rick Jelliffe. *The Bold and the Beautiful: two new drafts for HTML 5.* `http://broadcast.oreilly.com/2009/05/the-bold-and-the-beautiful-two.html` ― 本文注記 (2.2) が指す |
+| 3 | **Firefox** | |
+| 3.1 | | L. David Baron, *Faster HTML and CSS: Layout Engine Internals for Web Developers.*（スライド） `http://dbaron.org/talks/2008-11-12-faster-html-and-css/slide-6.xhtml` ― 本文注記 (3.1) が指す |
+| 3.2 | | 同上（Google tech talk 動画） `https://www.youtube.com/watch?v=a2_6bGNZ7bA` |
+| 3.3 | | L. David Baron, *Mozilla's Layout Engine* `http://www.mozilla.org/newlayout/doc/layout-2006-07-12/slide-6.xhtml` |
+| 3.4 | | L. David Baron, *Mozilla Style System Documentation* `http://www.mozilla.org/newlayout/doc/style-system.html` |
+| 3.5 | | Chris Waterson, *Notes on HTML Reflow* `http://www.mozilla.org/newlayout/doc/reflow.html` ― 本文注記 (3.5)「table は複数パスを要する」が指す |
+| 3.6 | | Chris Waterson, *Gecko Overview* `http://www.mozilla.org/newlayout/doc/gecko-overview.htm` ― 本文注記 (3.6)「Gecko main flow」「Incremental layout」が指す |
+| 3.7 | | Alexander Larsson, *The life of an HTML HTTP request* `https://developer.mozilla.org/en/The_life_of_an_HTML_HTTP_request` |
+| 4 | **WebKit** | |
+| 4.1 | | David Hyatt, *Implementing CSS(part 1)* `http://weblogs.mozillazine.org/hyatt/archives/cat_safari.html` ― 本文注記 (4.1)「95%以上の規則を除外」が指す（05a側） |
+| 4.2 | | David Hyatt, *An Overview of WebCore* `http://weblogs.mozillazine.org/hyatt/WebCore/chapter2.html` |
+| 4.3 | | David Hyatt, *WebCore Rendering* `http://webkit.org/blog/114/` |
+| 4.4 | | David Hyatt, *The FOUC Problem* `http://webkit.org/blog/66/the-fouc-problem/` |
+| 5 | **W3C Specifications（W3C 仕様）** | |
+| 5.1 | | *HTML 4.01 Specification* `http://www.w3.org/TR/html4/` |
+| 5.2 | | *W3C HTML5 Specification* `http://dev.w3.org/html5/spec/Overview.html`（現在は WHATWG HTML Standard が正本） |
+| 5.3 | | *CSS Level 2 Revision 1 (CSS 2.1) Specification* `http://www.w3.org/TR/CSS2/` |
+| 6 | **Browsers build instructions（ブラウザのビルド手順）** | |
+| 6.1 | | Firefox `https://developer.mozilla.org/Build_Documentation` |
+| 6.2 | | WebKit `http://webkit.org/building/build.html` |
+
+〔補足〕原典HTMLでは「The FOUC Problem」のアンカーが `4_5` で `4_4` が欠番になっている（表示上は4番目）。本文からは参照されていないため実害はないが、原典を精査すると混乱しうる点として記録しておく。3.x / 4.x のリンクは 2006〜2010年頃のもので、リンク切れの可能性が高い。
+
+#### 本文中で参照される仕様・外部URL（原文のまま、抜粋）
+
+Resources リストとは別に、本文の各所は仕様や解説へ直接リンクしている。本節に関係する近傍のものを抜粋する。
+
+| 用途 | URL（原文のまま） |
 | --- | --- |
-| 3.1 | L. David Baron, *Faster HTML and CSS: Layout Engine Internals for Web Developers.* |
-| 3.2 | 同（Google tech talk 動画）`https://www.youtube.com/watch?v=a2_6bGNZ7bA` |
-| 3.4 | L. David Baron, *Mozilla Style System Documentation* |
-| 3.5 | Chris Waterson, *Notes on HTML Reflow* |
-| 3.6 | Chris Waterson, *Gecko Overview* |
-| 4.1 | David Hyatt, *Implementing CSS(part 1)* |
-| 4.2 | David Hyatt, *An Overview of WebCore* |
-| 4.3 | David Hyatt, *WebCore Rendering* `http://webkit.org/blog/114/` |
-| 4.4 | David Hyatt, *The FOUC Problem* `http://webkit.org/blog/66/the-fouc-problem/` |
+| CSS2 描画順序・z-index | `http://www.w3.org/TR/CSS21/zindex.html` / `http://www.w3.org/TR/CSS2/zindex.html` |
+| CSS ボックスモデル | `http://www.w3.org/TR/CSS2/box.html` |
+| CSS2 processing model（containing block） | `http://www.w3.org/TR/CSS21/intro.html#processing-model` |
+| デフォルトスタイルシートの例 | `http://www.w3.org/TR/CSS2/sample.html` |
+| 正規表現の解説（CSSの字句を説明する箇所で参照） | `http://www.regular-expressions.info/` |
+| ブラウザ利用シェアの統計 | StatCounter `http://gs.statcounter.com/` |
+| **深すぎるタグのネストの実例サイト**（error tolerance の節で「A too deep tag hierarchy」の実例として名指しされる、本記事固有のURL） | `www.liceo.edu.mx` |
 
-〔補足〕原典HTMLでは「The FOUC Problem」のアンカーが `4_5` で `4_4` が欠番になっている（表示上は4番目）。本文からは参照されていないため実害はないが、原典を精査すると混乱しうる点として記録しておく。これらのリンクは 2006〜2010年頃のもので、リンク切れの可能性が高い。
+〔補足〕`www.liceo.edu.mx` は、原典が「タグのネストが深すぎる壊れた HTML」の実例として本文中で名指ししているサイトである。WebKit のソースには `cMaxRedundantTagDepth = 20`（同じタグを最大20段までしか入れ子にしない）という定数があり、この実例はその上限が実在の壊れたページを念頭に置いていることを示す、本記事に固有の一次的なディテールである（詳細は前半 05a のエラー寛容性の節）。
 
 > ### 📌 ここは自分で開いて読んでください
 > **資料**: How Browsers Work（記事本体・図つき） — https://web.dev/articles/howbrowserswork
@@ -490,6 +551,27 @@ Firefox グループ・WebKit グループの主要文献は次のとおり（�
 > 2. 「dirty bit」「Asynchronous and Synchronous layout」節 ― `offsetHeight` が同期レイアウトを強制する記述はサイドチャネルの土台
 > 3. 「The painting order」と「Layered representation」節 ― クリックジャッキング診断で直接使う
 > **代替手段**: 原典 html5rocks 版のソースHTML（注記番号・TOC入り）が `https://raw.githubusercontent.com/hungdt138/html5rocks/HEAD/www.html5rocks.com/content/tutorials/internals/howbrowserswork/en/index.html` で、現行版のソース Markdown が `https://raw.githubusercontent.com/Youssef1313/web.dev/HEAD/src/site/content/en/blog/howbrowserswork/index.md` で無料全文読める（いずれも本環境で HTTP 200 を確認。ただし図は含まれない）。
+
+### 7.4 日本語・多言語で読む ― 翻訳という代替経路
+
+英語の原典が読みづらい場合、原典の Translations 節は**日本語訳を2種類**挙げている。日本語話者にとってはこれが最短の入口になりうるので、代替経路として明示しておく。
+
+| 言語 | 訳者 | URL |
+| --- | --- | --- |
+| 日本語（その1） | @_kosei_ 訳 | `http://cou929.nu/docs/how-browsers-work/` |
+| 日本語（その2） | @ikeike443 / @kiyoto01 訳「ブラウザってどうやって動いてるの？」 | `http://shanon-tech.blogspot.com/2011/09/web.html` |
+| 韓国語 | ― | `http://helloworld.naver.com/helloworld/59361` |
+| トルコ語 | ― | `http://sonsuzdongu.com/blog/tarayicilar-nasil-calisir-...` |
+
+**〔重要な注意〕これらの翻訳はいずれも 2011年版（html5rocks 版）の翻訳である。** 本節の随所で述べた web.dev 版の更新 ― Blink への言及、モバイルブラウザ、`localStorage` / `IndexedDB` などのストレージ機構、シェアの数字（2013年6月版）など ― は反映されていない。翻訳で全体像をつかんだうえで、更新点は本節（05b）や英語の現行版 `https://web.dev/articles/howbrowserswork` で補うのがよい。
+
+> ### 📌 ここは自分で開いて読んでください
+> **資料**: How Browsers Work 日本語訳（@_kosei_ 訳） — http://cou929.nu/docs/how-browsers-work/
+> **なぜ**: 本教科書の執筆環境からは自動取得できなかった（理由: 当セッションの egress 制限で 403）。上の表と本注記は原典 Translations 節の記載にもとづく。
+> **読みどころ**:
+> 1. 英語が負担なら、まず日本語訳で「HTMLパース → DOM → スタイル → render tree → layout → painting」の全体の流れをつかむ
+> 2. そのうえで本節（05b）の「古典として読む」注意（Blink・WHATWG・WebSQL 廃止・マルチスレッド・compositing）と照合し、翻訳が 2011年版で止まっている点を意識する
+> **代替手段**: 同じ内容の英語現行版が `https://web.dev/articles/howbrowserswork`。英語のソース Markdown なら `https://raw.githubusercontent.com/Youssef1313/web.dev/HEAD/src/site/content/en/blog/howbrowserswork/index.md` で無料全文（本環境で HTTP 200 確認済み）。もう1つの日本語訳が `http://shanon-tech.blogspot.com/2011/09/web.html`。
 
 ---
 

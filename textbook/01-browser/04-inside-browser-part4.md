@@ -15,9 +15,11 @@
 
 ## 1. この節の位置づけ ― シリーズ最終回で「入力」を扱う理由
 
-本節は、Google Chrome チームの Mariko Kosaka（`kosamari`）による全4部シリーズ「Inside look at modern web browser（モダンなウェブブラウザの内側を覗く）」の第4部（最終回）にもとづく。初出 2018-09-21、更新 2019-01-12 の記事である。
+本節は、Google Chrome チームの Mariko Kosaka（`kosamari`。Twitter: [@kosamari](https://twitter.com/kosamari)）による全4部シリーズ「Inside look at modern web browser（モダンなウェブブラウザの内側を覗く）」の第4部（最終回）にもとづく。初出 2018-09-21、更新 2019-01-12 の記事である。記事のサブタイトル（description）は「Input event handling with the compositor thread（コンポジタスレッドによる入力イベントの処理）」で、この節が扱う主題そのものを言い表している。
 
 シリーズ全体は「ブラウザが我々の書いたコードをどう扱ってウェブサイトを表示するか」を調べるものだ。〔補足〕大まかな構成は、part 1 が CPU/GPU・プロセス・スレッドの基礎とマルチプロセスアーキテクチャ、part 2 がナビゲーションの内側、part 3 がレンダラプロセスの内側（パース・スタイル・レイアウト・ペイント・コンポジット・ラスタライズ）である。
+
+〔補足〕原文（記事原稿）の中で part 3 へのリンクは `https://developers.google.com//web/updates/2018/09/inside-browser-part3` と書かれており、`.com` の直後にスラッシュが二重（`//`）になった旧 URL のタイポが残っている。現行の正しい URL は `https://developer.chrome.com/blog/inside-browser-part3` である。原稿中に散在する旧 `developers.google.com` リンクは、現行サイトへ配信される際に `/blog/...` 形式へ書き換えられている。
 
 第3部では「レンダリング処理」と「コンポジタ（compositor）」を学んだ。コンポジタとは、あらかじめ描いておいた画面の各レイヤ（層）を合成して1枚のフレームにまとめる仕組みのこと。本節（第4部）は、そのコンポジタが**ユーザー入力が来たときにどうやってスムーズなインタラクションを保つか**を扱う。
 
@@ -59,7 +61,7 @@
 
 レンダラプロセスは、この2つをもとに**イベントターゲットを見つけ（finding the event target）**、**付加されているイベントリスナを実行する（running event listeners that are attached）**ことでイベントを処理する。
 
-```
+```text
 [ユーザーのタッチ]
       │
       ▼
@@ -107,6 +109,8 @@
 
 答えが**非高速スクロール領域（Non-Fast Scrollable Region）**である。これは、イベントハンドラが付加されているページの領域のこと。
 
+〔補足〕名前の由来はこうだ。コンポジタスレッドがメインスレッドを待たずに独立して処理できる経路が「高速（fast）」なスクロール経路であり、これが本来の速い道である。ところがイベントリスナが付いた領域では、コンポジタはいちいちメインスレッドに問い合わせて待たなければならず、その高速経路から外れてしまう。だから「高速経路から外れた領域」という意味で「非高速（non-fast）スクロール領域」と呼ばれる。
+
 ページがコンポジットされるとき、コンポジタスレッドはイベントハンドラが付いた領域を "Non-Fast Scrollable Region" としてマークする。この情報を持つことで、次のように振る舞い分ける。
 
 | 入力の発生場所 | コンポジタスレッドの振る舞い |
@@ -116,7 +120,7 @@
 
 記事の図3「Diagram of described input to the non-fast scrollable region（記述された入力と非高速スクロール領域の図）」は、一部だけがマークされた状態を示している。
 
-```
+```text
 ┌───────────────────────────────┐
 │  ページ全体                      │
 │                               │
@@ -170,7 +174,7 @@ document.body.addEventListener('touchstart', event => {
 
 これが記事の図4「Diagram of described input to the non-fast scrollable region covering an entire page（非高速スクロール領域がページ全体を覆っている図）」が示す状態である。
 
-```
+```text
 ┌───────────────────────────────┐
 │  ページ全体すべてが              │
 │  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  │  ← 全面が非高速スクロール領域
@@ -248,7 +252,7 @@ document.body.addEventListener('pointermove', event => {
 
 これが記事の図6「The main thread looking at the paint records asking what's drawn on x.y point（メインスレッドが paint records を見て、x,y 点には何が描かれているかを問う）」が示す状態だ。
 
-```
+```text
 入力座標 (x, y)
      │
      ▼
@@ -285,9 +289,11 @@ paint records（＝描画順・重なり順）を根拠にターゲットが決�
 | `X-Frame-Options: DENY` / `SAMEORIGIN` | 自サイトを iframe に埋め込ませない（古典的だが有効） |
 | CSP `frame-ancestors 'self'` | どのオリジンが自サイトを埋め込めるかを指定。`X-Frame-Options` より推奨 |
 | ユーザーアクティベーション要求 | 重要操作の前に本物のユーザー操作を要求する |
-| `SameSite` Cookie | クロスサイト経由の副作用（勝手なリクエスト）を抑止する |
+| `SameSite` Cookie | （補助的）クリックジャッキング自体は防がない。クリックさせられた先の状態変更リクエストにクロスサイト Cookie が乗らないようにする、CSRF 的副作用の抑制策 |
 
 〔補足〕CSP（Content Security Policy）とは、ページが読み込める資源や埋め込みを制限する HTTP ヘッダによるポリシーのこと。`frame-ancestors 'self'` は「自分と同じオリジンからしか iframe 埋め込みを許さない」という指定である。
+
+〔補足〕`SameSite` Cookie の位置づけには注意が要る。クリックジャッキングの本体は「視覚とヒットテスト結果の乖離＝ユーザーに意図しない操作をさせること」であり、`SameSite` はこれ自体を防ぐわけではない。`SameSite` が効くのは、だまし取ったクリックが別サイトへ状態変更リクエスト（例: 送金・設定変更）を送る場面で、そのリクエストにクロスサイトの Cookie が付かないようにする点だけである。これは本来 CSRF（Cross-Site Request Forgery）対策であり、クリックジャッキング経由の副作用を抑える補助策にすぎない。「`SameSite` を付ければクリックジャッキングを防げる」と考えるのは誤りで、視覚の乗っ取りそのものを止めるのは `X-Frame-Options` / CSP `frame-ancestors` の役割である。
 
 ## 7. メインスレッドへのディスパッチを最小化する ― 合体
 
@@ -322,7 +328,7 @@ part 3 で見たように、典型的なディスプレイは画面を毎秒60�
 
 これが図8「Same timeline as before but event being coalesced and delayed（先ほどと同じタイムラインだが、イベントが合体され遅延されている）」で、図7のあふれた状態が整理される様子を示す。
 
-```
+```text
 連続イベント (mousemove など):
   ● ● ● ● ● ● ●      →  [ 合体 ] → ★ (rAF 直前に1回)
   ばらばらに大量到着          まとめて配送
@@ -400,7 +406,7 @@ sync-script: 'none'
 〔補足〕以下は本記事に明示されていないが、part 4 の知識を診断に橋渡しするための整理である。記事本文の主張と混同しないこと。
 
 1. **イベント経路の分離＝信頼境界**: ブラウザプロセス（特権）→レンダラプロセス（サンドボックス）という分離は、Chrome のサイト分離（Site Isolation）と同じ信頼境界に乗る。入力は特権側から非特権側へ「種別＋座標」として渡されるだけなので、レンダラ側の JS が OS 由来の入力を偽造できない（`isTrusted` が守られる）。
-2. **ヒットテスト＝クリックジャッキングの本質**: 「ユーザーが見ているもの」と「(x,y) のヒットテスト結果」を乖離させるのが UI redressing。防御は `X-Frame-Options` / CSP `frame-ancestors` / ユーザーアクティベーション要求 / `SameSite` Cookie。
+2. **ヒットテスト＝クリックジャッキングの本質**: 「ユーザーが見ているもの」と「(x,y) のヒットテスト結果」を乖離させるのが UI redressing。視覚の乗っ取りそのものを止める主防御は `X-Frame-Options` / CSP `frame-ancestors`、それに重要操作前のユーザーアクティベーション要求。`SameSite` Cookie はクリックジャッキング自体ではなく、それを介した状態変更（CSRF 的副作用）を抑える補助策である。
 3. **`pointer-events` と `opacity` の非対称性**: 「見えないが当たる」「見えるが当たらない」状態を作れる。
 4. **passive リスナと `preventDefault` の無効化**: `preventDefault()` に依存した UI ガードは passive 化で静かに壊れる。セキュリティの前提を `preventDefault()` に置かない。
 5. **イベント合体とタイミング観測**: 連続イベントは解像度が落ち、離散イベント（`keydown`/`keyup`）は即時配送で観測されやすい。
@@ -414,6 +420,59 @@ sync-script: 'none'
 > 1. `non-fast scrollable region` / `main_thread_scrolling_reason` の実装側の定義 ― 記事の概念が実際のコードでどう表現されているか。
 > 2. `cc::InputHandler` / `cc::LayerTreeHostImpl` ― コンポジタが入力を捌く中枢。
 > **代替手段**: Chrome DevTools の Rendering パネル → "Scrolling performance issues" で、自分のページ上の非高速スクロール領域を実測できる（無料・追加不要）。
+
+## 11. 著者の結び（Wrap up）
+
+### 11.1 締めのメッセージ ― ブラウザに優しいコードはユーザー体験を改善する
+
+記事は最後に、著者自身の学びを振り返って締めくくられている。要旨は次のとおりだ。
+
+> ウェブサイトを作り始めた頃、著者は「自分がどうコードを書くか、何が自分の生産性を上げるか」ばかりを気にしていた。それらも重要だが、**ブラウザが我々の書いたコードをどう受け取るかについても考えるべきだ**。モダンブラウザはユーザーにより良いウェブ体験を提供する方法へ投資し続けてきたし、今も続けている。**コードを整理してブラウザに優しくすることは、翻って自分のユーザー体験を改善する**。ブラウザに優しくなるクエストに、ぜひ一緒に参加してほしい――と結ばれている。
+
+この「ブラウザがコードをどう受け取るかを考える」という視点は、そのままバグハンティングの姿勢でもある。本節で見たとおり、入力がどのスレッドを通り、どこでヒットテストされ、いつ合体・遅延されるかを理解して初めて、クリックジャッキングや合成イベント、タイミング観測といったクライアントサイドの弱点が「どこに潜むか」を予測できる。
+
+### 11.2 原文のレビュアー謝辞
+
+著者はシリーズの初期ドラフトをレビューした人々への謝辞を（「（but not limited to）」付きで）挙げている。原文リストを逐語で残す。
+
+| レビュアー | リンク（原文のまま） |
+| --- | --- |
+| Alex Russell | https://twitter.com/slightlylate |
+| Paul Irish | https://twitter.com/paul_irish |
+| Meggin Kearney | https://twitter.com/MegginKearney |
+| Eric Bidelman | https://twitter.com/ebidel |
+| Mathias Bynens | https://twitter.com/mathias |
+| Addy Osmani | https://twitter.com/addyosmani |
+| Kinuko Yasuda | https://twitter.com/kinu |
+| Nasko Oskov | https://twitter.com/nasko |
+| Charlie Reis | （リンクなし） |
+
+### 11.3 原文の最終行（タイポを含む逐語）
+
+記事の最終行は、読者への呼びかけで終わっている。原文には `the this` という重複のタイポがそのまま残っているので、逐語で示す。
+
+```text
+Did you enjoy the this series? If you have any questions or suggestions for the future post, I'd love to hear from you in the comment section below or @kosamari on Twitter.
+```
+
+（「このシリーズは楽しんでもらえただろうか？ 質問や今後の記事への提案があれば、下のコメント欄か Twitter の @kosamari でぜひ聞かせてほしい」という意味。`the this` は原文のタイポである。）
+
+## 12. 図版一覧（原文の figcaption / alt を逐語で）
+
+本節は図1〜図9を番号で参照してきたが、📌ブロックで「図を自分で開け」と促している以上、各図が何を示すか（alt テキストと figcaption）を一覧にしておく。ブラウザで記事を開いたとき、この表を手がかりに「どの図でどの概念を確認するか」を対応づけられる。画像はいずれも本教科書には載せられないので、下の表と本文の図番号参照を突き合わせて読むこと。
+
+| 図 | alt（逐語） | figcaption（原文逐語） | 種別・寸法 |
+| --- | --- | --- | --- |
+| 図1 | `input event` | Input event routed through the browser process to the renderer process | 画像 800×402 |
+| 図2 | （動画） | Viewport hovering over page layers | mp4 動画（autoplay / muted / loop / playsinline / controls） |
+| 図3 | `limited non fast scrollable region` | Diagram of described input to the non-fast scrollable region | 画像 800×446 |
+| 図4 | `full page non fast scrollable region` | Diagram of described input to the non-fast scrollable region covering an entire page | 画像 800×446 |
+| 図5 | `page scroll` | A web page with part of the page fixed to horizontal scroll | 画像 400×250 |
+| 図6 | `hit test` | The main thread looking at the paint records asking what's drawn on x.y point | 画像 800×468 |
+| 図7 | `unfiltered events` | Events flooding the frame timeline causing page jank | 画像 800×194 |
+| 図8 | `coalesced events` | Same timeline as before but event being coalesced and delayed | 画像 800×236 |
+| 図9 | `getCoalescedEvents` | Smooth touch gesture path on the left, coalesced limited path on the right | 画像 800×333 |
+| （末尾） | `thank you` | （キャプションなし） | 画像 500×311 |
 
 ## 手を動かす
 
@@ -470,6 +529,8 @@ sync-script: 'none'
 - 描画アプリなど中間座標が要る場合は `getCoalescedEvents()` で合体前サンプルを取り出す（`PointerEvent` 限定）。
 - 合体はタイミング観測に影響する。マウス軌跡のサイドチャネルは解像度が落ち、`keydown`/`keyup` はキーストロークタイミング観測に使われうる。
 - Lighthouse・DevTools 性能計測・Feature Policy（現 Permissions Policy）は、ブラウザに優しく安全なコードへの入口になる。
+- 著者の結び: 自分がどうコードを書くかだけでなく、**ブラウザが我々のコードをどう受け取るかも考えるべき**であり、コードをブラウザに優しくすることは翻ってユーザー体験を改善する。この「ブラウザ視点で考える」姿勢はそのままクライアントサイドの弱点を見つける姿勢でもある。
+- `SameSite` Cookie はクリックジャッキング自体を防ぐものではなく、それを介した状態変更（CSRF 的副作用）を抑える補助策にすぎない。視覚の乗っ取りを止める主防御は `X-Frame-Options` / CSP `frame-ancestors`。
 
 ## 理解度チェック
 
@@ -503,6 +564,12 @@ sync-script: 'none'
 10. 入力イベントの頻度と画面リフレッシュの頻度は原文でどう示されているか。数値を答えよ。
     ▶ 答え: ディスプレイのリフレッシュは毎秒60回、タッチスクリーンのタッチイベントは毎秒60〜120回、マウスのイベントは毎秒100回。入力は画面リフレッシュより忠実度が高い。
 
+11. 「`SameSite` Cookie を付ければクリックジャッキングを防げる」という主張は正しいか。`SameSite` は本来どの攻撃への対策で、クリックジャッキングに対しては何をするのか。
+    ▶ 答え: 正しくない。`SameSite` は本来 CSRF（Cross-Site Request Forgery）対策で、クロスサイトのリクエストに Cookie を乗せないようにする仕組み。クリックジャッキング（視覚とヒットテスト結果の乖離）そのものは防がず、だまし取ったクリックが別サイトへ送る状態変更リクエストに Cookie が付かないようにする補助策にとどまる。視覚の乗っ取り自体を止めるのは `X-Frame-Options` / CSP `frame-ancestors` の役割。
+
+12. 記事の締めで著者が読者に伝えている主張を一文で述べよ。
+    ▶ 答え: 自分がどうコードを書くかだけでなくブラウザが我々のコードをどう受け取るかも考えるべきで、コードをブラウザに優しくすることは翻って自分のユーザー体験を改善する、という主張。
+
 ## 出典
 
 - https://developer.chrome.com/blog/inside-browser-part4 （記事本文。原稿は公開ソースリポジトリから全文取得）
@@ -513,6 +580,6 @@ sync-script: 'none'
 - https://developer.chrome.com/docs/lighthouse/overview/ （Lighthouse。原文はサイト内相対リンク）
 
 <!-- sources: https://developer.chrome.com/blog/inside-browser-part4, https://raw.githubusercontent.com/GoogleChrome/developer.chrome.com/main/site/en/blog/inside-browser-part4/index.md, https://developer.chrome.com/blog/inside-browser-part3, https://chromium.googlesource.com/chromium/src/+/HEAD/cc/input/, https://www.chromium.org/developers/design-documents/compositor-thread-architecture/, https://developer.chrome.com/docs/lighthouse/overview/ -->
-<!-- terms: 入力イベント（input events）, ブラウザプロセス（browser process）, レンダラプロセス（renderer process）, コンポジタスレッド（compositor thread）, メインスレッド（main thread）, 非高速スクロール領域（Non-Fast Scrollable Region）, イベント委譲（event delegation）, passive リスナ（passive: true）, event.cancelable, touch-action, ヒットテスト（hit test）, paint records, イベント合体（event coalescing）, requestAnimationFrame, getCoalescedEvents, getPredictedEvents, isTrusted, ユーザーアクティベーション（user activation）, クリックジャッキング（UI redressing）, X-Frame-Options, CSP frame-ancestors, Feature Policy / Permissions Policy, Lighthouse, jank, layout thrashing -->
+<!-- terms: 入力イベント（input events）, ブラウザプロセス（browser process）, レンダラプロセス（renderer process）, コンポジタスレッド（compositor thread）, メインスレッド（main thread）, 非高速スクロール領域（Non-Fast Scrollable Region）, イベント委譲（event delegation）, passive リスナ（passive: true）, event.cancelable, touch-action, ヒットテスト（hit test）, paint records, イベント合体（event coalescing）, requestAnimationFrame, getCoalescedEvents, getPredictedEvents, isTrusted, ユーザーアクティベーション（user activation）, クリックジャッキング（UI redressing）, X-Frame-Options, CSP frame-ancestors, SameSite Cookie, CSRF（Cross-Site Request Forgery）, Feature Policy / Permissions Policy, Lighthouse, jank, layout thrashing -->
 <!-- self-read: https://developer.chrome.com/blog/inside-browser-part4 | サイト側の egress ポリシーで 403 拒否。図版・動画・現行リンクはブラウザで開かないと見られない -->
 <!-- self-read: https://chromium.googlesource.com/chromium/src/+/HEAD/cc/input/ | サイト側の制限で egress プロキシが接続拒否。実装側の定義は未取得 -->
