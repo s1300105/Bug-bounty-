@@ -40,16 +40,28 @@ Workflow({
 
 ## 2. 実行後にやること（呼び出し側＝メインループの作業）
 
-ワークフローは節ファイルを書くところまで。以下は手作業（＝Claudeに続けて指示）で行う。
+ワークフローは節ファイルを書くところまで。以下は手作業（＝Claudeに続けて指示）で行う。**MkDocsサイトとして読める構成**（`docs/` 配下＋`mkdocs.yml`）に組み立てる。
 
-1. **章ファイルへ結合**：`outDir/sections/s<章>*.md` を章順に連結し、`outDir/NN-<slug>.md` を作る。
-   - 各節ファイルは `##` 始まり。章ファイルの先頭に `# 第N章 <タイトル>`、末尾に前後章＋目次へのナビ行を付ける。
-2. **索引と序章**：`outDir/README.md`（目次・使い方・対象読者・限界）と `outDir/00-introduction.md`（主題の狙い・全体像・進め方）を作る。
-3. **付録**：`outDir/99-appendix.md` に
+1. **docsフォルダ作成**：`mkdir -p outDir/docs`。
+2. **章ファイルへ結合**：`outDir/sections/s<章>*.md` を章順に連結し、`outDir/docs/NN-<slug>.md` を作る。
+   - 各節ファイルは `##` 始まり。章ファイルの先頭に `# 第N章 <タイトル>`、末尾に前後章＋目次（`index.md`）へのナビ行を付ける。
+3. **目次と序章**：`outDir/docs/index.md`（目次・使い方・対象読者・限界＝サイトのホーム）と `outDir/docs/00-introduction.md`（主題の狙い・全体像・進め方）を作る。
+4. **付録**：`outDir/docs/99-appendix.md` に
    - 付録A: 全資料一覧（章別・全URL）
    - 付録B: **取得できなかった資料の一覧**（URL＋理由）。ワークフロー戻り値の `inaccessible` から生成。
    - 付録C: 用語集 / 付録D: 参考書籍
-4. **コミット＆プッシュ**：`outDir/` 全体（`sections/` 含む）を追加してコミット。**section は gitignore しない**（後述）。
+5. **サイト設定**：同梱の `mkdocs.yml.template` を `outDir/mkdocs.yml` にコピーし、`__SITE_NAME__` を主題名に置換する。`nav` は省略で、`00- 01- .. 99-` のファイル名順に自動整列。
+6. **リポジトリ用README**：`outDir/README.md`（本文は docs/、`mkdocs serve` で閲覧、の1枚）。
+7. **コミット＆プッシュ**：`outDir/` 全体（`docs/`・`sections/`・`mkdocs.yml` 含む）を追加してコミット。**section は gitignore しない**（後述）。
+
+### 閲覧方法（ユーザー向け）
+```bash
+pip install mkdocs-material
+cd outDir
+mkdocs serve      # http://127.0.0.1:8000 で本らしく読める（サイドバー・全文検索・章内目次・ダーク/ライト）
+mkdocs build      # site/ にHTML出力（GitHub Pages等で公開も可）
+```
+GitHubで手軽に読むだけなら `outDir/docs/index.md` から辿れる。
 
 ---
 

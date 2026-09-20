@@ -1562,4 +1562,4 @@ $(window).on("message"        （jQuery 経由）
 
 ---
 
-（前章: [第2章 コンテキストとペイロード](./02-context-payloads.md)　｜　次章: [第4章 高度なXSS](./04-advanced.md)　｜　[目次](./README.md)）
+（前章: [第2章 コンテキストとペイロード](./02-context-payloads.md)　｜　次章: [第4章 高度なXSS](./04-advanced.md)　｜　[目次](./index.md)）

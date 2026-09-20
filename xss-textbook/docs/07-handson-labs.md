@@ -149,4 +149,4 @@ GitHub上に公開されている`ashardian/Portswigger_checklist`は、個々�
 
 ---
 
-（前章: [第6章 実例ライトアップ](./06-writeups.md)　｜　次章: [第8章 発展と防御](./08-frontier-defense.md)　｜　[目次](./README.md)）
+（前章: [第6章 実例ライトアップ](./06-writeups.md)　｜　次章: [第8章 発展と防御](./08-frontier-defense.md)　｜　[目次](./index.md)）

@@ -4391,4 +4391,4 @@ CSPは「ページ内で読み込むリソース」を制御するが、ユー�
 
 ---
 
-（前章: [第3章 DOMベースXSS](./03-dom-xss.md)　｜　次章: [第5章 フレームワーク固有のXSS](./05-frameworks.md)　｜　[目次](./README.md)）
+（前章: [第3章 DOMベースXSS](./03-dom-xss.md)　｜　次章: [第5章 フレームワーク固有のXSS](./05-frameworks.md)　｜　[目次](./index.md)）

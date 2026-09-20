@@ -1,0 +1,59 @@
+site_name: XSSを極める教科書
+site_description: AI・自動スキャナが苦手なXSSを見つけるための日本語教科書
+docs_dir: docs
+theme:
+  name: material
+  language: ja
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: ダークモードへ
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: ライトモードへ
+  features:
+    - navigation.instant   # ページ遷移を高速に
+    - navigation.top       # 「先頭へ戻る」ボタン
+    - navigation.tracking  # スクロールでURLアンカー追従
+    - toc.follow           # 章内目次が現在地に追従
+    - search.highlight     # 検索語ハイライト
+    - search.suggest
+    - content.code.copy    # コードのコピーボタン
+
+markdown_extensions:
+  - toc:
+      permalink: true      # 見出しにアンカーリンク
+      toc_depth: 3
+  - admonition             # 注意ブロック
+  - attr_list
+  - tables
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences   # コードフェンスの拡張
+  - pymdownx.inlinehilite
+  - pymdownx.details
+
+plugins:
+  - search:
+      lang: ja
+
+nav:
+  - ホーム: index.md
+  - 序章 はじめに: 00-introduction.md
+  - 第1章 基礎: 01-basics.md
+  - 第2章 コンテキストとペイロード: 02-context-payloads.md
+  - 第3章 DOMベースXSS: 03-dom-xss.md
+  - 第4章 高度なXSS（本丸）: 04-advanced.md
+  - 第5章 フレームワーク固有: 05-frameworks.md
+  - 第6章 実例ライトアップ: 06-writeups.md
+  - 第7章 ハンズオン: 07-handson-labs.md
+  - 第8章 発展と防御: 08-frontier-defense.md
+  - 付録: 99-appendix.md

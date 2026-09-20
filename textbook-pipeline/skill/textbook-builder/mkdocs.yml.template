@@ -1,0 +1,42 @@
+# 教科書サイト設定テンプレート（MkDocs Material）
+# 使い方: <outDir>/mkdocs.yml にコピーし、site_name を主題に合わせて置換する。
+#   - 章ファイルは <outDir>/docs/ に置く（index.md=目次, 00-..=各章, 99-appendix.md=付録）。
+#   - nav は省略しているので、00- 01- .. 99- の数字プレフィックス順に自動生成される
+#     （新しい章を増減してもファイル名が正しければ自動で並ぶ）。
+#   - 閲覧: cd <outDir> && mkdocs serve   （事前に pip install mkdocs-material）
+site_name: __SITE_NAME__
+site_description: 原典に忠実な日本語教科書
+docs_dir: docs
+theme:
+  name: material
+  language: ja
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle: { icon: material/weather-night, name: ダークモードへ }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle: { icon: material/weather-sunny, name: ライトモードへ }
+  features:
+    - navigation.instant
+    - navigation.top
+    - navigation.tracking
+    - toc.follow
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+markdown_extensions:
+  - toc: { permalink: true, toc_depth: 3 }
+  - admonition
+  - attr_list
+  - tables
+  - pymdownx.highlight: { anchor_linenums: true }
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.details
+plugins:
+  - search: { lang: ja }

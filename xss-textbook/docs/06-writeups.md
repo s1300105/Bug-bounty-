@@ -745,4 +745,4 @@ DOM-basedXSSの検出について、記事は **Burp Suite の DOM Invader**（s
 
 ---
 
-（前章: [第5章 フレームワーク固有のXSS](./05-frameworks.md)　｜　次章: [第7章 ハンズオン](./07-handson-labs.md)　｜　[目次](./README.md)）
+（前章: [第5章 フレームワーク固有のXSS](./05-frameworks.md)　｜　次章: [第7章 ハンズオン](./07-handson-labs.md)　｜　[目次](./index.md)）

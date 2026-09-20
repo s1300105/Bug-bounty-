@@ -1260,4 +1260,4 @@ Function`x${'alert\x281337\x29'}x`
 
 ---
 
-（前章: [第1章 基礎](./01-basics.md)　｜　次章: [第3章 DOMベースXSS](./03-dom-xss.md)　｜　[目次](./README.md)）
+（前章: [第1章 基礎](./01-basics.md)　｜　次章: [第3章 DOMベースXSS](./03-dom-xss.md)　｜　[目次](./index.md)）

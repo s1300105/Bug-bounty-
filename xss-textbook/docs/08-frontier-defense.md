@@ -497,4 +497,4 @@ Blind XSSと画像XSSは、攻撃の見た目こそ大きく異なるが、次�
 
 ---
 
-（前章: [第7章 ハンズオン](./07-handson-labs.md)　｜　[目次](./README.md)　｜　[付録](./99-appendix.md)）
+（前章: [第7章 ハンズオン](./07-handson-labs.md)　｜　[目次](./index.md)　｜　[付録](./99-appendix.md)）

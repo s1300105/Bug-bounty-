@@ -32,11 +32,17 @@ Workflow({
 
 計画フェーズがロードマップを解析して章・節へ構造化し、各節を難所か自動分類。執筆フェーズが節ごとに `outDir/sections/<id>.md` を生成する（難所=Opus、他=Sonnet）。
 
-### 4. 実行後の組み立て（メインループで行う）
-1. **章ファイルへ結合**: `outDir/sections/s<章>*.md` を章順に連結し `outDir/NN-<slug>.md` を作る。各節は `##` 始まり。章ファイル先頭に `# 第N章 <タイトル>`、末尾に前後章＋目次へのナビ。
-2. **索引・序章**: `outDir/README.md`（目次・使い方・限界）と `outDir/00-introduction.md`。
-3. **付録**: `outDir/99-appendix.md` に 付録A(全URL) / 付録B(**取得できなかった資料**＝戻り値の `inaccessible` から生成、URL＋理由) / 用語集 / 参考書籍。
-4. **コミット**: `outDir/` 全体を `git add`→`commit`→`push`。**sections/ は gitignore しない**（環境揮発でやり直しになるため）。大きい場合は章ごとにコミット。
+### 4. 実行後の組み立て（メインループで行う） ― MkDocsサイトになる構成にする
+`<outDir>/docs/` に本文を、`<outDir>/mkdocs.yml` に設定を置く（＝そのまま `mkdocs serve` で本らしく読める）。
+1. **docsフォルダ作成**: `mkdir -p outDir/docs`。
+2. **章ファイルへ結合**: `outDir/sections/s<章>*.md` を章順に連結し `outDir/docs/NN-<slug>.md` を作る（例 `01-basics.md`）。各節は `##` 始まり。章ファイル先頭に `# 第N章 <タイトル>`、末尾に前後章＋目次へのナビ（目次は `index.md` を指す）。
+3. **目次・序章**: `outDir/docs/index.md`（目次・使い方・限界。サイトのホーム）と `outDir/docs/00-introduction.md`。
+4. **付録**: `outDir/docs/99-appendix.md` に 付録A(全URL) / 付録B(**取得できなかった資料**＝戻り値の `inaccessible` から生成、URL＋理由) / 用語集 / 参考書籍。
+5. **サイト設定**: 同梱の `mkdocs.yml.template` を `outDir/mkdocs.yml` にコピーし、`__SITE_NAME__` を主題名（例「SQLiを極める教科書」）に置換する。`nav` は省略しているので `00- 01- .. 99-` のファイル名順に自動でサイドバーが並ぶ。
+6. **リポジトリ用README**: `outDir/README.md` に「本文は docs/、`cd outDir && mkdocs serve` で閲覧」を1枚。
+7. **コミット**: `outDir/` 全体を `git add`→`commit`→`push`。**sections/ は gitignore しない**（環境揮発でやり直しになるため）。大きい場合は章ごとにコミット。
+
+> 閲覧方法（ユーザーに伝える）: `pip install mkdocs-material` → `cd outDir && mkdocs serve` → `http://127.0.0.1:8000`。サイドバー・章内目次・全文検索・ダーク/ライト・コードコピーが付く。GitHubなら `docs/index.md` からでも読める。
 
 ### 5. 検証チェックリスト
 - 各章の `未取得の資料` 件数（開放環境なら0に近い。残りは付録Bに反映）

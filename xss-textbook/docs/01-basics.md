@@ -897,4 +897,4 @@ invalid input syntax for integer: "<script>alert(1)</script>"
 
 ---
 
-（前章: [序章](./00-introduction.md)　｜　次章: [第2章 コンテキストとペイロード](./02-context-payloads.md)　｜　[目次](./README.md)）
+（前章: [序章](./00-introduction.md)　｜　次章: [第2章 コンテキストとペイロード](./02-context-payloads.md)　｜　[目次](./index.md)）

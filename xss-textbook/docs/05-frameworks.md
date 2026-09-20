@@ -238,7 +238,7 @@ CSTI の本質は「ブラウザの HTML／JS パーサの手前に、フレー�
 
 ---
 
-前へ: [第4章 高度な回避技術](04-advanced.md) ｜ [目次](README.md) ｜ 次へ: [CSTI補足（HackTricks / Beyond XSS）](#csti補足)
+前へ: [第4章 高度な回避技術](04-advanced.md) ｜ [目次](index.md) ｜ 次へ: [CSTI補足（HackTricks / Beyond XSS）](#csti補足)
 
 ---
 
@@ -542,4 +542,4 @@ ReactもAngularJSも、デフォルトの経路(JSXの子要素、Angularの通�
 
 ---
 
-（前章: [第4章 高度なXSS](./04-advanced.md)　｜　次章: [第6章 実例ライトアップ](./06-writeups.md)　｜　[目次](./README.md)）
+（前章: [第4章 高度なXSS](./04-advanced.md)　｜　次章: [第6章 実例ライトアップ](./06-writeups.md)　｜　[目次](./index.md)）
