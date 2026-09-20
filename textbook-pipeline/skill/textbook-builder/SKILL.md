@@ -40,7 +40,10 @@ Workflow({
 4. **付録**: `outDir/docs/99-appendix.md` に 付録A(全URL) / 付録B(**取得できなかった資料**＝戻り値の `inaccessible` から生成、URL＋理由) / 用語集 / 参考書籍。
 5. **サイト設定**: 同梱の `mkdocs.yml.template` を `outDir/mkdocs.yml` にコピーし、`__SITE_NAME__` を主題名（例「SQLiを極める教科書」）に置換する。`nav` は省略しているので `00- 01- .. 99-` のファイル名順に自動でサイドバーが並ぶ。
 6. **リポジトリ用README**: `outDir/README.md` に「本文は docs/、`cd outDir && mkdocs serve` で閲覧」を1枚。
-7. **コミット**: `outDir/` 全体を `git add`→`commit`→`push`。**sections/ は gitignore しない**（環境揮発でやり直しになるため）。大きい場合は章ごとにコミット。
+7. **ライブラリ目次へ追記（必須・忘れやすい）**: リポジトリ直下の `README.md`（教科書ライブラリ目次）の「教科書一覧」に、本書への1行を追記する:
+   `- [<主題>を極める教科書](./<outDir>/docs/index.md) ― <一言説明>`
+   （リポジトリ直下に `README.md` や一覧が無ければ作る。「（今後追加）…」のプレースホルダ行があれば、その主題を消す）。**これを忘れるとGitHubトップの一覧に載らない**。
+8. **コミット**: `outDir/` 全体＋更新した直下 `README.md` を `git add`→`commit`→`push`。**sections/ は gitignore しない**（環境揮発でやり直しになるため）。大きい場合は章ごとにコミット。
 
 > 閲覧方法（ユーザーに伝える）: `pip install mkdocs-material` → `cd outDir && mkdocs serve` → `http://127.0.0.1:8000`。サイドバー・章内目次・全文検索・ダーク/ライト・コードコピーが付く。GitHubなら `docs/index.md` からでも読める。
 

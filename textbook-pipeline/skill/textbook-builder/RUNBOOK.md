@@ -52,7 +52,8 @@ Workflow({
    - 付録C: 用語集 / 付録D: 参考書籍
 5. **サイト設定**：同梱の `mkdocs.yml.template` を `outDir/mkdocs.yml` にコピーし、`__SITE_NAME__` を主題名に置換する。`nav` は省略で、`00- 01- .. 99-` のファイル名順に自動整列。
 6. **リポジトリ用README**：`outDir/README.md`（本文は docs/、`mkdocs serve` で閲覧、の1枚）。
-7. **コミット＆プッシュ**：`outDir/` 全体（`docs/`・`sections/`・`mkdocs.yml` 含む）を追加してコミット。**section は gitignore しない**（後述）。
+7. **ライブラリ目次へ追記（必須・忘れやすい）**：リポジトリ直下の `README.md`（教科書ライブラリ目次）の「教科書一覧」に本書への1行 `- [<主題>を極める教科書](./<outDir>/docs/index.md) ― <一言説明>` を追記する（無ければ作る／「（今後追加）…」のプレースホルダからその主題を消す）。**忘れるとGitHubトップの一覧に載らない**。
+8. **コミット＆プッシュ**：`outDir/` 全体（`docs/`・`sections/`・`mkdocs.yml` 含む）＋更新した直下 `README.md` を追加してコミット。**section は gitignore しない**（後述）。
 
 ### 閲覧方法（ユーザー向け）
 ```bash

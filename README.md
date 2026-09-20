@@ -5,7 +5,8 @@ URL付きの学習ロードマップから生成した、**原典に忠実な日
 ## 教科書一覧
 
 - [XSSを極める教科書](./xss-textbook/docs/index.md) ― AI・自動スキャナが苦手なXSS（DOM/mXSS/サニタイザ回避/CSP/prototype pollution/DOM clobbering/script gadgets ほか）全8章＋付録
-- （今後追加）SQLi, SSRF, XXE, CSRF, SSTI …
+- [SQLiを極める教科書](./sqli-textbook/docs/index.md) ― SQLインジェクションを初級〜専門家レベルまで（クエリ構文の破壊・UNION/Blind/時間ベース/OOB・WAF回避・自動化・防御ほか）原典に忠実に解説
+- （今後追加）SSRF, XXE, CSRF, SSTI …
 
 ## 読み方
 
