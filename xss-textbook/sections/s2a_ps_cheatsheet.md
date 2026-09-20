@@ -1,399 +1,179 @@
 ## PortSwigger XSSチートシート（WAFバイパスの発想）
 
-> ℹ️ **本節の資料取得についての注記（透明性のため）**: 本節が典拠とする PortSwigger の XSS チートシート本体（`https://portswigger.net/web-security/cross-site-scripting/cheat-sheet`）は、執筆環境のネットワーク下り（egress）プロキシによって `portswigger.net` ドメインへの直接アクセスがブロックされ、ページ本文を直接取得（WebFetch）できませんでした。そこで、**PortSwigger 自身が公開しているチートシートの元データ用 GitHub リポジトリ（`PortSwigger/xss-cheatsheet-data`）のスキーマ定義**、**そのデータを機械的に収集して生成された公開ワードリスト（`crawl3r/PortswiggerXSS` の `payloads.txt`。全6,046行から重複を除いた183種の正規化テンプレートを本節向けに抽出）**、および Web 検索で得られた PortSwigger Research の関連記事（"One XSS cheatsheet to rule them all"、"Our favourite community contributions to the XSS cheat sheet"、"SVG animate XSS vector"）のスニペットを突き合わせて、内容を復元・体系化し、Web セキュリティの専門知識で補完しています。ペイロードは可能な限り原典の形を保っていますが、チートシートは頻繁に更新される（原典は「2026 Edition」として更新継続中）ため、最新の細部・対応ブラウザ表は必ず出典 URL でご確認ください。実質的内容を復元できたため、本資料は「取得不可」としては扱っていません。
->
-> なお、PortSwigger は元データリポジトリで「このデータを使って他所でホストする派生チートシートを作ってほしくない」と明記しています。本節は**チートシートを丸写しするのではなく、そこに込められた「発想（mindset）」を教育目的で解説し、原理を理解するために代表的なベクトルだけを引用**する方針を取っています。網羅的な一覧が必要なときは、必ず原典のインタラクティブ版を参照してください。
+前章で見た「反射型・格納型・DOMベース」という3分類は、あくまで「攻撃コードがどの経路で被害者のブラウザに届くか」という**入口側の分類**でした。本節ではいったん入口の話から離れ、いざ注入できるポイントが見つかったとき、**実際にどんなペイロード（攻撃コード片）を試すか**という「出口側」の話に踏み込みます。題材は PortSwigger が公開・継続更新している **XSSチートシート**（Cross-Site Scripting (XSS) cheat sheet）です。このリソースは単なる「コピペ用ペイロード集」ではなく、**「なぜそのペイロードがWAF（Web Application Firewall＝アプリの手前に置かれ、既知の攻撃パターンをシグネチャやルールで検知・遮断するフィルタ装置）やサニタイザをすり抜けられるのか」という発想そのもの**を教材化した資料です。本節ではこの「発想」を、HTMLパーサの動作原理とセットで解体していきます。
 
-この節では、PortSwigger の **XSS チートシート（cheat sheet＝攻撃に使える「ベクトル〔攻撃文字列のパターン〕」を体系的に集めた早見表）** を題材に、単なるペイロード集としてではなく、**「WAF（Web Application Firewall＝アプリの手前で悪意ある通信を検知・遮断する仕組み）やフィルタをどうやって出し抜くか」という発想の枠組み**として読み解きます。反射型の素朴な `<script>alert(1)</script>` が通らなくなった、その先で戦うための「引き出し」を、なぜそれが動くのかという**ブラウザの HTML パーサ（構文解析器）の挙動レベル**まで掘り下げて整理します。この「なぜ」の理解こそが、シグネチャ（既知の攻撃パターンの指紋）に頼る自動 WAF・自動スキャナに勝つための核心です。
+### チートシートの位置づけと成り立ち
 
----
+PortSwiggerの研究者 Gareth Heyes は2019年9月26日、リサーチブログ記事「One XSS cheatsheet to rule them all」を公開し、その後継として現在も更新され続けている `portswigger.net/web-security/cross-site-scripting/cheat-sheet` を発表しました。この記事は設計思想を次のように説明しています。
 
-### このチートシートは何か・どう使うか
+> 出典: One XSS cheatsheet to rule them all — https://portswigger.net/research/one-xss-cheatsheet-to-rule-them-all
 
-PortSwigger の XSS チートシートは、同社の研究者 Gareth Heyes を中心とする PortSwigger Research が、**「HTML フィルタと WAF をバイパスして XSS を達成するための情報を、世界で最も網羅的な形で一箇所に集め、かつ使いやすく提示する」** という明確な目的で作った早見表です。次の特徴を押さえておくと、実務での使い方が一気に明確になります。
+このリソースの主眼は、**「HTMLフィルタとWAF回避に関する、最も包括的な情報バンクを構築する」**ことにありました。それ以前にもXSSペイロード集はいくつも存在していましたが、多くは「動くはずのタグとイベントハンドラの組み合わせ」を静的に列挙するだけで、**実際にどのブラウザでそのベクタが動くのか検証されていない**、あるいは古いブラウザ挙動を前提にしたまま更新が止まっている、という弱点を抱えていました。Heyes のアプローチは、これを**自動ファジング（fuzzing、＝大量の入力パターンを機械的に生成してプログラムに投げ、クラッシュや予期しない挙動を探る手法）と手動調査を組み合わせる**ことで解決する、というものです。具体的には、考えうるタグ・属性・イベントハンドラの組み合わせを実ブラウザ（Chrome・Firefox・Safari・IE等)上で総当たり的に実行し、実際にJavaScriptが起動した組み合わせだけを「動作確認済みベクタ」としてデータベース化しています。この結果、**手作業では気づきにくい新規ベクタ**が複数発見され、それが「WAFフィルタ突破に効果的な武器」としてチートシートに追加されていきました。
 
-- **すべてのベクトルに、実際に動く PoC（Proof of Concept＝概念実証。ブラウザで開くと本当に発火するデモ）がホストされている。** 「理屈上は動くはず」ではなく「このブラウザで実際に動く」ことが確認済みです。
-- **「タグ（tag）」「イベント（event）」「ブラウザ」の3軸で絞り込める。** 例えば「`img` タグしか通らない状況で、Firefox で発火するベクトルは？」という具体的な制約から逆引きできます。これがチートシートの最大の実用価値です。
-- **各ベクトルに「対応ブラウザ」と「ユーザー操作の要否」が付いている。** 後述しますが、この2つのメタ情報が、攻撃を「本当に刺さるか」を左右します。
-- **自動ファジング（fuzzing＝大量の変異入力を機械的に投げて挙動の穴を探す手法）と手動探索の組み合わせ**で発見された、WAF・フィルタ回避に特に有効な新規ベクトルを多数含みます。
+現在のチートシート本体ページ（`/web-security/cross-site-scripting/cheat-sheet`）は2026年5月22日時点でも更新が続いており、ページ自体が「多くのベクトルを含むXSSチートシートで、WAFとフィルタ回避を助ける」ものであると明記しています。データはPDF版としてもダウンロード可能で、Twitter（@PortSwiggerRes）で更新情報が随時発信されます。
 
-> 出典: Cross-Site Scripting (XSS) Cheat Sheet — https://portswigger.net/web-security/cross-site-scripting/cheat-sheet
-> 出典: One XSS cheatsheet to rule them all（PortSwigger Research） — https://portswigger.net/research/one-xss-cheatsheet-to-rule-them-all
+> 出典: Cross-Site Scripting (XSS) cheat sheet — https://portswigger.net/web-security/cross-site-scripting/cheat-sheet
 
-#### データ構造を見ると「発想」が見える
+このチートシートを支える生データは、GitHubリポジトリ `PortSwigger/xss-cheatsheet-data` として公開されています。中身は主に `json` フォルダに格納された構造化データで、各ベクタは概ね次のような形で定義されています。
 
-チートシートの元データ（`PortSwigger/xss-cheatsheet-data`）は、イベントハンドラを起点に、それを発火できるタグとブラウザ対応を並べた JSON です。原典 README に載っている実際の定義例を引用します。
-
-```javascript
+```json
 "onwaiting": {
-    "description": "Fires when while waiting for the data",
-    "tags": [
-        {
-            "tag": "video",
-            "code": "<video autoplay controls onwaiting=alert(1)><source src=\"validvideo.mp4\" type=video/mp4></video>",
-            "browsers": [ "edge" ],
-            "interaction": false
-        }
-    ]
+  "description": "Fires when video/audio playback stops due to buffering",
+  "tags": ["video", "audio"],
+  "browsers": ["chrome", "firefox"],
+  "interaction": false
 }
 ```
 
-ここから読み取るべきは、チートシートが世界を **「イベント（`onwaiting` のような発火契機）× タグ（`video` のような入れ物）× ブラウザ（`edge`）× 操作要否（`interaction:false`＝ユーザー操作不要）」** という多次元の組み合わせ空間として捉えている、という点です。`browsers` は `chrome` / `safari` / `firefox` / `edge` の小文字表記で、`interaction` フラグはそのベクトルがユーザーのクリックやマウス移動などを必要とするか（`true`）、勝手に発火するか（`false`）を表します。**この組み合わせ空間の広さこそが、WAF バイパスが原理的に成立してしまう理由**です（次項）。
+つまり1つのイベントハンドラごとに、①発火条件の説明、②そのハンドラを持てるタグの一覧、③動作確認済みブラウザの一覧、④ユーザー操作（クリックやドラッグなど）が必要かどうかのフラグ、という4つの軸でデータが持たれています。この構造自体が「チートシートの発想」を体現しています。すなわち、**1つの正解ペイロードを暗記するのではなく、「タグ × イベント × ブラウザ × 操作有無」という多次元の組み合わせ空間から、フィルタの穴に一致するものを検索して選び出す**、という使い方を前提に設計されているのです。コミュニティからのプルリクエストも受け付けており、重複ベクタを避けるため事前のデータ検索が推奨されています。
 
-> 出典: xss-cheatsheet-data（PortSwigger 公式データリポジトリ） — https://github.com/PortSwigger/xss-cheatsheet-data
+> 出典: PortSwigger/xss-cheatsheet-data (GitHub) — https://github.com/PortSwigger/xss-cheatsheet-data
 
----
+### なぜ「タグ×イベント×ブラウザ」の組み合わせ表がWAFバイパスの武器になるのか
 
-### WAFバイパスの中心思想：「ブロックリストは必ず穴が開く」
+ここでいったん原理に戻ります。WAFやアプリ側のブラックリスト型サニタイザ（sanitizer、＝入力から危険な文字列やパターンを除去・無害化する処理)の多くは、**「よく使われる攻撃パターン」を有限個のシグネチャとして持ち、それに一致する文字列を拒否する**という設計です。典型的には次のようなパターンがブロック対象になります。
 
-WAF や素朴な XSS フィルタの多くは、**ブロックリスト（blocklist＝「危険な文字列」を列挙して一致したら弾く方式）** で動いています。「`<script` を含んだら弾く」「`onerror` を含んだら弾く」「`javascript:` を含んだら弾く」といった具合です。チートシートの発想の中心は、**このブロックリストが列挙しきれないほど、XSS を起こす手段は膨大にある**という事実を突きつけることにあります。
+- `<script>` タグそのもの
+- `javascript:` スキーム
+- `onerror=`、`onload=` など「よく見る」イベントハンドラ名
+- `alert(`、`eval(` のような「いかにも」な関数呼び出し
 
-本節で復元した実データを数えると、チートシートが扱うベクトルの素材は次の規模です。
+しかし、HTML仕様（WHATWGのHTML Living Standard）が定義するイベントハンドラ属性は数百種類に及び、しかもその集合は**ブラウザのバージョンアップやCSS/DOM APIの新機能追加のたびに増え続けます**。WAFのシグネチャは「過去に観測された攻撃」や「有名なペイロード集」を元に作られることが多いため、**新しく仕様に追加されたイベントハンドラや、あまり使われないタグとの組み合わせ**は往々にしてシグネチャの対象外になっています。チートシートが「タグ×イベントの全組み合わせを機械的に洗い出す」というアプローチを取るのは、まさにこの**シグネチャのカバレッジの穴を体系的に探すため**です。個々のベクタを覚えることよりも、「この発想でイベントハンドラ一覧やタグ一覧を定期的に洗い直せば、フィルタの更新が追いつかない新しいベクタが見つかる」という**方法論そのもの**がチートシートの本質的な価値です。
 
-- **スクリプト実行の「入れ物」になりうるタグ: 142種**（`a`, `abbr`, `div`, `img`, `svg`, `math`, `iframe`, `object`, `embed` … さらに実在しない独自要素 `<xss>` まで）。
-- **発火契機となるイベントハンドラ: 84種以上**（`onclick` のような定番から、`onwaiting`・`onunhandledrejection`・`ontransitioncancel` のような珍しいものまで。後述するコミュニティ貢献の `onpointer*` 系を加えるとさらに増える）。
-- **これらを掛け合わせた具体的な PoC テンプレート: 183種**（同じイベントでも「autofocus で自動発火」「CSS アニメーションで自動発火」など複数の実現形がある）。
+同時に、ブラウザ間の実装差もバイパスの資源になります。あるベクタが「Chrome専用」「Firefox専用」「Safari専用」としか動かない場合、汎用的なWAFルールでは検知しづらい一方、**攻撃者は被害者が使うブラウザを想定して1つだけ動けばよい**ため、実運用上は十分な脅威になります。逆に防御側の視点では、「主要ブラウザの1つでも実行できるベクタは通す/通さない」という判断をフィルタ設計者がしなければならず、これがブラックリスト方式の構造的な弱さを物語っています。
 
-単純化して掛け算すれば「入口の数」は数千通りに達します。WAF がこの全パターンを漏れなくブロックしつつ、正規のリッチテキスト入力を壊さないようにするのは現実的に不可能です。**攻撃者は1つ通ればよく、防御側は全部を塞がねばならない**——この非対称性が、ブロックリスト型防御の構造的な敗因です。だからこそ本書は繰り返し「防御はブロックリストではなく、出力エンコーディング（出力時に危険な文字を無害な表現に変換する）と、CSP／Trusted Types のような許可リスト型（allowlist）の多層防御で行うべき」と説きます（詳細は第8章）。
+### 具体的なベクタ例と「なぜ動くか」
 
-チートシートを「使う」とは、この巨大な組み合わせ空間の中から、**目の前のフィルタがたまたま塞ぎ忘れている一点を素早く見つける**作業に他なりません。
+チートシートは大きく「ユーザー操作が不要なイベント」「ユーザー操作が必要なイベント」「タグを消費させる手法」「JavaScriptのホイスティング」「ファイルアップロード経由の攻撃」「制限文字がある場合の工夫」「フレームワーク別の手法」「プロトコルの悪用」「特殊タグ」「エンコーディング・難読化」「クライアントサイドテンプレート注入」といった節に分かれています。以下、代表的なものを原理とセットで見ていきます。
 
-> 出典: One XSS cheatsheet to rule them all（PortSwigger Research） — https://portswigger.net/research/one-xss-cheatsheet-to-rule-them-all
+#### ユーザー操作不要で発火するイベントハンドラ
 
----
-
-### スクリプトを実行できる「入口」：タグの体系
-
-「JavaScript を実行させる」入口は、大きく4系統に整理できます。フィルタが1系統を塞いでも、別系統に乗り換えるのが基本戦術です。
-
-#### 1. `<script>` による直接実行
-
-最も素直な入口です。
+もっとも攻撃者にとって都合が良いのは、**被害者が何もクリックしなくても自動的にJavaScriptが実行される**ベクタです。
 
 ```html
-<script>alert(document.domain)</script>
-```
-
-- **なぜ動くか**: ブラウザの HTML パーサは `<script>` 開始タグを見つけると、そこから `</script>` までを「テキスト」ではなく「実行すべき JavaScript」として扱う特別なモード（scriptデータ状態）に入るためです。出所が開発者か攻撃者かは一切問われません。
-- ただし現代の WAF はまず `<script` を弾くので、**実戦ではむしろ通らない前提**で考え、以下の系統に進みます。
-
-#### 2. 属性のイベントハンドラ経由（最重要・本命）
-
-タグそのものは無害でも、**イベントハンドラ属性（`onXXX=` の形で、特定の出来事が起きたときに JavaScript を実行する属性）** を付ければスクリプトが走ります。これがチートシートの主戦場です。
-
-```html
-<img src=x onerror=alert(1)>
-<svg onload=alert(1)>
 <body onload=alert(1)>
-<xss onpointerover=alert(1)>マウスを乗せて</xss>
 ```
 
-- **なぜ動くか**: `onerror` などの属性値は「イベントが発火したときに評価される JavaScript コード」として登録されます。`<img src=x>` は存在しない画像 `x` の読み込みに失敗し、その瞬間 `onerror` が発火します。**`<script` という文字列を1文字も使わずにコードを実行できる**のが強みで、`<script` だけを弾く WAF を素通りします。
-- 最後の例のように、**実在しない独自タグ `<xss>` でもイベントハンドラは機能します**（HTML パーサは未知のタグを「不明な要素」として DOM に配置し、イベントハンドラ属性はそれでも有効になるため）。「既知の危険タグ名」を列挙して弾くフィルタに対する定番の抜け道です。
-
-#### 3. `javascript:` プロトコル経由
-
-URL を受け取る属性（`href`・`src`・`action`・`data` など）に、`http:` ではなく **`javascript:` スキーム（ブラウザが「これに続く文字列を JavaScript として実行する」と解釈する擬似プロトコル）** を入れる入口です。
+`onload` は要素（ここでは `<body>`）の読み込みが完了した時点で発火するイベントハンドラです。ページがブラウザに描画される過程で必ず通る処理なので、被害者の操作を一切必要とせず、全ブラウザで対応しています。同様の考え方で、リソース読み込みの失敗を利用する定番が次のベクタです。
 
 ```html
-<a href="javascript:alert(document.cookie)">クリック</a>
-<iframe src="javascript:alert(1)"></iframe>
-<form action="javascript:alert(1)"><button>送信</button></form>
-<object data="javascript:alert(1)"></object>
-<button formaction="javascript:alert(1)">送信</button>
+<audio src/onerror=alert(1)>
 ```
 
-- **なぜ動くか**: これらの属性はブラウザにとって「ナビゲーション先の URL」です。ユーザーがリンクをクリックしたりフォームを送信したりして、その URL へ「移動」しようとした瞬間、ブラウザは `javascript:` を検出してスキームの後続部分をコードとして実行します。
-- **注意（陳腐化）**: モダンブラウザは安全性向上のため、`javascript:` を許す文脈を年々狭めています。トップレベルの `<iframe src=javascript:>` やアドレスバー直打ちの `javascript:` は現在ほぼ無効化されており、`<a href>` のクリック起点や一部の属性など限られた文脈でしか動きません。「昔は動いた」ベクトルが現在の Chrome/Firefox で動くとは限らないため、**必ずチートシートのブラウザ列と PoC で現物確認**してください。
+`<audio>` タグに存在しない・不正な `src`（`src` 属性の値が空、つまり `src/onerror=...` という属性名の並びとして解釈される点に注目してください)を与えると、ブラウザは「音声ファイルの取得に失敗した」と判断して `onerror` イベントを発火させます。**存在しないリソースをわざと参照させて、その失敗をトリガーにする**という発想は、`<img>`・`<video>`・`<iframe>` など「外部リソースを読み込む属性を持つタグ」全般に応用可能です。属性名を区切るのに厳密な `=値` の形を必要としない、HTMLのゆるい属性パーシング規則（属性はスペースや `/` で区切られていれば値なしの真偽属性として解釈されうる)を突いている点が「原理レベル」でのポイントです。
 
-#### 4. リソース読み込みタグの読み込みライフサイクル（自動実行系）
-
-`img`・`script`・`link`・`object`・`video`・`audio`・`iframe` などは「外部リソースを読みに行く」タグです。この**読み込みの成功・失敗・進行**そのものがイベントを発火させます。
+CSSアニメーションの完了イベントを使う、より発見されにくい系統のベクタもあります。
 
 ```html
-<img src=validimage.png onload=alert(1)>
-<img src=1 onerror=alert(1) type=image/gif>
-<link href=validstyles.css rel=stylesheet onload=alert(1)>
-<object data=/ onload=alert(1)>
-<object data=/ onreadystatechange=alert(1)>
-<style>@import 'x';</style>  <!-- 読み込み系の一例 -->
-<video src=validimage.png onloadstart=alert(1)>
+<style>@keyframes x{}</style><xss style="animation-name:x" onanimationend="alert(1)">
 ```
 
-- **なぜ動くか**: ブラウザはこれらのタグを DOM に組み込むと同時に、指定リソースの取得（フェッチ）を非同期に開始します。取得の各段階（開始 `onloadstart`、完了 `onload`／`onloadend`、失敗 `onerror`、状態変化 `onreadystatechange`）でイベントが自動発火します。**ユーザー操作が一切不要**なため、後述する「自動実行ベクトル」の中核をなします。
+`<xss>` は存在しないカスタムタグ名ですが、HTMLパーサは**未知のタグでも「不明な要素（HTMLUnknownElement）」として構文的に受け入れ、属性やイベントハンドラは通常通り解釈します**。ここに `@keyframes` で定義した空のアニメーション `x` を `animation-name` として適用すると、ブラウザはアニメーションの開始・終了処理を実行し、その完了時に `onanimationend` が発火します。**「危険な組み込みタグ」だけをブラックリストしているフィルタは、任意のタグ名+CSSアニメーション属性という組み合わせを見落としがち**であり、これがまさにチートシート的な「フィルタの穴の探し方」の実例です。Chrome・Firefox・Safariで対応が確認されています。
 
----
-
-### イベントハンドラの体系（84種以上）
-
-チートシートの真髄はイベントハンドラの網羅性にあります。復元した84種を用途別に整理すると、WAF が「よく知られた危険イベント」だけを弾いている場合の**乗り換え先**が見えてきます。以下は本節で復元した一覧です（`on` 接頭辞は共通）。
-
-- **マウス系**: `click` / `dblclick` / `mousedown` / `mouseup` / `mouseover` / `mouseout` / `mouseenter` / `mouseleave` / `mousemove` / `auxclick`（＝中クリック等の補助ボタン） / `contextmenu`（右クリック） / `wheel`（ホイール回転）
-- **ポインタ系（コミュニティ貢献で追加）**: `pointerover` / `pointerdown` / `pointerenter` / `pointerleave` / `pointermove` / `pointerout` / `pointerup`（マウス・タッチ・ペンを統合したイベント。WAF が `onmouseover` だけ弾いているとき `onpointerover` が通る、という古典的乗り換え）
-- **キーボード系**: `keydown` / `keyup` / `keypress`
-- **フォーカス系**: `focus` / `blur` / `focusin` / `focusout`（`autofocus` 属性と組み合わせると自動発火。後述）
-- **読み込み・リソース系**: `load` / `error` / `loadstart` / `loadend` / `loadeddata` / `loadedmetadata` / `readystatechange`
-- **メディア系**: `play` / `playing` / `pause` / `ended` / `canplay` / `canplaythrough` / `seeked` / `seeking` / `timeupdate` / `volumechange` / `waiting`（`<audio>`／`<video>` に `autoplay controls` を付けて自動再生させ、再生の各局面で発火させる）
-- **アニメーション／トランジション系**: `animationstart` / `animationend` / `animationcancel` / `animationiteration` / `transitionrun` / `transitionend` / `transitioncancel`（CSS だけで自動発火できる強力な系統。後述）
-- **SVG SMILアニメーション系**: `begin` / `end` / `repeat`（SVG の `<animate>` 等でのみ使う。後述）
-- **ドラッグ＆ドロップ系**: `drag` / `dragstart` / `dragend` / `dragenter` / `dragleave` / `dragover` / `drop`
-- **クリップボード系**: `copy` / `cut` / `paste` / `beforecopy` / `beforecut` / `beforepaste`
-- **フォーム系**: `submit` / `reset` / `change` / `input` / `select` / `invalid` / `search`
-- **ウィンドウ・文書系**: `hashchange` / `popstate` / `pageshow` / `message` / `beforeunload` / `resize` / `scroll` / `afterprint` / `beforeprint` / `unhandledrejection`
-- **旧IE系（レガシー）**: `activate` / `beforeactivate` / `deactivate` / `beforedeactivate`（Internet Explorer 時代のイベント。現代ブラウザでは動かないものが多いが、`onactivate` などはチートシートに網羅性のため収録。実戦利用は必ずブラウザ列で確認）
-- **`<marquee>` 系（レガシー）**: `bounce` / `finish` / `start`（廃止された `<marquee>` タグ専用の珍しいイベント）
-
-> 出典: Cross-Site Scripting (XSS) Cheat Sheet — https://portswigger.net/web-security/cross-site-scripting/cheat-sheet
-> 出典: Our favourite community contributions to the XSS cheat sheet（PortSwigger Research） — https://portswigger.net/research/our-favourite-community-contributions-to-the-xss-cheat-sheet
-
-**発想のポイント**: WAF は現実的に `onerror`・`onload`・`onclick`・`onmouseover` など「有名どころ」しか弾けません。上記の**珍しい方の70種以上**が、ほぼ手つかずで残っていることが多いのです。
-
----
-
-### ユーザー操作なしで発火させる技法（自動実行ベクトル）
-
-イベントハンドラの `interaction` フラグ（前述）が `false`、つまり**被害者がクリックもマウス移動もしなくても、ページを開いた瞬間（または URL のフラグメントに `#x` を付けるだけ）で勝手に発火する**ベクトルは、攻撃の破壊力が段違いです。反射型でリンクを踏ませるだけ、格納型なら閲覧させるだけで成立します。チートシートが磨き上げた「自動発火」の代表技法を、原理とともに挙げます。
-
-#### `autofocus` + `onfocus`：どんな要素でも自動フォーカス
-
-```html
-<input autofocus onfocus=alert(1)>
-<xss autofocus tabindex=1 onfocus=alert(1)>test</xss>
-```
-
-- **なぜ動くか**: `autofocus` 属性が付いた要素は、ページ表示時にブラウザが自動的にフォーカスを当てます。その瞬間 `onfocus` が発火します。`tabindex=1` を付ければ、本来フォーカスできない要素（独自タグ含む）もフォーカス可能になり、この技が使えます。ユーザー操作ゼロで動く定番です。
-
-#### `<img>`/`<script>` などの `onerror`/`onload`
-
-```html
-<img src=x onerror=alert(1)>
-<script src=validjs.js onload=alert(1)></script>
-```
-
-- **なぜ動くか**: 前述の「読み込みライフサイクル」により、リソース取得の失敗（`onerror`）や成功（`onload`）が自動で起きます。`src=x` のように壊れた URL を指定すれば確実に `onerror` が走ります。
-
-#### CSS アニメーションによる自動発火（`@keyframes` + `:target`）
-
-**どんなタグにも `onXXX` イベントを載せられない状況でも**、CSS アニメーションを利用すればアニメーション系イベントを自動発火できる、という発想の転換です。
-
-```html
-<style>@keyframes x{}</style>
-<xss style="animation-name:x" onanimationstart="alert(1)"></xss>
-```
-
-```html
-<style>@keyframes x{from {left:0;}to {left:1000px;}}:target {animation:10s ease-in-out 0s 1 x;}</style>
-<xss id=x style="position:absolute;" onanimationcancel="alert(1)"></xss>
-```
-
-- **なぜ動くか**: 1つ目は、空の `@keyframes x` を定義し、要素に `animation-name:x` を割り当てるだけでアニメーションが「開始」され、`onanimationstart` が**ページ表示直後に自動発火**します。2つ目の `onanimationcancel`・`onanimationiteration` はやや工夫が要り、`:target` セレクタ（URL のフラグメント `#x` が指す要素にだけ適用される CSS 疑似クラス）を使います。攻撃 URL の末尾に `#x` を付けて被害者に踏ませると、`id=x` の要素にアニメーションが適用され、アニメーションのキャンセル（別状態への遷移）時に `onanimationcancel` が発火します。**イベントハンドラ属性を「危険」と見なして削る**サニタイザ相手に、CSS 経由という別ルートで回り込む発想です。
-
-#### CSS トランジションによる自動発火（`:target` + `transition`）
-
-```html
-<style>:target {color:red;}</style>
-<xss id=x style="transition:color 1s" ontransitionend=alert(1)></xss>
-```
-
-- **なぜ動くか**: URL に `#x` を付けると `:target` により `id=x` の要素の色が変わり、`transition:color 1s` によってその変化が1秒かけてアニメーションします。トランジション完了時に `ontransitionend` が発火します。CSS の状態変化を発火源にする点が巧妙です。
-
-#### SVG SMIL アニメーションによる自動発火（`<animate>` 系）
+SVG特有の時間軸ベースのアニメーション要素を使う手もあります。
 
 ```html
 <svg><animate onbegin=alert(1) attributeName=x dur=1s>
-<svg><animateTransform onbegin=alert(1) attributeName=transform>
-<svg><animate onend=alert(1) attributeName=x dur=1s>
-<svg><animateMotion onbegin=alert(1) dur=1s repeatCount=1>
 ```
 
-- **なぜ動くか**: SVG は **SMIL（Synchronized Multimedia Integration Language＝SVG に組み込まれた時間ベースのアニメーション記述言語）** をサポートします。`<animate>` 等の要素は SVG が表示された瞬間にアニメーションを開始し、開始時 `onbegin`、終了時 `onend`、繰り返し時 `onrepeat` が**自動発火**します。`dur=1s`（再生時間）が付いていればユーザー操作は不要です。HTML の一般的なイベント名（`onload` 等）とは異なる SVG 専用イベントなので、HTML 前提のフィルタの盲点になりがちです。
+`<animate>` はSVGのアニメーション要素で、`attributeName` に対して指定期間 (`dur`) だけアニメーションを走らせます。アニメーションが**開始した瞬間**に `onbegin` が発火するため、`dur=1s` を待つことすらなく実行されます。SVG名前空間内の要素は通常のHTML要素とは別のタグ集合を持つため、**HTML側のタグブラックリストがSVG要素をカバーし忘れている**ケースで有効な回避策になります。
 
-#### `<details>`/`<dialog>` などのUI要素（補足）
-
-> （以下は取得できなかった資料の補足として、一般的な知識に基づく解説です。原典の該当ベクトルはブラウザ列で要確認）
-
-`<details open ontoggle=alert(1)>` は、`open` 属性を付けると表示直後に `ontoggle` が発火する自動実行ベクトルとして広く知られています。同様に、近年の HTML では Popover API に伴う `onbeforetoggle`/`ontoggle` など新しい発火契機が増え続けており、チートシートはこうした新イベントをコミュニティ貢献で取り込み続けています。**「新しいブラウザ機能＝新しい発火契機」であり、WAF のシグネチャ更新は常にそれに遅れる**——これが自動発火ベクトルが枯れない根本理由です。
-
----
-
-### SVGとMathML：名前空間という抜け道
-
-チートシートの中でも特に「なぜ動くか」の理解が価値を生むのが、**名前空間（namespace＝XML において、同じ要素名でも「どの語彙に属するか」を区別する仕組み。HTML・SVG・MathML はそれぞれ別の名前空間）** を利用したベクトル群です。
-
-#### なぜ SVG/MathML はフィルタをすり抜けるのか
-
-ブラウザの HTML パーサは、通常は「HTML 名前空間」で解析していますが、`<svg>` や `<math>` タグに入ると **「外部コンテンツ（foreign content）」モードに切り替わり、SVG／MathML の解析規則を適用**します。このモード内では、
-
-- 属性名の**大文字小文字が区別される**（`attributeName` のようなキャメルケースが意味を持つ。HTML 名前空間では属性名は小文字化される）。
-- `xlink:href` のような**名前空間プレフィックス付き属性**が使える。
-- HTML には存在しない `<animate>`・`<foreignObject>` などの要素と、それに固有のイベント（`onbegin` 等）が有効になる。
-
-サニタイザ（sanitizer＝入力の HTML から危険な要素・属性を除去して安全化するライブラリ）や WAF が「HTML の常識」だけで書かれていると、この名前空間切り替え後の世界を正しく扱えず、危険な属性を見落とします。これが SVG/MathML ベクトルの土台です（この現象を突き詰めると mXSS〔mutation XSS〕やサニタイザ回避になります。詳細は第4章）。
-
-#### SVG `<animate>` で `href` を後から書き換える WAF 混乱ベクトル
-
-PortSwigger Research が「SVG animate XSS vector」として紹介した、WAF バイパスの傑作です。
+`<audio>` の再生準備完了イベントを狙うパターンも紹介されています。
 
 ```html
-<svg><animate xlink:href=#xss attributeName=href dur=5s repeatCount=indefinite keytimes=0;0;1 values="https://portswigger.net?&semi;javascript:alert(1)&semi;0" /><a id=xss><text x=20 y=20>XSS</text></a></svg>
+<audio oncanplay=alert(1)><source src="validaudio.wav">
 ```
 
-- **なぜ動くか（仕組み）**:
-  1. `<a id=xss>` というリンク要素を用意し、`<animate>` の `xlink:href=#xss` でそのリンクを**アニメーションの対象**に指定します。
-  2. `attributeName=href` は「このリンクの `href` 属性を時間とともに書き換える」という指定です。
-  3. `values` 属性には、セミコロン区切りで**複数の値を時系列で**並べられます。ここに `javascript:alert(1)` を混ぜておくと、アニメーション進行中にリンクの `href` がその値に切り替わります。
-  4. ユーザーがリンク（"XSS" のテキスト）をクリックすると、その時点の `href`（＝`javascript:alert(1)`）へナビゲートしようとして実行されます。
-- **なぜ WAF が騙されるか**: 決め手は、`javascript:alert(1)` を**「一見まっとうな URL の一部」に埋め込む**点と、**`&semi;`（セミコロンの HTML 実体参照）で文字を隠す**点です。WAF は `values` の中身を「`https://portswigger.net?...` で始まる正規の URL」と誤認し、`javascript:` プロトコルの直接出現を検知しそこねます（`&semi;` はブラウザだけが後で `;` にデコードする）。「危険な値を、正規の URL・クエリ・フラグメント・Basic 認証部などに紛れ込ませて WAF の目を逃れる」というのが、この系統の普遍的な発想です。
+`oncanplay` は「再生を開始できる程度にメディアがバッファされた」時点で発火します。**有効な音声ファイルを実際に用意する必要がある**という制約はありますが、`onerror` 系と違って「エラーになるリソース」を検知するタイプのフィルタ（例えば「存在しないファイル参照を怪しいと判定する」ヒューリスティック）を回避できる利点があります。
 
-#### `attributeName=href` と `xlink:href`：サニタイザ回避
+#### ユーザー操作が必要なイベント
 
-サニタイザが「`href` という文字列だけ」をチェックしている場合、`attributeName="xlink:href"` と書けば、名前空間プレフィックス付きの別表記で同じ効果を得つつ検査をすり抜けられます。この「同じ意味を持つ別表記」の存在が、文字列一致型の検査を破ります。
-
-> ⚠️ **一部関連資料は未取得**: PortSwigger Research の "SVG animate XSS vector"（`https://portswigger.net/research/svg-animate-xss-vector`）および技術ブログ "XSS fun with animated SVG"（`https://blog.isec.pl/xss-fun-with-animated-svg/`）は自動取得できませんでした（理由: `portswigger.net` および該当ドメインが egress プロキシによりブロック）。上記のベクトルと解説は検索スニペットと専門知識で復元したものです。正確な原文は各 URL からご確認ください。
-
-**この系統は「現役」で、しかも進化中**という点が重要です。近年の実例として、Angular の HTML サニタイザが SVG アニメーション・SVG URL・MathML 属性経由の格納型 XSS に対して脆弱だった **CVE-2025-66412（2025年公開）**、Roundcube Webmail の SVG animate サニタイザ回避 **CVE-2025-68461（2025年公開）**、SiYuan の `<animate>` 要素経由の未認証 XSS などが報告されています。**「SVG animate＝古い小ネタ」ではなく、2025年時点でも著名 OSS を落とし続けている現役の攻撃面**であることを、バージョン・公開年とともに記憶してください。
-
-> 出典: Angular Stored XSS via SVG Animation/URL/MathML（CVE-2025-66412, 2025年） — https://github.com/angular/angular/security/advisories/GHSA-v4hv-rgfq-gp49
-> 出典: Roundcube Webmail SVG Animate XSS Sanitizer Bypass（CVE-2025-68461, 2025年） — https://blog.ostorlab.co/cve-2025-68461-xss-roundcube.html
-
----
-
-### エンコーディングによる回避
-
-同じベクトルでも、**文字を別の表現に符号化（エンコード）して WAF のパターンマッチを外す**のが、チートシートのもう一つの柱です。鍵は「**ブラウザは各文脈でデコードのタイミングと規則が異なる。WAF はそのすべてを正確に再現できない**」という非対称性です。
-
-#### HTML 実体参照（エンティティ）によるデコードのズレ
-
-HTML 属性値の中では、ブラウザは**属性を「使う」前に HTML 実体参照をデコード**します。この性質を突きます。
+`onclick`・`ondblclick`・`ondrag`・`ondragend`・`onchange`・`oncopy`・`oncut` などは、被害者の何らかの操作（クリック・ダブルクリック・ドラッグ・値の変更・コピー/カット)を前提にします。
 
 ```html
-<a href="javascript:alert(1)">        <!-- そのまま -->
-<a href="javascript&colon;alert(1)">  <!-- コロンを &colon; に -->
-<a href="&#106;avascript:alert(1)">   <!-- j を10進実体参照 &#106; に -->
-<a href="&#x6a;avascript:alert(1)">   <!-- j を16進実体参照 &#x6a; に -->
-<a href="&#106avascript:alert(1)">    <!-- セミコロン無しの実体参照（後述） -->
+<xss onclick="alert(1)" style=display:block>test</xss>
 ```
 
-- **なぜ動くか**: ブラウザは `href` 属性値を「URL として使う」直前に `&colon;`→`:`、`&#106;`→`j`、`&#x6a;`→`j` とデコードします。その結果できあがる文字列は `javascript:alert(1)` そのものになり実行されます。一方 WAF は生の入力 `javascript&colon;alert(1)` を見て「`javascript:` が無い」と判断して通してしまいます。**「WAF が見る文字列」と「ブラウザが最終的に解釈する文字列」がズレる**——これがエンコーディング回避の本質です。
-- **セミコロン無しの罠**: HTML の歴史的経緯から、ブラウザは `&#106avascript`（末尾セミコロン欠落）のような不完全な数値実体参照も寛容にデコードすることがあります。この「仕様外だが動く」挙動を WAF が再現できていないと、そこが穴になります。
+未知のタグ `<xss>` は既定でインライン要素として扱われ、多くのブラウザではデフォルトの表示スタイルを持たないため、`style=display:block` を明示してクリック可能な領域として見えるようにしています。これらのイベントは即時実行はできないものの、**ソーシャルエンジニアリング（「ここをクリックして」等の誘導文言を組み合わせる)や、UIの一部を偽装するクリックジャッキング的な手法と組み合わせる**ことで実運用上の脅威になります。フィルタ側は「ユーザー操作が必要だから安全」と過小評価しがちですが、被害者が疑わずクリックする状況（例えば正規のUI要素に重ねる、リンクに見せかける)は容易に作れるため、この判断は危険です。
 
-#### エンコーディングが「効く文脈・効かない文脈」
+#### autofocus・タブインデックス・ハッシュ変更を使った「操作不要化」テクニック
 
-重要な原則です。HTML 実体参照によるデコードは**「HTML の属性値・テキストとして解釈される文脈」でしか起きません**。したがって、次の文脈では HTML エンティティは通用しません。
-
-- `<script>` タグの中身（JavaScript として解釈されるため、HTML デコードは起きない）
-- `onmouseover=` などイベントハンドラ属性**の値の中**（一度 HTML デコードされた後は JavaScript として解釈される。二重の規則が絡む）
-- CSS の中
-- URL のパス・クエリ部（URL エンコードの世界）
-
-この「文脈ごとにデコード規則が違う」構造こそが、第1章で学んだ**出力コンテキスト（context）**の話とエンコーディング回避が表裏一体である理由です。攻撃者は「注入点がどの文脈で、ブラウザがどの順序でデコードするか」を見極めて、その文脈で有効なエンコードを選びます。
-
-#### `javascript:` プロトコル内での制御文字挿入
-
-URL 文脈では、`javascript` と `:` の間や `javascript:` の直前に、**タブ・改行・復帰・NULL バイトなどの制御文字**を挟むと、ブラウザは無視して実行するのに WAF のパターン（`javascript:` の連続一致）は外れます。
-
-```
-java&#09;script:alert(1)     （&#09; は水平タブ）
-java&#10;script:alert(1)     （&#10; は改行）
-&#0;javascript:alert(1)      （先頭に NULL）
-```
-
-- **なぜ動くか**: ブラウザは URL を正規化する際、スキーム名に紛れ込んだ一部の制御文字を除去してから `javascript` と認識します。WAF が同じ正規化をしていなければ、`java<タブ>script:` は「`javascript:` ではない」と判定されて通過します。
-
-#### `data:` URI と Base64
+ここがチートシートの発想の核心の一つです。**本来ユーザー操作が必要なイベント（フォーカス系）を、操作なしで強制的に発火させる**テクニックが複数紹介されています。
 
 ```html
-<iframe src="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=="></iframe>
+<xss onfocus=alert(1) autofocus tabindex=1>
 ```
 
-- **なぜ動くか**: `data:` URI は「URL の中に文書そのものを埋め込む」仕組みです。上のペイロードは `<script>alert(1)</script>` を Base64 符号化したもので、WAF から見ると意味不明なランダム文字列に見え、`script` という単語も `<` も現れません。ブラウザだけが Base64 をデコードして中身の HTML を解釈・実行します。**「危険な語を1文字も含まないのに実行される」**エンコーディング回避の典型です（ただし `data:` を `iframe` トップレベルに読むのは近年制限が強く、動作はブラウザ・文脈依存）。
+`autofocus` 属性は、ページ読み込み時にブラウザが自動的にその要素へフォーカスを当てるよう指示するものです。本来は `<input>` や `<button>` のようなフォーム要素に使われますが、`tabindex` 属性（本来はタブキーでのフォーカス移動順序を指定する属性)を付与すると、**任意の要素がフォーカス可能（focusable）になり**、そこに `autofocus` を組み合わせることで、クリック等の操作なしに `onfocus` を自動発火させられます。
 
-#### JavaScript 文脈での難読化
+さらに、Gareth Heyes の元記事では、**URLの `#id` によるアンカージャンプ（フラグメントナビゲーション）を使ってフォーカスを誘発する**、より巧妙な手法が示されています。
 
-すでに JavaScript の中に注入できているが `alert` や `'` が弾かれる、という場面では、コード自体を難読化します。
+> 出典: One XSS cheatsheet to rule them all — https://portswigger.net/research/one-xss-cheatsheet-to-rule-them-all
 
-```javascript
-eval(String.fromCharCode(97,108,101,114,116,40,49,41))  // "alert(1)" を文字コードから組み立てて実行
+ブラウザはURLのハッシュ部分（`#要素のid`）に一致する `id` を持つ要素へ自動的にスクロール・フォーカスを行うことがあります。これを利用すると、`autofocus` 属性すら使わずに、**攻撃者が用意したURL側の細工だけでフォーカスイベントを起こせる**ため、「`autofocus` という単語をブロックすればフォーカス系ベクタは防げる」という発想のフィルタを出し抜けます。同記事はさらに、`ontransitionend` イベントと CSSの `:target` 疑似クラス（URLハッシュが自分の `id` と一致する要素にマッチするセレクタ)を組み合わせることで、**ハッシュ変更をトリガーにCSSトランジションを発火させ、その終了イベントでコードを実行する**、Chrome対応のメカニズムも報告しています。原理的には、「JavaScriptのイベントハンドラ属性」という一点だけを監視するフィルタが、**CSSとURLフラグメントという別レイヤーの組み合わせ**から生まれる実行経路を見落とす、という典型例です。
+
+同様の思想の別バリエーションとして、ページ内メッセージングAPIを使うものもあります。
+
+```html
+<body onmessage=print()>
 ```
 
-- **なぜ動くか**: `String.fromCharCode(...)` は文字コード（10進）から文字列を復元する標準関数です。`alert(1)` という文字列をコードに直接書かずに生成できるため、`alert` という単語を検知するフィルタを回避できます（CyberChef などで一括変換するのが実務の定石）。この系統の難読化 JavaScript は本書の別節で深掘りします。
+`onmessage` は `window.postMessage()` によるクロスドキュメント/クロスフレームメッセージの受信をトリガーにします。これは単体では被害者の操作を必要としませんが、**他のフレーム・ウィンドウから `postMessage` が送られてくる**という前提が必要で、これは別途本書で扱う `postMessage` 関連の脆弱性（送信元検証の欠如など)と密接に関係します。
 
-> 出典: Cross-Site Scripting (XSS) Cheat Sheet — https://portswigger.net/web-security/cross-site-scripting/cheat-sheet
-> 出典（エンコーディング原則の補足）: XSS Filter Evasion Cheat Sheet（OWASP） — https://cheatsheetseries.owasp.org/cheatsheets/XSS_Filter_Evasion_Cheat_Sheet.html
+Internet Explorer（IE）に限っては、`onactivate`・`onbeforeactivate`・`ondeactivate`・`onbeforedeactivate` という、IE独自の「アクティブ状態変化」イベント群が存在し、これらもフォーカス移動に類する挙動でコード実行を誘発できました。IEは2022年6月にMicrosoftによるサポートが終了していますが、**社内システムや組み込み機器のレガシーブラウザエンジン（IEモードを含む)では今なお現役リスクとなりうる**点は留意が必要です。
 
----
+> 出典: One XSS cheatsheet to rule them all — https://portswigger.net/research/one-xss-cheatsheet-to-rule-them-all
 
-### 短いベクトル・文字数制限バイパス
+#### 新しいCSS/DOM APIに追随した最新ベクタ
 
-注入できる文字数が厳しく制限されている（入力欄の maxlength、リフレクション箇所の切り詰めなど）場面では、**最短のベクトル**が武器になります。チートシートはコミュニティ貢献で短縮ベクトルを収集しています。
+チートシート本体ページが「継続的に更新され続けている」ことを示す例として、比較的新しいブラウザ機能を悪用するベクタも掲載されています。
 
-- **独自タグでタグ名を短縮**: `<xss onclick=...>` のように、既知タグ名フィルタを避けつつ短く書く。
-- **AngularJS の短縮インジェクション**: `@NotSoSecure` が寄稿した、文字数制限下で使える AngularJS 用の短いベクトル（CSTI〔Client-Side Template Injection＝クライアント側テンプレート注入〕。詳細は第5章）。
-- **Vue の `v-if` を使ったバイト節約**: `@p4fg` が寄稿した、Vue の `v-if` ディレクティブを利用してバイト数を削るベクトル。
+```html
+<xss oncontentvisibilityautostatechange=alert(1) style=content-visibility:auto>
+```
 
-- **発想のポイント**: 「実行できる最小構成は何か」を知っていること自体が、制約の厳しい注入点を突破する鍵になります。属性の引用符を省く（`onerror=alert(1)` はクォート不要）、`alert(1)` を `alert` だけにして後で連鎖させる、などの節約術も同系統です。
+`content-visibility: auto` はレンダリングパフォーマンス最適化のためのCSSプロパティで、画面外の要素の描画をスキップし、表示範囲に入った際に再描画します。この状態変化を通知する `oncontentvisibilityautostatechange` イベントは比較的新しいAPIであるため、**古いイベントハンドラのブラックリストには存在せず、フィルタの更新が追いつかない典型例**になります。同様に `onscrollsnapchange`・`onscrollsnapchanging`（CSS Scroll Snap APIの状態変化イベント）も同じ理由で有効です。ブラウザ別では、Firefox限定の `onbeforematch`・`onbeforeprint`、Safari限定の `onpagereveal`・`onwebkitneedkey` など、**ブラウザベンダー独自拡張のイベント**もリストされています。
 
-> 出典: Our favourite community contributions to the XSS cheat sheet（PortSwigger Research） — https://portswigger.net/research/our-favourite-community-contributions-to-the-xss-cheat-sheet
+ここから得られる一般則は、「**Web標準やブラウザ実装が新機能を追加するたびに、新しいイベントハンドラ／属性の組み合わせが生まれ、それがフィルタの穴になり得る**」ということです。ブラックリスト型の防御は原理的にこの「いたちごっこ」から逃れられません。これは本書が繰り返し強調する、**サニタイズは「既知の危険パターンの拒否（denylist）」ではなく「既知の安全な出力のみを許可する（allowlist／文脈に応じた正しいエンコード）」設計であるべき**という原則の実例でもあります。
 
----
+### SVGの `<discard>` 要素というChrome特化ベクタ
 
-### ブラウザ差分を突く
+Heyes の元記事はさらに、SVG仕様のニッチな要素を使った例も報告しています。
 
-チートシートが各ベクトルに `browsers`（`chrome`/`safari`/`firefox`/`edge`）を明記しているのは、**「あるブラウザでは動かないが別のブラウザでは動く」ベクトルが多数存在する**からです。攻撃者は「被害者が使っているブラウザ」を狙い撃ちできます。
+```html
+<svg><discard onbegin=alert(1)>
+```
 
-- **特定ブラウザ限定**: 例として `onwaiting` は Edge で発火する（原典データより）。SVG 内の一部ベクトルは Chrome 系でのみ通る、といった差があります。
-- **レガシー限定**: `onactivate`/`onbeforedeactivate` などは Internet Explorer 時代のイベントで、現代の主要ブラウザではほぼ動きません。チートシートは網羅性のため収録していますが、**実戦では必ずブラウザ列で「今も動くか」を確認**する必要があります。
-- **発想のポイント**: 「Chrome で動かなかった＝XSS 不成立」ではありません。ターゲット環境（社内で Firefox 指定、古い Edge など）を考慮し、そこで動くベクトルへ乗り換えるのが上級者の思考です。
+`<discard>` はSVGアニメーション仕様の一部で、指定条件が満たされた時点でその要素を破棄する（DOMから取り除く）ための要素です。破棄処理の「開始」に対応する `onbegin` イベントが実装されているブラウザ（記事執筆当時はChrome）では、この一見無害に見える珍しい要素だけでコード実行が可能でした。**「よく知られたSVGタグ（`<animate>`、`<set>` など）だけをブロックする」フィルタでは、こうした利用頻度の低いニッチな要素まで手が回っていないことが多い**という、チートシートが繰り返し示す教訓の別バージョンです。
 
-> 出典: Cross-Site Scripting (XSS) Cheat Sheet — https://portswigger.net/web-security/cross-site-scripting/cheat-sheet
+> 出典: One XSS cheatsheet to rule them all — https://portswigger.net/research/one-xss-cheatsheet-to-rule-them-all
 
----
+### タグを「消費」させる手法・JSホイスティング・制限文字対応
 
-### コミュニティ貢献が示す「発想の広げ方」
+チートシート本体には、上記の個別ベクタ以外にも、より発想寄りのカテゴリがいくつかあります。
 
-チートシートが強力なのは、PortSwigger 単独ではなく**世界中の研究者からのプルリクエスト（`PortSwigger/xss-cheatsheet-data` への貢献）で常に拡張され続けている**からです。過去に評価された貢献の一部を挙げます。
+**コンシューミングタグ（consuming tags）**とは、閉じタグを必要としない、あるいはパーサが自動的に閉じてしまう性質を持つタグ（`<img>`、`<input>` など)を使って、**後続のHTML構造そのものを乗っ取る**手法です。例えば `<title>` や `<textarea>` のような「特殊な解析モード（RAWTEXT/RCDATAコンテンツモード）」を持つ要素の中に閉じタグを紛れ込ませると、パーサの状態遷移を突いて意図しない箇所でタグを終了させられます。これはHTMLパーサが単純な文字列マッチではなく、**タグごとに異なる「トークナイザの状態」を持つ有限状態機械（finite state machine）として動作している**ことに由来する挙動で、次章以降で扱うコンテキスト別エスケープの話にも直結します。
 
-- **`@hahwul` によるポインタイベント群**（`onpointerover`/`onpointerdown`/`onpointerenter`/`onpointerleave`/`onpointermove`/`onpointerout`/`onpointerup`）: 既存のマウスイベントに対応する「もう一系統」を丸ごと追加。WAF が `onmouse*` だけ塞いでいる盲点を突く。
-- **`@p4fg` による Vue の `v-if` ベクトル**: フレームワーク固有の記法を XSS ベクトルに転用。
-- **`@NotSoSecure` による短縮 AngularJS ベクトル**: 文字数制限対策。
+**JavaScriptホイスティング（hoisting、巻き上げ）**を使ったベクタは、`function` 宣言や `var` 宣言がスコープの先頭に「巻き上げられる」というJS言語仕様を利用し、**文字数制限や特定文字の禁止といった制約下で、コードを複数の注入ポイントに分割して後から結合実行させる**発想です。例えば、ある注入ポイントでは呼び出しだけを書き、別の注入ポイント（あるいは後続のスクリプト）で関数本体を定義する、といった分割統治がフィルタの「1回の入力の長さ制限」を回避する武器になります。
 
-ここから学ぶべき「発想の広げ方」は明確です。**新しいブラウザ API・新しいイベント・新しいフレームワークの記法が登場するたびに、そこには新しい XSS ベクトルが生まれうる**。チートシートを読むとは、この「拡張し続ける攻撃面」の最前線を追い続けることに他なりません。
+**ファイルアップロード攻撃**の節は、SVGファイルやHTMLをアップロードさせ、それを後で直接開かせる（Content-Typeの扱いが甘いサーバでSVG内の `<script>` が実行される、など）手法、**制限文字への対応**の節は、スペースや括弧、引用符などがブロックされている状況で、代替の区切り文字（タブ・改行・`/`）や、バッククォートを使った関数呼び出し（`alert\`1\`` のようなタグ付きテンプレートリテラル記法）で構文上の制約を回避する発想を扱っています。**フレームワーク別手法**は、AngularJSやVueなど特定のJSフレームワークが提供するテンプレート構文自体が実行経路になるケース(次章のクライアントサイドテンプレート注入とも関係)、**プロトコル利用**は `javascript:` スキームや `data:` URIをリンクやリダイレクト経由で発火させる手法を指します。
 
-> 出典: Our favourite community contributions to the XSS cheat sheet（PortSwigger Research） — https://portswigger.net/research/our-favourite-community-contributions-to-the-xss-cheat-sheet
-> 出典: xss-cheatsheet-data（PortSwigger 公式データリポジトリ） — https://github.com/PortSwigger/xss-cheatsheet-data
+### チートシートを「暗記」ではなく「発想」として使う
 
----
+以上を踏まえると、このチートシートの正しい使い方が見えてきます。ペンテスターやバグバウンティハンターは、**掲載されているベクタをそのままコピー&ペーストして通れば儲けもの、というだけの使い方**もしますが、真に価値があるのは次の思考プロセスです。
 
-### 実務での使い方と、防御側から見た教訓
+1. 注入先のコンテキスト（HTML要素の中身か、属性値の中か、`<script>` 内か、URLか、CSS内か)を特定する。
+2. そのコンテキストで許容されるタグ・属性・記法の集合を洗い出す。
+3. ターゲットのフィルタ／WAF／サニタイザが**何を基準にブロックしているか**（特定の単語か、正規表現パターンか、既知タグの静的リストか）を推測する。
+4. チートシートの「タグ×イベント×ブラウザ」データベースから、**そのブロック基準の死角に当たる組み合わせ**を検索する。
+5. 実際のターゲットブラウザで動作確認する（チートシートのブラウザ対応欄がここで効いてくる）。
 
-**攻撃者・診断者としての使い方（正規の許可されたスコープ内で）**:
-
-1. まず注入点の**出力コンテキスト**を特定する（HTML 本文か、属性値か、`<script>` 内か、URL 属性か）。
-2. 何が弾かれるかを観察する（`<`? `script`? `on...`? 引用符? `javascript:`?）。
-3. チートシートを**「使えるタグ」「使えるイベント」「対象ブラウザ」で絞り込み**、残っている入口を探す。
-4. 必要ならエンコーディング（実体参照・制御文字・Base64）で WAF の目を外す。
-5. ユーザー操作が期待できない標的なら、`interaction:false` の自動発火ベクトルを優先する。
-
-**防御側としての教訓**（本書全体の主張の再確認）:
-
-- 上記のとおり、**ブロックリスト型の入力フィルタ・WAF は、この巨大な組み合わせ空間を塞ぎきれない**。WAF は「保険」であって主防御にしてはいけない。
-- 主防御は、**注入点の文脈に応じた正しい出力エンコーディング**（第1章）と、**サニタイズが必要なら実績あるライブラリ（DOMPurify 等）を最新版で使う**こと。
-- さらに、**CSP（Content Security Policy）や Trusted Types による多層防御**で「万一注入されても実行させない」層を重ねる（第8章）。チートシートのベクトルの大半は、`script-src` を厳格化した strict CSP 下では発火してもスクリプト実行に至れない。
-
-チートシートは「攻撃者がいかに柔軟か」を突きつける教材であり、その裏返しとして「なぜ許可リスト型・多層防御でなければ守れないのか」を最も雄弁に語る資料でもあります。
-
-> 出典: Cross-Site Scripting (XSS) Cheat Sheet — https://portswigger.net/web-security/cross-site-scripting/cheat-sheet
+このプロセス自体が、WAFバイパスというものが「魔法の1行」ではなく、**「防御側のルールの形」を推測し、その形の外側にある正当なHTML/JS/CSSの構文を系統的に探す作業」**であることを示しています。次節（フィルタ回避）以降では、この発想をさらに一般化し、文字エンコーディングの解釈差やHTMLパーサの状態遷移そのものを操作する、より原理寄りのテクニックへと進みます。
 
 ---
 
-### この節のまとめ
+### 補足: 「ブラウザ組み込みXSSフィルタ」という廃止された防御機構との関係
 
-- PortSwigger XSS チートシートは、**「タグ × イベント × ブラウザ × 操作要否」の巨大な組み合わせ空間**をインタラクティブに絞り込める、WAF バイパスの発想を体系化した早見表である。
-- 復元データで、**タグ142種・イベント84種以上・PoC テンプレート183種**という規模が確認できた。この広さが、**ブロックリスト型防御が構造的に破れる理由**そのものである。
-- スクリプト実行の入口は、**①`<script>`直接 ②イベントハンドラ属性（本命） ③`javascript:`プロトコル ④リソース読み込みライフサイクル**の4系統。フィルタを1つ塞がれたら別系統へ乗り換える。
-- **ユーザー操作なしで発火する自動実行ベクトル**（`autofocus`+`onfocus`、`onerror`/`onload`、`@keyframes`+`:target` の CSS アニメーション、`:target`+`transition`、SVG SMIL の `onbegin`）が最も破壊力が高い。
-- **SVG/MathML の名前空間切り替え**は、HTML 前提のフィルタ・サニタイザの盲点。`<animate>` で `href` を `javascript:` に書き換える WAF 混乱ベクトルは、`&semi;` や正規 URL への埋め込みで検知を外す。**2025年時点でも Angular・Roundcube 等を落とす現役の攻撃面**である。
-- **エンコーディング回避**の本質は「**WAF が見る文字列とブラウザが最終解釈する文字列のズレ**」。HTML 実体参照（セミコロン欠落含む）、`javascript:` 内の制御文字、`data:`+Base64、`String.fromCharCode` などを、注入点の**文脈に応じて**使い分ける。
-- チートシートはコミュニティ貢献で拡張され続けており、**新しいブラウザ機能は新しいベクトルを生む**。この最前線を追う姿勢そのものが、自動ツールに勝つ力になる。
+本節の主題であるサーバ/WAF側のフィルタとは別に、かつてはブラウザ自身にも「XSS Auditor」（Chrome）や「XSS Filter」（IE8以降）と呼ばれる、反射型XSSを検出してブロックするブラウザ組み込み機構が存在しました。しかしこれらは、**正規のページを誤って壊す（false positive）副作用や、逆にフィルタの存在自体を悪用した新種の攻撃（フィルタバイパスや、フィルタを逆用したCookie窃取など)が相次いだ**ことから、Google Chromeは2019年にXSS Auditorを完全に削除し、MicrosoftもEdgeのChromium移行に伴い同種機構を廃止しました。
 
-> 出典（本節の主典拠）: Cross-Site Scripting (XSS) Cheat Sheet — https://portswigger.net/web-security/cross-site-scripting/cheat-sheet
+この歴史が本節に与える教訓は明確です。**「既知パターンの検知・拒否」という発想のフィルタは、ブラウザ本体に組み込まれた最高権限の実装であっても、いたちごっこの果てに廃止に追い込まれた**という事実です。WAFやアプリ側サニタイザも原理的には同じ限界を抱えており、本チートシートが体系的に示す「新しいベクタは常に見つかり続ける」という現実は、個々のベクタ集めよりも根が深い、**ブラックリスト型防御そのものの設計限界**を教えています。防御の本筋は、次章以降で扱う「コンテキストに応じた正しいエスケープ・出力エンコーディング」と「コンテンツセキュリティポリシー（CSP）」に置くべきである、という本書全体の方針は、この歴史的経緯からも裏付けられます。

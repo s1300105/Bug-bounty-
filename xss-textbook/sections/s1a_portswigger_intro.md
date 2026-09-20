@@ -1,266 +1,172 @@
 ## XSSとは何か・反射型XSS・学習パス（PortSwigger）
 
-> ℹ️ **本節の資料取得について（透明性のための注記）**: 本節が典拠とする PortSwigger の3ページ（下記URL）は、執筆環境のネットワーク下り（egress）プロキシによって `portswigger.net` への直接アクセスがブロックされたため、ページ本文を直接取得（WebFetch）できませんでした。そこで Web 検索を通じて **同一ページの本文テキスト・具体例・応答スニペット・学習パス一覧を復元**し、専門知識で補完・体系化しています。復元した内容は原文に忠実になるよう努めていますが、原典の最新版で細部（例文の値など）が更新されている可能性があるため、正確な最新の記述は各出典URLでご確認ください。3資料はいずれも実質的内容を復元できたため「取得不可」としては扱っていません。
+### この章のねらい
 
-この節では、XSS（Cross-Site Scripting、クロスサイトスクリプティング＝攻撃者が用意した JavaScript を被害者のブラウザ上で実行させる脆弱性）の全体像を、PortSwigger の Web Security Academy の3つの基礎資料に沿って体系的に押さえます。読者は「反射型の素朴な XSS は知っている」レベルを想定しているので、単なる分類の暗記ではなく、**「なぜブラウザは攻撃者の文字列をコードとして実行してしまうのか」という仕組みのレベル**まで掘り下げます。これ以降の章（格納型・DOMベース・各種コンテキスト・サニタイザ回避・CSP バイパスなど）の共通土台になる節です。
+XSS（クロスサイトスクリプティング）は「攻撃者が用意したJavaScriptを、被害者のブラウザの中で、被害者自身のセッション権限で実行させる」脆弱性です。SQLインジェクションが「サーバ側のデータベースに対する権限昇格」だとすれば、XSSは「クライアント側（ブラウザ）における権限昇格」だと考えると理解が速くなります。攻撃者は被害者のパスワードやCookieを直接盗むわけではなく、被害者のブラウザに「被害者になりすまして動くコード」を注入します。この節ではまず業界標準の教材であるPortSwigger Web Security Academyの総論ページと反射型XSSのページを軸に、XSSの定義・3分類・影響・防御の全体像と、最も基本形である反射型XSSの成立条件を仕組みレベルで解説します。最後に、学習を進めるためのプラットフォームの使い方（学習パス）を案内します。
 
----
+### XSSの定義と、なぜ「クロスサイト」と呼ばれるのか
 
-### XSS（クロスサイトスクリプティング）とは何か
+PortSwiggerの総論ページは、XSSを次のように定義しています。
 
-XSS は、**攻撃者が「ユーザーと脆弱な Web アプリケーションのやり取り」を乗っ取ることを可能にする Web セキュリティ脆弱性**です。より正確には、攻撃者が用意した JavaScript を、**被害者のブラウザ上で、被害者とアプリケーションのセッションのコンテキスト（文脈・権限）で実行させる**ことができます。
+> "Cross-site scripting (also known as XSS) is a web security vulnerability that allows an attacker to compromise the interactions that users have with a vulnerable application."
+> （クロスサイトスクリプティングとは、攻撃者が脆弱なアプリケーションとユーザーとのやり取りを侵害できるようにするWebセキュリティ脆弱性である）
 
-XSS が本質的に危険なのは、ブラウザの根幹的な防御である **同一オリジンポリシー（Same-Origin Policy、SOP＝あるオリジン〔スキーム＋ホスト＋ポートの組〕で動くスクリプトが、別オリジンのデータやDOMに勝手に触れないよう隔離する仕組み）を実質的に回り込んでしまう**点にあります。攻撃者のコードは「別サイトから送り込まれた」ものであっても、いったん脆弱サイトのページ内で実行されると、そのサイト自身のオリジンで動く正規スクリプトとして扱われます。したがって、そのオリジンの Cookie・ローカルストレージ・DOM・進行中のセッションに、正規ページと同じ権限でアクセスできてしまうのです。これが「攻撃者が被害者になりすませる（masquerade as the victim user）」という表現の技術的な意味です。
+> 出典: Cross-site scripting — https://portswigger.net/web-security/cross-site-scripting
 
-> 出典: What is cross-site scripting (XSS) and how to prevent it? — https://portswigger.net/web-security/cross-site-scripting
+ここで重要なのは、XSSが「サーバの脆弱性」であると同時に「ブラウザの実行モデルを悪用する攻撃」であるという二面性です。名前の由来である「クロスサイト」は、歴史的には「攻撃者のサイトから、脆弱な別サイトへスクリプトを注入する」という初期の攻撃パターンに由来しますが、現在のXSSは必ずしも複数サイトをまたぐ必要はありません（自サイト内の入力欄に自分でスクリプトを仕込んで、それを他人に踏ませるだけでも成立します）。名前と実態がずれているため、初学者は「クロスサイト」という語感に引きずられず、「信頼されていない文字列が、ブラウザにコードとして解釈される場所に紛れ込む」ことこそが本質だと理解してください。
 
-#### XSS が「動く」仕組み（原理）
+XSSが成立するために必要な条件は、原理的には次の2つだけです。
 
-XSS の核心は次の一文に集約できます。**「XSS は、脆弱な Web サイトを操作して、ユーザーに対して悪意ある JavaScript を返させることで動作する」**（Cross-site scripting works by manipulating a vulnerable web site so that it returns malicious JavaScript to users）。悪意あるコードが被害者のブラウザ内で実行された瞬間に、攻撃者はそのユーザーのアプリケーションとのやり取りを完全に侵害できます。
+1. **入力点（Source）**: 攻撃者が何らかの形で文字列をアプリケーションに渡せる（URLパラメータ、フォーム入力、HTTPヘッダ、Cookie、postMessage、URLのフラグメントなど）。
+2. **出力点（Sink）**: その文字列が、ブラウザによって「データ」ではなく「コード（あるいはコードを生成する材料）」として解釈される場所に、無害化されずに到達する（HTMLとして描画される、JavaScriptの文字列リテラルに埋め込まれる、`innerHTML`に代入される、`eval`に渡されるなど）。
 
-ここで理解すべき原理は **ブラウザの HTML パーサの挙動**です。ブラウザはサーバから受け取った HTML を上から解析（パース）し、`<script>` のようなタグに出会うとその中身を「実行すべきコード」として解釈します。ブラウザは「その文字列が正規の開発者由来なのか、攻撃者が注入したものなのか」を区別できません。**出所ではなく、文字列の構文（syntax）だけを見て解釈する**からです。つまり、ユーザー入力がアプリケーションの応答 HTML の中に **無害化されないまま（エンコード・エスケープされないまま）** 出力され、それがブラウザによって「データ」ではなく「マークアップ／コード」として再解釈されると、XSS が成立します。この「データとして意図された文字列が、パーサによってコードとして再解釈される（context confusion＝文脈の取り違え）」という現象こそが、あらゆる XSS の共通メカニズムです。
+この「Source → Sink」という図式は、反射型・格納型・DOM型のいずれにも共通する骨格です。3つの型の違いは、突き詰めれば「SourceとSinkの間に、どんな経路（サーバを経由するか、DBに保存されるか、クライアント側JSだけで完結するか）があるか」の違いにすぎません。
 
----
+### XSSの3分類
 
-### XSS で攻撃者は何ができるか（できることの一覧）
+PortSwiggerは3種類のXSSを次のように定義しています。
 
-XSS が成立すると、攻撃者は被害者ユーザーになりすまし、そのユーザーができることは基本的に何でも実行でき、そのユーザーが見られるデータには何でもアクセスできます。PortSwigger は代表的な悪用を次のように挙げています。
+> "Reflected XSS, where the malicious script comes from the current HTTP request."
+> "Stored XSS, where the malicious script comes from the website's database."
+> "DOM-based XSS, where the vulnerability exists in client-side code rather than server-side code."
 
-- 被害者ユーザーになりすます／偽装する（impersonate or masquerade as the victim user）。
-- 被害者が実行できるあらゆる操作を実行する（carry out any action that the user is able to perform）。
-- 被害者がアクセスできるあらゆるデータを読み取る（read any data that the user is able to access）。
-- 被害者のログイン認証情報を窃取する（capture the user's login credentials）。例: 偽のログインフォームを注入する、キーストロークを記録する。
-- サイトの「見た目上の改ざん（virtual defacement）」を行う。
-- サイトにトロイの木馬的な機能を注入する（inject trojan functionality）。
+> 出典: Cross-site scripting — https://portswigger.net/web-security/cross-site-scripting
 
-具体的な悪用例としては、被害者のセッショントークン（session token＝ログイン状態を証明する識別子）や認証情報の窃取、被害者になりかわった任意操作の実行、キーロギングなどが典型です。
+#### 反射型XSS（Reflected XSS）
 
-> 出典: What is cross-site scripting (XSS) and how to prevent it? — https://portswigger.net/web-security/cross-site-scripting
+> "Reflected cross-site scripting arises when an application receives data in an HTTP request and includes that data within the immediate response in an unsafe way."
+> （反射型XSSは、アプリケーションがHTTPリクエストの中でデータを受け取り、そのデータを安全でない形で即座のレスポンスに含めてしまうときに発生する）
 
-#### 影響の大きさは「コンテキスト依存」である
+つまり、**1回のリクエスト・レスポンスの往復の中で完結する**XSSです。データベースへの保存を経由しないため、攻撃を成立させるには「悪意あるURLを被害者にクリックさせる」という追加の一手間（ソーシャルエンジニアリング、メール、SNS投稿、罠サイトへの埋め込みなど）が必要になります。この配送コストの高さが、後述するように格納型より一般に深刻度が低いとされる理由です。
 
-XSS の実被害の深刻度は、**アプリケーションの性質・機能・扱うデータ・そして侵害されたユーザーの権限**によって大きく変わります。PortSwigger は3段階で説明しています。
+#### 格納型XSS（Stored XSS）
 
-- **ブローシャーウェア（brochureware、＝会社案内のような閲覧専用サイト。全ユーザーが匿名で、情報もすべて公開）**では、盗むべきセッションも機微データもないため、影響はしばしば軽微。
-- **機微なデータを扱うアプリ**（銀行取引、メール、医療記録など）では、影響は通常「深刻（serious）」。
-- **侵害されたユーザーが特権（管理者権限など）を持つ**場合、影響は一般に「致命的（critical）」となり、攻撃者はアプリケーション全体を完全に掌握し、全ユーザーとその全データを侵害しうる。
+> "Stored cross-site scripting arises when an application receives data from an untrusted source and includes that data within its later HTTP responses in an unsafe way."
 
-重要な応用として、**攻撃者が直接アクセスできない内部アプリケーションでも、そこにアクセスできる特権ユーザーを XSS で侵害することで間接的に到達しうる**という点があります（例: 管理者だけが見る内部管理画面に格納型 XSS を仕込み、管理者の閲覧を待つ＝いわゆるブラインド XSS〔blind XSS〕の考え方につながります）。
+攻撃者の入力がデータベースやログ、コメント欄、ユーザープロフィールなどに**保存**され、他のユーザーがそのページを閲覧するたびに実行されます。反射型と違って「被害者に特定のURLを踏ませる」手間が不要で、通常のページ閲覧だけで被害者が巻き込まれるため、一般に反射型より深刻度が高いとされます。
 
-> 出典: What is cross-site scripting (XSS) and how to prevent it? — https://portswigger.net/web-security/cross-site-scripting
+#### DOM型XSS（DOM-based XSS）
 
----
+> "DOM-based XSS arises when an application contains some client-side JavaScript that processes data from an untrusted source in an unsafe way, usually by writing the data back to the DOM."
 
-### XSS の3分類
+反射型・格納型が「サーバがHTMLを組み立てる過程」に脆弱性があるのに対し、DOM型は**サーバのレスポンスは無害なのに、ブラウザ内で動くJavaScriptが信頼できない値（`location.hash`、`document.referrer`、`postMessage`のデータなど）を危険なSink（`innerHTML`、`document.write`、`eval`など）に渡してしまう**ことで発生します。サーバ側のログやWAFには「攻撃の痕跡」が残らないことがあり、静的なコードレビューだけでは見つけにくいのが特徴です（DOM型の詳細な機序は本書の後続章で扱います）。
 
-XSS は「悪意あるスクリプトが **どこ経由で** 被害者のブラウザに届くか」で3つに大別されます。ここでは全体像を押さえ、反射型は次の大節で深掘りします。
+この3分類は「どこに脆弱性のコードがあるか」という軸での分類であり、互いに排他的というより「注入経路の違い」だと捉えるのが正確です。
 
-#### 反射型 XSS（Reflected XSS）
+### 反射型XSSの成立を仕組みレベルで追う
 
-アプリケーションが **HTTP リクエストで受け取ったデータを、その場の（immediate）応答の中に、無害化しないまま含めてしまう**ときに発生します。攻撃コードは HTTP リクエスト（URL パラメータなど）に載って送られ、サーバの応答として「反射（reflect）」して返ってきて、その応答を表示した被害者のブラウザで実行されます。攻撃は**サーバに保存されない**ため、被害者に「攻撃者が作った特定のリクエストを送らせる」外部的な仕掛け（悪意あるリンクを踏ませる等）が必要です。3分類の中で最も単純です。
-
-#### 格納型 XSS（Stored XSS、別名 persistent XSS）
-
-アプリケーションが **信頼できない発信元からデータを受け取り、それを後続の HTTP 応答の中に無害化せず含めてしまう**ときに発生します。攻撃コードはサーバ側（データベース、コメント欄、プロフィール、ログなど）に**保存され**、後からそのデータを表示する全ユーザーのブラウザで実行されます。攻撃が**アプリ内で自己完結（self-contained）**する（＝攻撃者は外部誘導を用意せず、脆弱ページに仕込んで被害者が来るのを待つだけ）ため、反射型より影響が大きくなりがちです。
-
-#### DOM ベース XSS（DOM-based XSS）
-
-脆弱性が **サーバ側ではなくクライアント側の JavaScript に存在する**場合です。典型的には、ページ内の JavaScript が **信頼できないソース（source、＝攻撃者が制御しうる入力の入口。例: `location`／URL、`document.cookie`）からデータを取り出し、それを危険なシンク（sink、＝ユーザー入力が最終的に実行・解釈される危険な代入先。例: `innerHTML`、`eval()`、`document.write()`）へ、無害化せず渡す**ときに発生します。データがサーバへ往復せず、ブラウザ内で完結して危険なシンクに到達する点が反射型・格納型と異なります。
-
-なお PortSwigger は DOM ベースの派生として次の2つも整理しています（本書では別章で詳述）。
-
-- **Reflected DOM XSS**: サーバがリクエスト中のデータを応答へ反射し、ページ上のスクリプトがその反射データを（例えば JavaScript 文字列リテラルや DOM 内のデータ項目として）受け取って、最終的に危険なシンクへ書き込むもの。
-- **Stored DOM XSS**: サーバがあるリクエストのデータを保存し、後の応答に含め、その応答内のスクリプトが危険なシンクで安全でない形で処理するもの。
-
-> 出典: What is cross-site scripting (XSS) and how to prevent it? — https://portswigger.net/web-security/cross-site-scripting
-> 出典: What is DOM-based XSS (cross-site scripting)? — https://portswigger.net/web-security/cross-site-scripting/dom-based
-
----
-
-### 反射型 XSS の詳細
-
-#### 発生条件（メカニズム）
-
-反射型 XSS は、**アプリケーションが HTTP リクエストでデータを受け取り、そのデータをその場の応答に安全でない形で含める**ときに生じます。ポイントは3つです。
-
-1. 入力が **同一のリクエスト–レスポンスのやり取りの中**で応答に現れる（保存されない）。
-2. その入力が **エンコード／エスケープ／フィルタされず**、応答 HTML の中にそのまま置かれる。
-3. 置かれた位置（コンテキスト）で、ブラウザがそれを **アクティブコンテンツ（実行対象のマークアップ／スクリプト）として解釈**する。
-
-#### 具体例
-
-検索やステータス表示のように、パラメータの値を応答に埋め込む機能が典型です。PortSwigger の例では、`message` パラメータの値を応答にそのまま埋め込むエンドポイントを想定します。
-
-正常系のリクエストと応答:
+反射型XSSのページでは、次のような教科書的な例が示されています。攻撃者は次のようなURLを組み立てます。
 
 ```
-https://insecure-website.com/status?message=All+is+well
+https://insecure-website.com/search?term=<script>/* 悪意あるコード */</script>
 ```
+
+そして、脆弱なアプリケーションは検索語をレスポンスHTMLの中にそのまま埋め込みます。
 
 ```html
-<p>Status: All is well.</p>
+<p>You searched for: <script>/* 悪意あるコード */</script></p>
 ```
 
-ここでアプリが `message` の値に対して何の処理もしていない場合、攻撃者は次のような URL を組み立てられます。
+> 出典: Reflected cross-site scripting — https://portswigger.net/web-security/cross-site-scripting/reflected
+
+**なぜこれで任意コードが実行されるのか**を、ブラウザのHTMLパーサの動作から説明します。ブラウザがHTMLをレンダリングするとき、HTMLパーサは文字列を「テキストノード」「タグ」「属性」といった構造に逐次分解していきます。このとき、パーサは現在どの「解析状態（トークナイザの状態）」にいるかによって、同じ文字（例えば `<` や `"` ）の意味づけをまったく変えます。
+
+上の例では、サーバはユーザー入力（`term`パラメータの値）を「HTMLのテキストノードの内容」としてそのまま出力バッファに連結しています。もし入力が単なる文字列 `gift` であれば、パーサは `<p>You searched for: gift</p>` を「pタグの中のテキスト `You searched for: gift`」として解釈し、何も問題は起きません。
+
+しかし、入力に `<script>...</script>` という文字列がそのまま混入すると、HTMLパーサはこれを**攻撃者が意図した通りに「テキスト」ではなく「新しい要素の開始タグ」として解釈します**。パーサにとって、その文字列がどこから来たか（開発者が書いた固定文字列か、ユーザーが送ってきた入力か）は一切区別されません。HTMLパーサは「文字の並びとその出現位置」だけを見て構文木を組み立てるからです。これが、Web開発において「信頼できるコード（テンプレート側の文字列）」と「信頼できないデータ（ユーザー入力）」を、出力時に明確に区別してエンコードしなければならない根本的な理由です。この区別を怠ると、データがコードに「昇格」してしまいます。
+
+この「コンテキストに応じた解釈の変化」がXSS対策の核心です。同じ `term` パラメータでも、それがどこに出力されるかによって危険な文字集合が変わります。
+
+- **HTMLのテキストノードとして出力される場合**: `<` と `&` が危険（タグの開始やエンティティの開始と解釈されるため）。
+- **HTML属性値の中に出力される場合**（例: `<input value="ここ">`）: 属性を閉じる引用符（`"` や `'`）が危険。属性が引用符なしで書かれている場合は空白文字すら危険になります。
+- **JavaScriptの文字列リテラルの中に出力される場合**（例: `<script>var x = "ここ";</script>`）: 文字列を終端させる引用符やバックスラッシュ、さらに `</script>` という文字列そのものがHTMLパーサによって「scriptタグの終了」として解釈されてしまう点に注意が必要です（JSパーサとHTMLパーサという2段階の解釈が絡むため）。
+- **URLの中に出力される場合**（例: `<a href="ここ">`）: `javascript:` スキームを使われると、リンククリック時にコードが実行されます。
+
+反射型XSSページはこの「コンテキスト依存性」を、後続の攻略手順としてではなく原理として明示しています。攻撃者は自分の入力がどのコンテキストに落ちるかをまず観察し、そのコンテキストを「脱出」するペイロードを選びます。例えば属性値の中であれば `">` でまず属性とタグを閉じ、その後に新しいタグや `onerror` のようなイベントハンドラ属性を続ける、といった具合です。
+
+### なぜ反射型XSSには「配送」という一手間が必要なのか
+
+反射型XSSは「その場限りのリクエスト」に依存するため、攻撃者は**被害者に悪意あるURLを踏ませる**という追加のステップを必ず必要とします。PortSwiggerはこの点を明確にしています。
+
+> "reflected XSS attacks require some way of luring the victim into making an unintended request that triggers the injected code... reflected XSS is generally less severe than stored XSS, where a self-contained attack can be delivered within the vulnerable application itself."
+
+配送手段としては、フィッシングメールに罠URLを埋め込む、SNS投稿やコメント欄にリンクを貼る、短縮URLで見た目を偽装する、第三者サイトの `<img>` や `<iframe>` から誘導するなどが典型です。反射型は「1リクエスト完結」であるがゆえに、CSRF同様、被害者のブラウザに「クリックさせる/踏ませる」フェーズが攻撃全体のボトルネックになります。逆に言えば、反射型XSSを本番環境で評価する際は「このURLを実際に誰かに送りつけられる状況か」を合わせて検討する必要があります（例えば、POSTリクエストでしか再現しない反射型XSSは、GETによるワンクリック攻撃に比べて配送難易度が上がります）。
+
+### 反射型XSSがもたらす実害
+
+反射型XSSは「ただのアラート(`alert(1)`)が出るだけの無害なバグ」と誤解されがちですが、PortSwiggerは実害を明確に列挙しています。
+
+> 攻撃者は被害者になりすまし、被害者が実行できる**あらゆる操作**を実行でき、被害者が閲覧できる**あらゆる情報**にアクセスできる。
+
+具体的には、セッションCookieの窃取（`document.cookie` の外部送信）、CSRFトークンの読み取りによる別の防御機構の無効化、キーロガーの設置、フィッシングフォームの動的な差し込み、管理画面へのリクエストの代理実行（被害者が管理者であれば管理者権限での操作）などが挙げられます。総論ページはより一般的な影響として次を挙げています。
+
+> "impersonate or masquerade as the victim user, carry out any action that the user is able to perform, read any data that the user is able to access, capture the user's login credentials, perform virtual defacement of the website, inject trojan functionality into the website"
+
+> 出典: Cross-site scripting — https://portswigger.net/web-security/cross-site-scripting
+
+深刻度は文脈に強く依存します。ブローシャー的な公開サイト（ログインもなく、個人情報も扱わない）であれば影響は軽微ですが、銀行や医療機関のように機微な情報を扱うアプリケーションでは深刻な情報漏洩につながり、被害者が管理者権限を持つユーザーであれば、XSS一つからアプリケーション全体の乗っ取り（管理アカウントの作成、全ユーザーデータの窃取など）に発展し得ます。
+
+XSSが強力である理由の一つは、**同一オリジンポリシー（Same-Origin Policy）というブラウザの根幹的な防御をすり抜ける**点にあります。同一オリジンポリシーは「あるオリジンのスクリプトが、別オリジンのデータに自由にアクセスすることを防ぐ」仕組みですが、XSSによって注入されたコードは脆弱なサイト自身のオリジンで実行されるため、この防御の内側から動作します。攻撃者はブラウザの防御を破っているのではなく、防御が守ろうとしている「境界」の内側に、正規のコードとして紛れ込んでいるのです。
+
+### 防御の全体像
+
+XSS対策の基本原則は、総論ページと防御ページの双方で共通して示される次の2層構造です。
+
+> "encode data on output" と "validate input on arrival"（出力時のエンコードと、入力到達時のバリデーション）
+
+> 出典: Cross-site scripting: preventing — https://portswigger.net/web-security/cross-site-scripting/preventing
+
+**出力時エンコードがコンテキストごとに異なる**ことが実務上もっとも間違えやすいポイントです。防御ページは次のような対応関係を示しています。
+
+- HTMLコンテキストでは `<` を `&lt;`、`>` を `&gt;` のようにHTMLエンティティへ変換する。
+- JavaScript文字列コンテキストでは、英数字以外の文字をUnicodeエスケープする（例: `<` を `<`）。
+- HTML属性の中にあるイベントハンドラなど、複数のコンテキストが重なる場所では、**Unicodeエスケープしてから、さらにHTMLエンコードする**という2段階の処理が必要になる場合がある。
+
+言語ごとの実装例として、PHPでは `htmlentities($input, ENT_QUOTES, 'UTF-8')` の使用が挙げられ、JavaScriptには標準のHTMLエンコードAPIが存在しないため独自実装が必要になる点、jQueryでは「セレクタの先頭が `<` の場合にHTMLとして描画される」という仕様上の落とし穴がある点が指摘されています。TwigやJinja、Reactのような現代的なテンプレートエンジンは、デフォルトでコンテキストに応じたエスケープを行うため、これらを正しく使うこと自体が強力な防御になります（ただし `dangerouslySetInnerHTML` のような「エスケープを意図的にバイパスするAPI」を使えば、当然この保護は失われます）。
+
+**入力バリデーションはホワイトリスト方式を基本とすべき**であるとも強調されています。
+
+> "Input validation should generally employ whitelists rather than blacklists."
+
+URLであれば `http://` や `https://` で始まることを確認する、数値項目であれば数字以外を拒否する、といった「許可リスト」の考え方が、「危険な文字列パターンを列挙して拒否する」ブラックリスト方式より堅牢です。ブラックリストは `<script>` を拒否しても `<img onerror=...>` のような別表現を見落としがちで、原理的にいたちごっこになりやすいためです（この点は本書の後続章で、フィルタバイパスの技法として詳しく扱います）。
+
+ユーザーがHTMLそのものを投稿できる機能（リッチテキストエディタなど）はXSSのリスクを本質的に高めるため、防御ページは「可能な限り避けるべき」としつつ、どうしても必要な場合はDOMPurifyのようなクライアントサイドのサニタイズライブラリの利用を推奨しています。
+
+最後の防衛線として、**Content Security Policy（CSP）**が挙げられています。CSPはHTTPレスポンスヘッダでブラウザに「どのオリジンからのスクリプトなら実行してよいか」を宣言する仕組みで、次のような例が示されています。
 
 ```
-https://insecure-website.com/status?message=<script>/* Bad stuff here... */</script>
+default-src 'self'; script-src 'self'; object-src 'none';
 ```
 
-これに対する応答は次のようになります。
+インラインスクリプトを許可しつつ攻撃者による差し込みを防ぐ手段として、**nonceベースのCSP**にも言及があります。
 
-```html
-<p>Status: <script>/* Bad stuff here... */</script></p>
-```
+> "A nonce is a random string...which will only be executed if the random string matches the server-generated one."
 
-この URL を **別のユーザーがリクエストすると、攻撃者が供給したスクリプトが、その被害者のブラウザ上で、被害者とアプリケーションのセッションのコンテキストで実行**されます。
+これはレスポンスごとにサーバがランダムな一回限りの文字列（nonce）を生成し、`<script nonce="...">` タグとCSPヘッダの両方に同じ値を埋め込むことで、「サーバが意図して発行したインラインスクリプトだけ」を実行許可する仕組みです。攻撃者は事前にnonce値を知る手段がないため、たとえHTMLインジェクションに成功しても、正しいnonceを持たないスクリプトタグは実行されません（ただし、CSPには数多くのバイパス手法が存在し、単体で万能の防御にはならない点には注意が必要です。これも後の章で扱います）。
 
-> ℹ️ 補足: PortSwigger の資料では検索機能を使った同型の例（`search?term=gift` の値が `<p>You searched for: gift</p>` のように反射され、`term=<script>...</script>` で注入する）も繰り返し用いられます。値をどのタグの中／どの位置に反射するかが異なるだけで、原理は同一です。
+なお、かつてInternet ExplorerやChromeには「XSS Auditor」「XSS Filter」と呼ばれる、ブラウザ側でリクエストとレスポンスを比較し反射型XSSらしきパターンを検知してブロックするヒューリスティックな機構が存在しました。しかしこれらは多数の回避手法が発見され、さらに正規のコンテンツを誤ってブロックする副作用（意図せぬ情報漏洩を招く「XSS Auditorを悪用した攻撃」すら発見された）が問題視され、Chromeは2019年にXSS Auditorを撤廃し、Microsoft EdgeもEdgeHTMLエンジンの終了とともにXSS Filterを廃止しました。この歴史が示す設計上の教訓は、「攻撃パターンの検知によるブラックリスト的防御は、ブラウザという巨大な攻撃対象領域の中では原理的に破られる」ということであり、これが現在のセキュリティ業界がCSPのような「許可されたものだけを実行する」ホワイトリスト型・宣言的な防御機構へ軸足を移した理由です。
 
-##### なぜこのペイロードは動くのか（HTML パーサの再解釈）
+### PortSwigger Web Security Academyの学習パス
 
-`<script>/* Bad stuff here... */</script>` が実行される理由は、**サーバが URL パラメータの値を「テキストデータ」のつもりで `<p>...</p>` の中に連結したのに、ブラウザの HTML パーサはその文字列を上から素直に構文解析し、`<script>` という開始タグを見つけた時点で「ここからはスクリプト要素の中身＝実行すべき JavaScript」と解釈してしまう**からです。つまり、開発者が意図した「データという文脈」と、ブラウザが実際に適用した「スクリプトという文脈」がズレる（前述の context confusion）ために攻撃が成立します。もしサーバが出力時に `<` を `&lt;`、`>` を `&gt;` に HTML エンコードしていれば、ブラウザはそれを「タグの開始」ではなく「小なり記号という文字データ」として表示し、実行は起きません。これが後述の「出力エンコード」が防御の中心になる理由です。
+PortSwiggerが提供する無料の実習プラットフォーム「Web Security Academy」には、体系的に学習を進めるための「Learning Paths（学習パス）」という機能があります。
 
-> 出典: What is reflected XSS (cross-site scripting)? — https://portswigger.net/web-security/cross-site-scripting/reflected
-
-#### 反射型 XSS の影響と「配送（delivery）」
-
-攻撃者が被害者のブラウザ上でスクリプトを実行できると、典型的にそのユーザーを完全に侵害できます。反射型に固有の論点は、攻撃者が**自分の用意したリクエストを被害者に発行させる「配送手段」**を外部に用意しなければならない点です。代表的な配送手段は次の通りです。
-
-- 攻撃者が管理する Web サイトにリンクを置く。
-- ユーザー生成コンテンツを許可する別サイトにリンクを投稿する。
-- メール・SNS・チャットなどのメッセージにリンクを送りつける。
-
-攻撃は既知の特定ユーザーを狙う標的型でも、アプリの任意ユーザーを狙う無差別型でもありえます。**この「外部からの配送が必要」という性質のために、反射型 XSS の影響は一般に格納型より小さい**とされます（格納型は脆弱アプリ内で攻撃が自己完結するため）。
-
-> 出典: What is reflected XSS (cross-site scripting)? — https://portswigger.net/web-security/cross-site-scripting/reflected
-
-#### 反射型 vs 格納型 vs self-XSS
-
-- **反射型 vs 格納型**: 格納型は攻撃者がペイロードをアプリ自体に埋め込み、被害者が遭遇するのを待てばよい（自己完結）。反射型は被害者に細工リクエストを送らせる外部誘導が必須。したがって影響は一般に「格納型 ＞ 反射型」。
-- **反射型 vs self-XSS**: self-XSS（セルフXSS）は、反射型と似た挙動だが、細工した URL やクロスドメインのリクエストでは発動せず、**被害者自身が自分のブラウザにペイロードを貼り付ける等、自分で入力したときだけ**発動するものを指す。攻撃成立には、被害者を騙して攻撃者提供の文字列を自分でブラウザに貼らせるソーシャルエンジニアリングが必要になるため、単独では悪用が難しい（＝一般に「脆弱性」として扱う価値が低い）。
-
-> 出典: What is reflected XSS (cross-site scripting)? — https://portswigger.net/web-security/cross-site-scripting/reflected
-
-#### 反射型 XSS の発見・テスト手順（手動）
-
-反射型 XSS を手動で検証する標準的な流れは次の通りです。
-
-1. **すべての入口（entry point）を個別にテストする**: URL クエリ文字列やメッセージボディのパラメータだけでなく、URL のファイルパス、さらには HTTP ヘッダも入口になりうる（ただしヘッダ経由でしか発動しない挙動は実際には悪用困難なこともある）。
-2. **ランダムな英数字値を送り、反射を確認する**: 各入口に一意でランダムな短い英数字（およそ8文字程度が目安）を入れ、その値が応答のどこに現れるかを調べる。短めかつ英数字のみにするのは入力バリデーションをすり抜けやすくするため、8文字程度にするのは応答内の偶然の一致を避けるため。Burp Intruder の乱数（hex）ペイロードや grep 設定で、反射箇所を自動的にあぶり出せる。
-3. **反射のコンテキストを判定する**: 反射箇所ごとに、値が「タグ間のテキスト」なのか「（引用符付き／なしの）タグ属性値の中」なのか「JavaScript 文字列リテラルの中」なのか等を見極める。**どのコンテキストに落ちるかで必要なペイロードが変わる**（これが本書で繰り返し強調する最重要概念）。
-4. **候補ペイロードを試す**: そのコンテキストで JavaScript 実行を引き起こす初期候補を注入し、Burp Repeater で応答を見て効くか確認する。元のランダム値を残したまま、その前後に候補ペイロードを置くと反射位置を素早く特定できる。
-5. **代替ペイロードを試す**: 候補が改変・遮断されたら、コンテキストと入力バリデーションの種類に応じて別のペイロード・回避テクニックを試す。
-6. **実ブラウザで最終確認する**: Repeater で効きそうなら、実際のブラウザに移して実行を確認する。`alert(document.domain)` のような、成功時に可視のポップアップを出す簡単な JavaScript が便利。
-
-> 出典: What is reflected XSS (cross-site scripting)? — https://portswigger.net/web-security/cross-site-scripting/reflected
-
-#### コンテキストと「バリデーション後の反射」
-
-反射型 XSS には多数のバリエーションがあり、**反射データが応答内のどこに位置するか（コンテキスト）で必要なペイロードの型が決まり、脆弱性の影響も変わりえます**。加えて、反射前にアプリが何らかのバリデーションや加工（一部文字の除去・エスケープ・エンコード）を行っている場合、それがどんなペイロードなら通るかを左右します。だからこそ、反射型を「1つのペイロードを覚えて終わり」にせず、**コンテキスト × 入力処理の組み合わせで考える**必要があります（本書の後続章で各コンテキスト別に詳述します）。
-
-> 出典: What is reflected XSS (cross-site scripting)? — https://portswigger.net/web-security/cross-site-scripting/reflected
-
----
-
-### XSS の発見・テスト（全般）と PoC のお作法
-
-#### 発見方法（3分類での違い）
-
-- **反射型・格納型**: 大多数は Burp Suite の Web 脆弱性スキャナで高速かつ確実に発見できる。手動では、各入口に一意な入力を送り、応答に現れる全反射箇所を特定し、各箇所で任意 JS を実行できるかを個別に検証する。
-- **DOM ベース（URL 由来）**: URL パラメータに一意な入力を入れ、ブラウザの開発者ツールで DOM 内を検索し、その反射箇所が悪用可能かを検証する（反射型と似た流れ）。
-- **DOM ベース（URL 以外／非 HTML シンク）**: `document.cookie` のような非 URL ソースや、`setTimeout` のような非 HTML シンクに起因するものは、**JavaScript コードのレビュー以外に確実な発見手段がなく、極めて時間がかかる**。Burp のスキャナは JavaScript の静的解析と動的解析を組み合わせ、この検出を自動化する。
-
-> 出典: What is cross-site scripting (XSS) and how to prevent it? — https://portswigger.net/web-security/cross-site-scripting
-
-#### なぜ PoC に `alert()` を使うのか
-
-XSS の多くは、**自分のブラウザに任意 JavaScript を実行させるペイロードを注入して確認**します。慣習的に `alert()` が使われるのは、短く・無害で・成功時に見逃しようがないからです。PortSwigger のラボの大半も、シミュレートされた被害者のブラウザで `alert()` を呼ばせることで解けます。
-
-ただし技術的な注意点として、**最近の Chrome では、XSS が発生したフレームのオリジンが最上位フレームのオリジンと一致する場合にのみ `alert()` が発火**します。クロスオリジンのフレーム内で XSS が起きるケースでは `alert()` が出ないことがあるため、`print()` を代わりに使う必要がある場面があります。実ブラウザでの最終確認には、成功時にドメインを表示する `alert(document.domain)` のような形も有用です（どのオリジンで実行できたかが一目で分かる）。
-
-> 出典: What is cross-site scripting (XSS) and how to prevent it? — https://portswigger.net/web-security/cross-site-scripting
-
----
-
-### XSS の防止策
-
-XSS の防止は単純な場合もあれば、アプリの複雑さやユーザー制御データの扱い方次第で非常に難しい場合もあります。PortSwigger は、効果的な防止は次の施策の**組み合わせ**になりうるとしています。
-
-1. **入力を受信時にフィルタする（Filter input on arrival）**: 入力を受け取った時点で、期待される／妥当な入力の形に基づいて可能な限り厳格にフィルタする。**許可リスト（whitelist、許可する文字だけを通す）** を用いるのが原則で、拒否リスト（blacklist）に頼らない。
-2. **出力時にデータをエンコードする（Encode data on output）**: ユーザー制御データを HTTP 応答に出力する箇所で、それが**アクティブコンテンツとして解釈されないよう**エンコードする。出力先のコンテキストに応じて、HTML エンコード・URL エンコード・JavaScript エンコード・CSS エンコードを組み合わせて適用する必要がある。
-3. **適切なレスポンスヘッダを使う（Use appropriate response headers）**: HTML や JavaScript を含める意図のない応答については、`Content-Type` と `X-Content-Type-Options`（`nosniff`）ヘッダを使い、ブラウザに意図通りの解釈をさせる（＝ブラウザが勝手にコンテンツタイプを推測〔MIME スニッフィング〕して HTML/JS として実行してしまうのを防ぐ）。
-4. **Content Security Policy（CSP）を最後の防衛線にする**: それでも残った XSS の**深刻度を下げる**最後の砦として CSP を使う。
-
-補足として、具体的な実装例では、HTML コンテキストには `htmlentities` を `ENT_QUOTES` 付きで用いる、JavaScript コンテキストには JavaScript の Unicode エスケープを用いる、といった**コンテキスト別のエスケープ**が示されます。
-
-> 出典: What is cross-site scripting (XSS) and how to prevent it? — https://portswigger.net/web-security/cross-site-scripting
-> 出典: How to prevent XSS — https://portswigger.net/web-security/cross-site-scripting/preventing
-
-#### なぜ「出力エンコード」が中心で、なぜ「コンテキスト依存」なのか（原理）
-
-XSS が「データがコードとして再解釈される」現象である以上、**根本対策は「出力される瞬間に、その出力先の言語（HTML/JS/URL/CSS）にとって危険な文字を、意味を持たない表現へ変換すること」**です。ここで決定的に重要なのは、**同じ文字でも危険かどうかは出力先のコンテキストで変わる**という点です。
-
-- **HTML テキストコンテキスト**（例: `<p>ここ</p>`）では `<` `>` `&` などが危険 → HTML エンティティエンコード（`<` → `&lt;`）で無害化。
-- **HTML 属性コンテキスト**（例: `value="ここ"`）では、属性を閉じてしまう引用符（`"` や `'`）が危険 → 属性値をクォートし、クォート文字をエンコードする。
-- **JavaScript 文字列コンテキスト**（例: `var x = 'ここ';`）では、文字列を閉じる `'`／`"`、行を壊す改行、`</script>` などが危険 → JavaScript の Unicode エスケープ（例: `'`）を使う。ここで**HTML エンコードを使うのは誤り**で、JS パーサはエンティティを解釈しないため無効になる。
-- **URL コンテキスト**（例: `href="ここ"`）では、`javascript:` スキームなどが危険 → URL エンコードに加え、許可スキームの検証が必要。
-
-つまり「1種類のエスケープを全部に適用すれば安全」ではなく、**その値が最終的にどのパーサに食わせられるかを見極めて、対応するエンコードを選ぶ**必要があります。コンテキストを取り違えたエンコード（例: JS 文字列の中身を HTML エンコードだけして済ませる）は、防御になっていないのに「対策済み」に見えるため、実務で頻出する落とし穴です。
-
-#### CSP の位置づけ（最後の防衛線）
-
-CSP（Content Security Policy）は、XSS などの影響を緩和するためのブラウザ機構です。CSP を導入したアプリに XSS 的な挙動が残っていても、CSP がその悪用を妨げる／防ぐことがあります。ただし PortSwigger は、**CSP はしばしば回避（bypass）されて、下層の脆弱性の悪用を許してしまう**とも明言しています。CSP は「出力エンコードの代替」ではなく、あくまで**多層防御の最後の一枚**として位置づけるべきです（CSP のソース許可リストの評価やバイパス手法は本書の CSP 章で詳述します）。
-
-> 出典: What is cross-site scripting (XSS) and how to prevent it? — https://portswigger.net/web-security/cross-site-scripting
-
----
-
-### 学習パス（PortSwigger Web Security Academy の Learning Paths）
-
-Web Security Academy の **学習パス（learning paths）** は、膨大なトレーニングモジュールとラボを、**体系立てて順番に学べるよう厳選・整理したカリキュラム**です。各パスは複数のトピック／モジュールで構成され、学習者が自分のペースで、初学者から上級者へと段階的に進めるよう設計されています。歴史的には「サーバーサイド脆弱性（apprentice レベルの概観）」と「SQL インジェクション」の2つから始まり、その後拡充されてきました。
-
-Web Security Academy 全体は、難易度タグ（**Apprentice〔修習生〕→ Practitioner〔実務者〕→ Expert〔エキスパート〕**）で各トピック・各ラボが色分けされており、学習パスはこの難易度体系に沿って学ぶ順序を提示してくれます。
-
-検索で確認できた主な学習パス（および対応する URL スラッグ）は次の通りです（一覧は随時拡充されるため、最新・完全な一覧は出典URLでご確認ください）。
-
-- **Server-side vulnerabilities（サーバーサイド脆弱性・Apprentice）** — 一般的なサーバー側脆弱性の概観 — `/web-security/learning-paths/server-side-vulnerabilities-apprentice`
-- **SQL injection（SQLインジェクション）** — `/web-security/learning-paths/sql-injection`
-- **Authentication vulnerabilities（認証の脆弱性）** — `/web-security/learning-paths/authentication-vulnerabilities`
-- **Path traversal（パストラバーサル）** — `/web-security/learning-paths/path-traversal`
-- **File upload vulnerabilities（ファイルアップロードの脆弱性）** — `/web-security/learning-paths/file-upload-vulnerabilities`
-- **Cross-origin resource sharing (CORS)** — `/web-security/learning-paths/cors`
-- **Web cache deception（Web キャッシュ・デセプション）** — `/web-security/learning-paths/web-cache-deception`
-- **Web LLM attacks（LLM を狙う Web 攻撃）** — `/web-security/learning-paths/llm-attacks`
-- **API testing（API テスト）** — `/web-security/learning-paths/api-testing`
-
-Web Security Academy のトピック区分（学習パスや All topics に対応）は、クライアント側／サーバー側／高度なトピックに大別されます。参考として、以下のように整理されています。
-
-- **サーバーサイド**: SQLインジェクション、認証、ディレクトリトラバーサル（パストラバーサル）、コマンドインジェクション、ビジネスロジックの脆弱性、情報漏洩、アクセス制御、ファイルアップロード、SSRF（サーバーサイドリクエストフォージェリ）、XXE インジェクション。
-- **クライアントサイド**: **クロスサイトスクリプティング（XSS）**、CSRF（クロスサイトリクエストフォージェリ）、CORS、クリックジャッキング、DOM ベースの脆弱性、WebSocket。
-- **高度なトピック**: 安全でないデシリアライゼーション、サーバーサイドテンプレートインジェクション（SSTI）、Web キャッシュポイズニング、HTTP ホストヘッダ攻撃、HTTP リクエストスマグリング、OAuth 認証、JWT 攻撃、クライアントサイドのプロトタイプ汚染、Essential skills（必須スキル）。
+> "Our learning paths provide a structured approach to learning web security, allowing you to advance at your own pace while ensuring a deep understanding of the subject matter."
 
 > 出典: Learning paths | Web Security Academy — https://portswigger.net/web-security/learning-paths
-> 出典: New learning paths, from the Web Security Academy (Blog) — https://portswigger.net/blog/new-learning-paths-from-the-web-security-academy
-> 出典: All Web Security Academy topics — https://portswigger.net/web-security/all-topics
 
-#### XSS を体系的に学ぶための推奨ルート
+学習パスは、複数の「トピック」にまとめられた「モジュール（インタラクティブなラボ、または脆弱性の解説コンテンツ）」から構成されており、学習者は進捗を記録しながら自分のペースで中断・再開できます。PortSwiggerの公式ブログによれば、最初に公開された学習パスは次の2本でした。
 
-本書の読者（反射型は知っている中〜上級者）が Web Security Academy を併用するなら、次の順序が効率的です。
+- **サーバーサイド脆弱性（Apprenticeレベル）**: 実際のシステムでどのように攻撃者がサーバーサイドの脆弱性を発見・悪用するかの概観を、初級者向けに提供するパス。
+- **SQLインジェクション**: SQLインジェクションという古典的な脆弱性の発見と悪用の要点に絞ったパス。
 
-1. まず本節の土台（3分類・コンテキスト・出力エンコードの原理）を固める。
-2. XSS トピック（`/web-security/cross-site-scripting`）の各コンテキスト別ラボを、Apprentice → Practitioner の順で解く。特に「HTML コンテキスト」「属性コンテキスト」「JavaScript 文字列コンテキスト」でペイロードがどう変わるかを手で確かめる。
-3. DOM ベース XSS のトピックで source→sink の追跡に慣れる。
-4. CSP、dangling markup injection、XSS→CSRF などの応用ラボへ進み、防御回避と影響拡大を学ぶ。
+> 出典: New learning paths, from the Web Security Academy — https://portswigger.net/blog/new-learning-paths-from-the-web-security-academy
 
----
+その後、学習パスは認証（Authentication）、CSRF、GraphQL APIの脆弱性など、他の脆弱性カテゴリにも拡張されています。Academy全体は、脆弱性カテゴリ（XSS、SQLi、CSRF、SSRF、XXE、パストラバーサル、リクエストスマグリング、Webキャッシュ欺瞞、APIテストなど）ごとに、概念解説・実際に手を動かして攻撃を試せるハンズオンラボ・習熟度チェックのための試験問題が用意された、業界でもっとも網羅的な無料学習プラットフォームの一つです。本書でも以降の章で、各トピックのAcademyページを参照しながら解説を進めます。ラボそのものの個別の解法（どのペイロードをどこに入れれば「Solved」になるか、といった手順）は本書ではあえて記載しません。これは、実際に自分の手でHTTPリクエストを観察し、ペイロードを試行錯誤する過程そのものが学習の核心だからです。読者はぜひ、この節で説明した原理（Source/Sinkの図式、コンテキスト依存のエスケープ規則）を武器に、Academyの反射型XSSカテゴリのラボへ実際に挑戦してみてください。
 
-### この節のまとめ
+### まとめ
 
-- **XSS とは**、攻撃者の JavaScript を被害者のブラウザで、被害者のセッションのコンテキストで実行させ、同一オリジンポリシーを実質的に回り込む脆弱性である。
-- **原理**は一貫して「データとして意図された入力が、ブラウザのパーサによってコード（アクティブコンテンツ）として再解釈される（context confusion）」こと。
-- **3分類**は経路の違い（反射型＝リクエストに載せて即応答へ反射、格納型＝サーバに保存され後で配信、DOM ベース＝クライアント JS が source から sink へ危険に渡す）。
-- **反射型**は最も単純だが外部からの配送が必要で、影響は一般に格納型より小さい。テストは「入口→反射確認→コンテキスト判定→ペイロード→実ブラウザ確認」の順。
-- **影響**はコンテキスト依存（匿名閲覧サイトなら軽微、機微データや特権ユーザーなら致命的）。
-- **防御の中心は出力時のコンテキスト別エンコード**。入力フィルタ（許可リスト）、適切なレスポンスヘッダ、CSP（最後の防衛線）を組み合わせる。CSP は代替ではなく補完であり、回避されうる。
-- **学習パス**は Apprentice→Practitioner→Expert の段階に沿った厳選カリキュラムで、XSS 学習はコンテキスト別ラボを手で解くのが近道。
+- XSSの本質は「信頼できない文字列が、ブラウザにコードとして解釈される文脈に、無害化されずに紛れ込む」ことである。
+- 反射型・格納型・DOM型の違いは、Source（入力点）からSink（出力点）に至る経路の違いであり、反射型は1リクエストで完結するがゆえに配送に一手間かかり、一般に格納型より深刻度が低いとされる。
+- HTMLパーサは「文字がどこから来たか」を区別せず、現在の解析状態に応じて機械的に解釈するため、開発者はコンテキストごとに異なるエスケープ規則を出力時に適用しなければならない。
+- 防御は「入力のホワイトリストバリデーション」と「出力のコンテキスト別エンコード」を土台に、CSPやHttpOnly Cookieなどの多層防御を重ねる。ブラウザ組み込みのXSSフィルタのような検知ベースの防御は歴史的に破られ廃止されており、宣言的・許可リスト型の防御へ移行してきたという経緯自体が重要な設計上の教訓である。
+- 学習にはPortSwigger Web Security Academyの学習パスが有用であり、体系立ったトピック・モジュール構成で自分のペースで進められる。

@@ -2,27 +2,29 @@
 
 この節では、XSS（クロスサイトスクリプティング＝攻撃者が用意した JavaScript を被害者のブラウザ上で実行させる脆弱性）研究の第一人者である **Gareth Heyes**（ガレス・ヘイズ。英国 PortSwigger 社の主席研究者で、Burp Suite 拡張 Hackvertor やファジングツール Shazzer の作者）の書籍 **『JavaScript for hackers: Learn to think like a hacker』** を取り上げます。この本は「反射型の素朴な XSS は知っているが、その先の高度な領域を体系的に学びたい」という、まさに本教科書の読者層に向けて書かれた一冊で、**「ペイロードを暗記する」のではなく「JavaScript とブラウザの仕様の隙間を自分で見つけ出す発想（think like a hacker）」** を鍛えることを主眼としています。
 
-書籍そのものは有料（Leanpub / Amazon で販売）で本文全文を機械的に取得することはできませんでしたが、本書の内容は著者自身が PortSwigger Research で公開してきた一連の研究記事を土台に再構成されたものであり、それらの一次記事および書評・目次情報から、扱う技法をほぼ余さず再現できます。以下では、まず取得状況を明示したうえで、本書が扱う技法を章の流れに沿って詳しく解説します。
+書籍そのものは有料（Leanpub / Amazon で販売）で、本文 PDF・EPUB の全文はここに転載できません。ただし本節の執筆にあたっては **Leanpub の販売ページ（公式の目次・概要）を直接取得** できたため、章構成は推測ではなく公式情報に基づいています。加えて本書の技法は、著者 Gareth Heyes が PortSwigger Research で公開してきた一連の研究記事を土台に再構成されたものが多く、それら **一次研究記事も本節向けに直接取得** しました。以下では、公式目次を示したうえで、各技法の「なぜ動くか」を一次記事の内容とともに詳しく解説します。個々の技法には、その根拠となった公開記事を出典として付します。
 
-> ⚠️ **未取得の資料**: 「JavaScript for hackers（Gareth Heyes, Leanpub）」は自動取得できませんでした（理由: 販売ページ leanpub.com および二次配布元・Google Books・著者サイト garethheyes.co.uk・PortSwigger 本体まで含め、本実行環境のネットワーク egress プロキシがすべてのドメインへの直接アクセスを遮断しており、有料書籍のため本文 PDF も参照不可）。以下の URL からユーザーご自身で直接ご覧ください: https://leanpub.com/javascriptforhackers
+### 本書の基本情報と位置づけ
 
-（以下は、取得できなかった上記書籍の内容を、著者 Gareth Heyes が PortSwigger Research 等で公開している一次研究記事・書籍の目次情報・書評、および一般的な専門知識に基づいて再構成した解説です。個々の技法には、その根拠となった公開記事を出典として付します。）
+- **書名**: 『JavaScript for hackers: Learn to think like a hacker』
+- **著者**: Gareth Heyes（PortSwigger 主席研究者。XSS Cheat Sheet の作者、Burp 拡張 Hackvertor / Taborator の開発者。JavaScript サンドボックス脱出と「エレガントな XSS ベクタ」の考案で知られる。OWASP Global AppSec Dublin 2023 で講演）
+- **形式 / 価格**: PDF・EPUB。最低価格 20 ドル、推奨価格 35 ドル（Leanpub は読者が価格を選べる仕組み）
+- **状態**: 完成度 100%、最終更新 2025-09-26。31 言語の翻訳が用意されている
+- **キャッチコピー**: "Learn to think like a hacker"（ハッカーのように考えることを学べ）
 
-### 本書の位置づけと構成
+本書の宣伝文では、`+[]()!` のわずかな記号だけでコードを組み立てる技法や DOM Clobbering など、「JavaScript の面白い挙動と欠陥を見つけ、XSS ペイロードを生成する」ことに主眼が置かれています。Leanpub の公式目次に基づく章立ては次のとおりです。
 
-本書のキャッチコピーは "Learn to think like a hacker"（ハッカーのように考えることを学べ）で、初版は 2022 年、その後 2023 年・2024 年と改訂が重ねられています。序盤で JavaScript ハッキングの基礎を固めたのち、**「括弧を使わない JavaScript ペイロードの構築」「ファジングによる新しいブラウザ挙動の発見」「DOM ハッキングと DOM Clobbering」「プロトタイプ汚染」「非英数字 JavaScript」「最新の XSS テクニック」** へと段階的に踏み込む構成になっています。書評・目次断片から確認できる章立ては概ね次のとおりです。
+- **第1章 Introduction**（導入。著者紹介、モチベーション、実験環境の作り方、目標設定、ファジング、粘り強さ、基礎）
+- **第2章 JavaScript without parentheses**（括弧なし JavaScript。括弧なしの関数呼び出し、throw 式、タグ付きテンプレート、`Symbol.hasInstance`）
+- **第3章 Fuzzing**（ファジング。JavaScript URL、HTTP URL、HTML、既知の挙動、エスケープ）
+- **第4章 DOM for hackers**（DOM ハッキング。window スコープ、HTML イベントスコープ、DOM Clobbering）
+- **第5章 Browser exploits**（ブラウザ悪用。Firefox / Safari / Internet Explorer / Chrome / Opera の SOP バイパス）
+- **第6章 Prototype pollution**（プロトタイプ汚染。クライアントサイド／サーバーサイド）
+- **第7章 Non-alphanumeric JavaScript**（非英数字 JavaScript。非英字コードの記述、6文字への圧縮、Infinity の利用）
+- **第8章 XSS**（script タグの閉じ方、HTML エンティティ、SVG、イベント、hidden input、popover、各種ベクタ）
+- **第9章 Credits**（謝辞・参考文献）
 
-- 第1章 Introduction（導入・本書の狙い）
-- 第2章 **JavaScript without parentheses**（括弧なし JavaScript）
-- （中盤）**Fuzzing**（ブラウザ挙動をファジングで発掘する手法）
-- **DOM for hackers**（DOM Clobbering を含む DOM ハッキング）
-- **Browser exploits / SOP bypasses**（各ブラウザの Same-Origin Policy 回避）
-- **Prototype pollution**（クライアント／サーバーサイドのプロトタイプ汚染）
-- **Non-alphanumeric JavaScript**（非英数字 JavaScript）
-- **XSS techniques**（HTML エンティティ、イベント、hidden input、popover などの実戦テクニック）
-- Credits（謝辞・参考文献）
-
-> 出典: JavaScript for hackers（書籍紹介・目次断片）— https://leanpub.com/javascriptforhackers ／ Google Books — https://books.google.com/books/about/JavaScript_for_hackers.html?id=FVWjEAAAQBAJ ／ Amazon — https://www.amazon.com/JavaScript-hackers-Learn-think-hacker/dp/B0BRD9B3GS
+> 出典: JavaScript for hackers（公式販売ページ・目次）— Leanpub — https://leanpub.com/javascriptforhackers
 
 本書の一貫したメッセージは、**「XSS の本質は文字列の暗記ではなく、JavaScript 言語仕様とブラウザ実装のギャップを実験で炙り出すこと」** です。以下、章ごとにその「仕組み」を掘り下げます。
 
@@ -239,6 +241,26 @@ https://vulnerable-website.com/?__proto__[foo]=bar
 
 実務上の限界: 本書も指摘するとおり、`alert` の5文字を型強制だけで作ると **約2万1千文字** に膨れ上がります。そのため実戦では「フィルタが検知する綴りだけを非英数字化し、残りは Base64 や文字列配列で通す」といったハイブリッドが現実的です。さらに前述の「括弧なし」技法（タグ付きテンプレートや `instanceof`+`Symbol.hasInstance`）と組み合わせれば、**記号のみ・かつ括弧なし** という極限の制約下でも実行に持ち込めます。
 
+#### 現代版：配列 find・template リテラル・Infinity で短縮する
+
+Heyes は、JSFuck 全盛期には存在しなかった新しい言語機能を使って、非英数字ペイロードを大幅に短縮する手法を PortSwigger Research で公開しました（本節の担当一次記事）。核心は以下の3つの改良です。
+
+1. **`+[]`・`!+[]` で数値を作る**: 空配列は数値化で `0`、`![]` は `false`、`!+[]` は `true`（数値化で `1`）。`!+[]+!+[]+!+[]+!+[]` のように `1` を足し合わせて任意の数値インデックスを作る。
+2. **`[][[]]+[]` で文字列 `"undefined"` を得る**: 存在しないプロパティアクセスは `undefined` を返し、`+[]`（空文字列との連結）で文字列化される。そこから `u`・`n`・`d`・`e`・`f`・`i` などの文字をインデックスで一文字ずつ抜き出せる。
+3. **配列の `find` メソッドを経由して `constructor` に到達する**: 上で拾った `f`・`i`・`n`・`d` を連結して文字列 `"find"` を作り、`[]["find"]` で配列の `find` 関数を得る。この関数を文字列化（`find`+`[]`）すると `function find() { [native code] }` となり、ここに含まれる `c` を回収できる。集めた文字で `"constructor"` を綴り、`[]["constructor"]["constructor"]` と二段でたどると **Function コンストラクタ** に到達する。
+
+そして仕上げに、括弧を一切書かずに実行するため **タグ付きテンプレート** を使います。
+
+```javascript
+Function`x${'alert\x281337\x29'}x`
+```
+
+なぜ動くか: `Function`（記号だけで組み立てた文字列）にバッククォート文字列を後置すると、タグ付きテンプレートとしてコンストラクタが起動し、`${...}` に埋め込んだコード文字列が関数本体としてコンパイル・実行されます。テンプレートの前後に `x` を置いているのは、埋め込み値以外の「文字列部分」を非空にして構文を成立させるためのダミーです。
+
+さらに本書第7章では **`Infinity` を使った短縮** も扱います。`+[]` から `1/0` 相当の値や、あるいは数値リテラルを介さずに大きな数・特殊値を得る場面で、`Infinity` の文字列化（`"Infinity"`）から `I`・`f`・`n`・`t`・`y` といった追加の文字を回収でき、必要な綴りを作るコストを下げられます。要は「型強制で自然に現れる文字列（`undefined`／`true`／`false`／`NaN`／`Infinity`／`[object Object]` や各種ネイティブ関数の `toString` 結果）を材料庫として最大限使い回す」のが、非英数字コードを短くする定石です。
+
+> 出典: Executing non-alphanumeric JavaScript without parenthesis — PortSwigger Research — https://portswigger.net/research/executing-non-alphanumeric-javascript-without-parenthesis
+
 ---
 
 ### 実戦 XSS テクニック（hidden input・accesskey・popover）
@@ -284,4 +306,4 @@ https://vulnerable-website.com/?__proto__[foo]=bar
 
 いずれの技法も、根底にあるのは **「防御側が想定していない仕様の隙間を、原理から理解して突く」** という発想です。バージョン依存の技法（DOMPurify バイパス、ブラウザ SOP バイパス等）は必ず対象バージョンと修正状況を確認し、陳腐化に注意して活用してください。
 
-> 出典（総括）: JavaScript for hackers — Gareth Heyes — https://leanpub.com/javascriptforhackers （本文は未取得のため、内容は上記の各一次研究記事および目次・書評情報から再構成）
+> 出典（総括）: JavaScript for hackers — Gareth Heyes — https://leanpub.com/javascriptforhackers （章構成は公式目次に基づき、各技法の解説は上記の一次研究記事の内容に基づく。有料書籍のため本文全文の転載は行っていない）
