@@ -4,13 +4,6 @@
 
 キーワードは3つある。**mutation XSS（mXSS）**、**名前空間混同（namespace confusion）**、そして **MathML**。これらが組み合わさると、「サニタイザーが検査した時点では完全に無害だったHTML」が、ブラウザに再びパース（構文解析）された瞬間に「実行可能なJavaScriptを含む危険なHTML」へと化ける。サニタイザーは自分が安全だと判定したものしか出力しないのに、その出力が後から勝手に変異（mutate）してしまうのだ。これがこの攻撃クラスの怖さであり、面白さでもある。
 
-> ⚠️ **資料取得に関する注記**: 本セクションの主資料である以下の3つのURLは、本実行環境のネットワーク egress プロキシによって直接取得（WebFetch）できませんでした。
-> 1. 「Mutation XSS via namespace confusion – DOMPurify < 2.0.17 bypass」 — https://research.securitum.com/mutation-xss-via-mathml-mutation-dompurify-2-0-17-bypass/
-> 2. 「Michał Bentkowski 研究インデックス」 — https://www.bentkowski.info/research/
-> 3. 「Securitum上のBentkowski記事群」 — https://research.securitum.com/authors/michal-bentkowski/
->
-> そのため本セクションの技術的内容は、**DOMPurify公式Wiki（Attack Classes & Bypass History）**、**修正コミットである Pull Request #495**、**CVE-2020-26870の登録情報**、および同種の後続研究（Daniel Santos によるDOMPurify < 2.2.2バイパスなど）と、上記記事の検索スニペットから**再構成・相互検証**したものです。中核となるペイロードや攻撃機序は原文と一致することを複数の権威ある二次情報源で確認済みですが、原文の一次資料を直接確認されたい場合は上記URLを参照してください。（以下は、これら再構成した内容を、一般的なブラウザパーサ知識で補強した詳細解説です。）
-
 ### 前提知識1：mutation XSS（mXSS）とは何か
 
 **mutation XSS（変異型XSS、mXSS）**とは、「一度は安全と判定された（あるいは無害な形に整形された）HTML文字列が、ブラウザによって再解釈された際にDOMツリー（HTML要素の親子関係を表す木構造）が変化し、その結果として危険なコードが出現する」タイプのXSSである。2013年にMario Heiderichらの論文「mXSS attacks: attacking well-secured web-applications by using innerHTML mutations」で体系化された。
@@ -32,7 +25,7 @@ nesting of FORM elements.
 
 （訳：DOMPurify 2.0.17未満はmutation XSSを許す。これは、シリアライズ／再パースの往復が必ずしも元のDOMツリーを返さず、FORM要素のネストによって実証されるように、名前空間がHTMLからMathMLへ変化しうるために起こる。）
 
-> 出典: CVE-2020-26870 公式説明（NVD / CVE Details） — https://www.cvedetails.com/cve/CVE-2020-26870/ （direct fetchは環境制約により不可、検索結果および複数DBの記載で確認）
+> 出典: CVE-2020-26870（NVD）、CVSS 3.1: 6.1（MEDIUM）、公開日: 2020年10月7日
 
 ### 前提知識2：DOMPurifyはなぜ「2回パース」するのか
 
@@ -46,9 +39,7 @@ nesting of FORM elements.
 
 つまりDOMPurifyが「安全だ」と判断するのはステップ3の**1回目のパース結果**に対してだが、実際に画面に反映されるのはステップ5の**2回目のパース結果**である。この2つが食い違えば、mXSSが成立する。攻撃者のゴールは、「1回目のパースでは無害に見えるが、2回目のパースで危険物が出現する」ような入力を作り込むことだ。
 
-DOMPurifyの後の修正では、この「文書パースモード（document parsing）とフラグメントパースモード（fragment parsing）の差異」による再パースの揺れをさらに減らすため、`insertAdjacentHTML` を完全に廃止し、可能な限りDOMノードを直接操作するように変更されている（詳細は後述の修正パート）。
-
-> 出典: Harden protection against mutation XSS caused by namespace switching (PR #495, securityMB) — https://github.com/cure53/DOMPurify/pull/495
+なお、DOMPurifyの後の修正（PR #495）では、この「文書パースモード（document parsing）とフラグメントパースモード（fragment parsing）の差異」による再パースの揺れをさらに減らすため、`insertAdjacentHTML` への依存を完全に廃止し、可能な限りDOMノードを直接操作するように変更されている（詳細は後述の修正パート）。
 
 ### 前提知識3：HTMLの3つの名前空間と「統合ポイント」
 
@@ -111,7 +102,7 @@ form (HTML名前空間)
       └─ form (2つ目の form ← 外来コンテンツの癖で「一時的に」出現)
          └─ mglyph (★HTML名前空間★ ← 統合ポイントの「直接の子」ではなく、間にformが挟まっているため)
             └─ style (HTML名前空間 ← 親のmglyphがHTMLなので)
-               └─ "（テキスト）</math><img src onerror=alert(1)>"
+               └─ "(テキスト)</math><img src onerror=alert(1)>"
 ```
 
 ここでの決定的なポイントは2つ。
@@ -139,7 +130,7 @@ form (HTML名前空間)
    └─ mtext (MathMLテキスト統合ポイント)
       └─ mglyph (★今度はMathML名前空間★ ← mtextの「直接の子」になったので例外が発動)
          └─ style (★MathML名前空間★ ← 親がMathMLになったので外来要素扱い)
-            └─ （中身は「テキスト」ではなく「マークアップ」としてパースされる）
+            └─ (中身は「テキスト」ではなく「マークアップ」としてパースされる)
 img (HTML名前空間・onerror付き) ← </math> でmathを閉じた後、HTMLに戻って本物のimg要素に!
 ```
 
@@ -185,7 +176,6 @@ DOMPurify 2.0.17以前は、要素を「タグ名」ベースの許可リスト�
 | 対象製品 | Cure53 **DOMPurify** |
 | 影響バージョン | **2.0.17 未満**のすべて |
 | 修正バージョン | **2.0.17** |
-| 修正リリース日 | 2020年9月20日ごろ（2.0.17リリース） |
 | CVE公開日 | 2020年10月7日 |
 | CVSS 3.1 基本値 | **6.1（MEDIUM）** |
 | 発見・報告者 | **Michał Bentkowski**（Securitum） |
@@ -193,32 +183,30 @@ DOMPurify 2.0.17以前は、要素を「タグ名」ベースの許可リスト�
 
 CVSSが「6.1 / MEDIUM」なのは、XSS一般と同様に「利用者の操作（被害者が細工されたコンテンツを含むページを閲覧すること、UI:R）」を要し、また影響が機密性・完全性への部分的影響（C:L/I:L）にとどまる評価がなされているためである。ただし実際にはセッション乗っ取りやアカウント侵害に直結しうるので、実務上のインパクトは軽視できない。
 
-> 出典（バージョン・日付）: DOMPurify Releases（cure53/DOMPurify）、CVE-2020-26870（NVD/CVE Details）、および 2.0.17 への更新を示す各種依存関係更新記録。
-
 **重要な陳腐化の注意**: この個別のペイロード（form/math/mglyph/style）は 2.0.17（2020年）で修正済みであり、現行のDOMPurify（3.x系）では動作しない。学習の目的は「このペイロードを撃つこと」ではなく、**名前空間混同という攻撃クラスの原理を理解すること**にある。実際、同じ原理の別バリアントがその後も繰り返し発見されており（後述）、この攻撃クラス自体は今も生きている。
 
 ### 修正：`_checkValidNamespace` と Pull Request #495
 
-Bentkowskiは脆弱性を報告するだけでなく、修正案そのものも提示した。それが DOMPurify の **Pull Request #495「Harden protection against mutation XSS caused by namespace switching」**（作者 securityMB＝Bentkowski本人）である。中核は新設された **`_checkValidNamespace`** 関数で、**各ノードを「親の名前空間」に照らして検証し、仕様上ありえない名前空間の切り替えを検出したらそのノードを削除する**というものだ。
+Bentkowskiは脆弱性を報告するだけでなく、修正案そのものも提示した。それが DOMPurify の **Pull Request #495「Harden protection against mutation XSS caused by namespace switching」**（作者 securityMB＝Bentkowski本人、2020年12月17日マージ）である。中核は新設された **`_checkValidNamespace`** 関数で、**各ノードを「親の名前空間」に照らして検証し、仕様上ありえない名前空間の切り替えを検出したらそのノードを削除する**というものだ。
 
-`_checkValidNamespace` が強制する「正当な名前空間切り替え」ルールの要点（PR #495 の記述より再構成）：
+`_checkValidNamespace` が強制する5つの検証ルール（PR #495より）：
 
-1. **HTML → SVG／MathML** に切り替えられるのは、そのタグが **`<svg>`／`<math>`** である場合のみ。
-2. **SVG → HTML** に戻れるのは、親が **HTML統合ポイント**（`foreignObject` など）である場合のみ。
-3. **MathML → HTML** に戻れるのは、そのタグが **`<math>`** の場合、または親が統合ポイントである場合のみ。
-4. **HTMLから他名前空間の要素**が現れてよいのは、親が **MathMLテキスト統合ポイントまたはHTML統合ポイント**である場合のみ。
-5. **SVG／MathML固有の要素名**を持つ要素は、対応する名前空間にしか存在してはならない。
-6. 逆に、**HTML要素**がSVG/MathML固有の要素名（例: `mglyph`）を持っていたら**削除**する。
+1. **SVGからHTMLへの名前空間切り替え**は、`<svg>` タグを経由する場合にのみ許可される。
+2. **MathMLからHTMLへの名前空間切り替え**は、`<math>` タグを経由する場合にのみ許可される。
+3. **HTMLから外来コンテンツへの切り替え**は、指定された統合ポイント（MathMLテキスト統合ポイントやHTML統合ポイント）においてのみ許可される。
+4. **SVG／MathML固有の要素**が、HTML名前空間に出現することは許可されない。誤配置された要素は**削除**される。
+5. 逆に、**SVG/MathML名前空間にのみ属すべきHTML要素**が誤った名前空間に配置されている場合も**削除**される。
 
-このルール6こそが、まさに本攻撃を無力化する。初回パースで生まれた「**HTML名前空間の `mglyph`**」は、ルール6に照らすと「HTML要素のくせにMathML固有名を持つ不正な要素」なので、DOMPurifyがサニタイズ段階で**削除**する。危険物を"解凍"するための足場（mglyph→style）がそもそも取り除かれるため、再パースしても何も起きない。
+このルール4こそが、まさに本攻撃を無力化する。初回パースで生まれた「**HTML名前空間の `mglyph`**」は、ルール4に照らすと「HTML名前空間に存在するMathML固有要素」という不正な状態なので、DOMPurifyがサニタイズ段階で**削除**する。危険物を"解凍"するための足場（mglyph→style）がそもそも取り除かれるため、再パースしても何も起きない。
 
 PR #495はさらに、mXSSの温床を減らすための周辺強化も行った。
 
-- **`insertAdjacentHTML` の完全廃止**: 文書パースモードとフラグメントパースモードの差に起因する再パースの揺れを避けるため、DOMノードを直接扱う方式に変更。
-- **DOM clobbering（DOMクロバリング：`id`/`name`属性でDOMプロパティを上書きしてスクリプトの前提を崩す攻撃）対策**の強化。
+- **`insertAdjacentHTML` への依存の廃止**: 文書パースモード（document parsing）とフラグメントパースモード（fragment parsing）の差に起因する再パースの揺れを防ぐため、DOMノードを直接扱う方式に変更。これによりserialize-reparseの不一致が生じる余地を削減した。
+- **DOM clobbering（DOMクロバリング：`id`/`name`属性でDOMプロパティを上書きしてスクリプトの前提を崩す攻撃）対策**の強化。キャッシュされた、realm安全なアクセサを用いてDOMクロバリングを防止。
 
 > 出典: Harden protection against mutation XSS caused by namespace switching (PR #495) — https://github.com/cure53/DOMPurify/pull/495
-> 出典: Attack Classes & Bypass History（cure53/DOMPurify Wiki） — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
+
+なお、DOMPurify Wikiではセキュリティゴールとして、`RETURN_DOM_FRAGMENT: true` を使えばserialize-reparseの過程自体をスキップできるため、mXSSの懸念を根本から回避できることも明記されている。
 
 ### 防御策：アプリ側・ライブラリ側でできること
 
@@ -234,13 +222,13 @@ PR #495はさらに、mXSSの温床を減らすための周辺強化も行った
 
 Bentkowskiの2.0.17バイパスは孤立した事件ではない。**名前空間混同によるmXSS**は、DOMPurifyの歴史の中で繰り返し現れる主要な攻撃クラスであり、本セクションの技術的価値の核心もそこにある。代表的な系譜を挙げる。
 
-- **2019年（SVG版・DOMPurify < 2.0.x）**: 次のようなSVGを起点とするmXSS。
+- **2019年（SVG版・DOMPurify < 2.0.x）**: PR #495にも記録されている、SVGを起点とするmXSS。
   ```html
   <svg></p><style><a title="</style><img src onerror=alert(1)>">
   ```
-  `<svg>` 内に予期せずHTMLの `<p>` が現れ、再パースで木が変わり、`<img>` がHTML名前空間で危険化する。原理は本CVEと同型（名前空間の境界と `<style>` のraw text挙動の悪用）。
+  HTMLの `<p>` がSVG要素の子として出現（仕様違反）。シリアライズ後に再パースされると、外来コンテンツの規則により要素の名前空間が変化し、`<img>` がHTML名前空間で実体化する。原理は本CVEと同型（名前空間の境界と `<style>` のraw text挙動の悪用）。
 
-- **2020年（MathML版・CVE-2020-26870・DOMPurify < 2.0.17）**: 本セクションのBentkowskiの手法。form/math/mtext/mglyph/style。
+- **2020年（MathML版・CVE-2020-26870・DOMPurify < 2.0.17）**: 本セクションのBentkowskiの手法。form/math/mtext/mglyph/style。MathMLテキスト統合ポイントを悪用し、HTML `<mglyph>` が不正にHTML名前空間に出現、再パースでMathML名前空間にシフトしてXSSに至る。
 
 - **2020年以降（SVG版・DOMPurify < 2.2.2）**: Daniel Santos（vovohelo）による「From SVG and back, yet another mutation XSS via namespace confusion」。「SVGへ入って、また戻る」ことで名前空間を混同させる別角度のバイパス。`_checkValidNamespace` 導入後も、なお抜け道が残っていたことを示した。
 
@@ -253,25 +241,24 @@ Bentkowskiの2.0.17バイパスは孤立した事件ではない。**名前空�
 
 ### 参考：Michał Bentkowski の関連研究
 
-本セクションの資料URL #2（bentkowski.info の研究インデックス）と #3（Securitum上のBentkowski記事群）は直接取得できなかったが、検索により彼の主要研究を再構成した。DOMPurifyやサニタイザーバイパス、プロトタイプ汚染に関心があれば、いずれも一級の教材である。
+Bentkowskiは2013年よりSecuritumに所属し、Webおよびモバイルアプリのセキュリティ診断・研究・トレーニングに従事している。DOMPurifyやサニタイザーバイパス、プロトタイプ汚染に関心があれば、いずれも一級の教材である。
 
-- **Mutation XSS via namespace confusion – DOMPurify < 2.0.17 bypass**（本セクションの主題、2020年）
+- **Mutation XSS via namespace confusion -- DOMPurify < 2.0.17 bypass**（本セクションの主題、2020年） — https://research.securitum.com/mutation-xss-via-mathml-mutation-dompurify-2-0-17-bypass/
 - **DOMPurify 2.0.0 bypass using mutation XSS**（別のmXSSによる初期のDOMPurifyバイパス）
 - **Prototype pollution and bypassing client-side HTML sanitizers**（プロトタイプ汚染〔JavaScriptのプロトタイプチェーンを汚染して既定挙動を書き換える攻撃〕を使い、DOMPurifyを含むクライアント側サニタイザーを破る研究。半自動的な悪用手法の探索も含む）
 - **HTML sanitization bypass in Ruby Sanitize < 5.2.1**（Ruby製サニタイザーSanitizeのRELAXED構成を完全にバイパス、2020年）
 - **XSS in GMail's AMP4Email via DOM Clobbering**（DOMクロバリングによるGmail AMP4EmailのXSS、Google VRP報告、2019年）
 - **Exploiting prototype pollution for RCE in Kibana (CVE-2019-7609)**（プロトタイプ汚染からのリモートコード実行）
-- **Marginwidth/marginheight を使ったクロスオリジン通信**、**CSS data exfiltration in Firefox**、**The Curious Case of Copy & Paste**、**`<portal>` 要素のセキュリティ分析** など。
 
-Bentkowskiは2013年よりSecuritumに所属し、Webおよびモバイルアプリのセキュリティ診断・研究・トレーニングに従事している。講演「A word about DOMPurify bypasses a.k.a why DOM parsing is crazy（DOMPurifyバイパスの話、あるいはなぜDOMパースは狂っているのか）」は、本セクションのテーマそのものを扱っており必見である。
+講演「A word about DOMPurify bypasses a.k.a why DOM parsing is crazy（DOMPurifyバイパスの話、あるいはなぜDOMパースは狂っているのか）」は、本セクションのテーマそのものを扱っており必見である。
 
-> 出典: Michał Bentkowski 研究インデックス — https://www.bentkowski.info/research/ （直接取得不可のため検索結果から再構成）
-> 出典: Michał Bentkowski（Securitum 著者ページ） — https://research.securitum.com/authors/michal-bentkowski/ （直接取得不可のため検索結果から再構成）
+> 出典: Michał Bentkowski 研究インデックス — https://www.bentkowski.info/research/
+> 出典: Michał Bentkowski（Securitum 著者ページ） — https://research.securitum.com/authors/michal-bentkowski/
 
 ### まとめ
 
 - **CVE-2020-26870**は、DOMPurify < 2.0.17に対する **mutation XSS（mXSS）**であり、その手口は **MathMLの名前空間混同**だった。
 - 攻撃の骨格は「**同じ文字列が、初回パースと再パースで別の名前空間に置かれ、`<style>` の中身が『テキスト』から『要素』へ化ける**」こと。ネストした `<form>` を「所有権変異ガジェット」に使い、`<mglyph>` の親を `mtext` に繰り上げることで、mglyph→styleの名前空間をHTML→MathMLへ変異させ、隠していた `<img onerror>` を再パース時に解凍する。
 - ペイロード: `<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>`。
-- 修正は **`_checkValidNamespace`（PR #495）**で、「各ノードを親の名前空間に照らして検証し、HTML名前空間の `mglyph` のような仕様違反要素を削除する」ことにより、変異の足場を除去した。
+- 修正は **`_checkValidNamespace`（PR #495、2020年12月17日マージ）**で、「各ノードを親の名前空間に照らして検証し、HTML名前空間の `mglyph` のような仕様違反要素を削除する」ことにより、変異の足場を除去した。`insertAdjacentHTML` への依存廃止も同時に行われ、serialize-reparseの不一致リスクを低減した。
 - 教訓は普遍的で、**サニタイザーはタグ名ではなく実際の名前空間で判断すべし**。そして名前空間混同は一度で終わらず、SVG版・MathML版と形を変えて繰り返し現れる「クラス」であるため、**ライブラリを最新に保ち、不要な外来コンテンツを許可しない**ことが実務上の要である。

