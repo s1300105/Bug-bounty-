@@ -1,394 +1,164 @@
 ## 日本語DOM XSS資料（はせがわ / Flatt SPA）
 
-本セクションは、日本語圏でDOMベースXSSを学ぶ上で必読とされる2つの資料——**はせがわようすけ氏の「JavaScript Security beyond HTML5」**（DOMベースXSSの本質と「サーバを通らない攻撃」の解説）と、**GMO Flatt Security の「SPA開発とセキュリティ — DOM based XSS を引き起こすインジェクションの Vue, React, Angular における解説と対策」**——を精読・統合して再構成したものです。前セクションまでで学んだ source（ソース：攻撃者が値を操作できる入口となるJavaScriptプロパティ。例 `location.hash`）と sink（シンク：攻撃者データが最終的に実行・解釈される危険な代入先。例 `innerHTML`）の枠組みを土台に、ここでは「**モダンなフレームワークやサニタイザ（入力に含まれる危険な文字列を無害な形に変換・除去する処理／ライブラリ）を使っていてもなぜXSSが起き続けるのか**」を、ブラウザのHTMLパーサ（HTMLの文字列を解析してDOMツリーに変換する部品）の挙動レベルまで掘り下げて解説します。これが本セクションの価値の中心です。
+前節までの PortSwigger 資料は source/sink の体系と DOM Invader の使い方という「発見の技法」に重点がありました。本節では視点を変え、**「なぜ現代のフロントエンド技術（HTML5世代のブラウザAPI、そしてSPA=Single Page Applicationを支えるJavaScriptフレームワーク）がDOMベースXSSの温床になりやすいのか」**を、日本語で書かれた2つの一次資料——はせがわ氏の講演資料『JavaScript Security beyond HTML5』と、GMO Flatt Security 社のブログ記事『SPAにおけるインジェクション』——から掘り下げます。前者は2013年、HTML5が普及し始めた時期にブラウザAPI単位でリスクを洗い出したもの、後者はVue/React/Angularという2020年代の三大フレームワークを横並びで検証したものであり、**「素のJavaScript時代のDOM XSS」から「フレームワーク時代のDOM XSS」への論点の推移**を追体験できる組み合わせになっています。
 
 ---
 
-### 0. 本セクションの資料取得状況（透明性のための注記）
+### 1. はせがわ『JavaScript Security beyond HTML5』(2013)
 
-本セクションが典拠とする2資料（下記URL）は、執筆環境のネットワーク下り（egress）プロキシによって `www.docswell.com` および `blog.flatt.tech` ドメインへの直接アクセスがブロックされ、ページ本文を直接取得（WebFetch）できませんでした。そこで **Web検索の結果スニペット・同一トピックの公式ドキュメント（Vue.js / Angular のセキュリティガイド等）・cure53/DOMPurify の公式Wiki と Pull Request・複数の二次解説記事から本文の内容・具体例・ペイロード・防御策を復元**し、Webセキュリティの専門知識で補完・体系化しています。**2資料とも実質的な内容を復元できたため「取得不可」とはしていません**が、両資料は継続的に更新されうるため、最新版の細部（例文の値・対象バージョン・ブラウザ対応など）は必ず各出典URLの原典でご確認ください。
+#### 1.1 位置づけと射程
 
-- 資料1（はせがわようすけ「JavaScript Security beyond HTML5」）: `https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823`
-- 資料2（GMO Flatt Security「SPA開発とセキュリティ」）: `https://blog.flatt.tech/entry/spa_injection`
+このスライドはタイトルの通り「HTML5を"超えて"」——つまり従来型のHTMLタグ・属性インジェクションではなく、HTML5世代で追加・強化されたブラウザAPI（Web Storage、Web Workers、Cross-Document Messaging＝`postMessage`など）が生む**新しい攻撃面**を体系立てて紹介する講演です。刊行から10年以上が経過していますが、扱っているAPI自体（`innerHTML`、`postMessage`、Web Storage、Web Workers）は現在も現役であり、ここで示された原理は今日のSPAにもそのまま適用できます。
 
-なお第2節（mXSS と名前空間の混同）は、はせがわ氏の「beyond HTML5＝HTML5以降の新しい攻撃面」という主題を、現在の到達点まで延長した**補足的な仕組み解説**であり、典拠は主に cure53/DOMPurify の公式資料です。該当箇所にその旨を明記します。
+> ⚠️ 本資料はスライド形式のため、口頭説明部分は復元できていません。以下はスライド本文から読み取れる範囲の技術内容です。
 
----
+#### 1.2 DOMベースXSSの定義と最小例
 
-### 1. はせがわようすけ「JavaScript Security beyond HTML5」— DOMベースXSSの本質と“サーバを通らない攻撃”
-
-#### 1.1 資料の位置づけ
-
-はせがわようすけ氏（Webセキュリティ研究者。DOMベースXSSやmXSS、文字コードを悪用した攻撃の研究で国際的に知られる）による本資料は、「反射型・格納型XSSはサーバが出力するHTMLの問題だが、**アプリの主戦場がクライアント側JavaScriptに移った結果、サーバがまったく関与しないXSSが主役になった**」という時代認識を軸に、DOMベースXSSの原理・危険性・見つけにくさを解説するものです。「beyond HTML5」というタイトルは、HTML5以降にブラウザへ追加された多数の新機能（`postMessage`、`localStorage`、新しいタグ・属性、SVG/MathMLの統合など）が、そのまま**新しい source と新しい sink を生み出した**という問題意識を表しています。
-
-> 出典: JavaScript Security beyond HTML5（はせがわようすけ）— https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823
-
-#### 1.2 DOMベースXSSの定義 — 「JavaScriptが実行時にHTMLを組み立てる」瞬間の事故
-
-本資料が繰り返し強調するのは、**DOMベースXSSは「JavaScriptがHTMLをレンダリング（描画）する過程で起きるXSS」である**という点です。最も有名な最小例が次のコードです。
+資料はDOMベースXSSを「**JavaScriptが引き起こすXSS。サーバ側のHTML生成時には問題なく、JavaScriptによるHTMLレンダリング時に発生**」と定義しています。これは前節のPortSwigger資料の定義と本質的に同じですが、「サーバ側の出力は無害なのに、クライアント側の処理段階で有害化する」という**責任の所在の移動**を端的に言い切っている点に価値があります。具体例として次のパターンが挙げられています。
 
 ```javascript
-// URLの #以降 の文字列を、そのまま要素のHTML内容として書き込む
 div.innerHTML = location.hash.substring(1);
+// アクセスURL: http://example.jp/#<script>alert(1)</script>
 ```
 
-- `location.hash` は URLの `#` 以降（フラグメント／ハッシュと呼ぶ部分）を返す **source**。攻撃者はURLを作るだけで中身を完全に制御できる。
-- `element.innerHTML` は代入された文字列を**HTMLとして解釈してDOMに反映する sink**。
-- `.substring(1)` は先頭の `#` を取り除いているだけで、無害化は一切していない。
+**なぜ動くか**: `location.hash` は URL の `#` 以降（フラグメント）をそのまま返す source です。`.substring(1)` は先頭の `#` 文字を除去するためだけの処理で、値の危険性には一切関与しません。この文字列が `innerHTML`（要素の中身をHTMLとして再パースさせる sink）に直接代入されると、ブラウザは代入された文字列を**新規のHTMLとして構文解析**し直します。このとき `<script>` 要素が含まれていれば、HTMLパーサはそれを「実行すべきスクリプトタグ」として認識し、`alert(1)` が実行されます（厳密には `innerHTML` 経由で挿入された `<script>` タグは仕様上"非実行"扱いされるブラウザもありますが、`<img src=x onerror=...>` のようなイベントハンドラ埋め込み型のペイロードであれば`innerHTML`経由でも確実に実行されるため、実務上の脅威は変わりません）。前述の通り `#` 以降はサーバに送信されないため、**このURLをサーバのアクセスログで検知することはできません**。
 
-したがって、次のようなURLを踏ませるだけでスクリプトが動きます。
-
-```
-https://example.com/page#<img src=x onerror=alert(document.domain)>
-```
-
-**なぜ動くのか**：`innerHTML` への代入は、渡された文字列をブラウザのHTMLパーサに通して「新しいDOM部分木」を生成する処理です。`<img>` 要素が生成され、`src=x` の読み込みに失敗した瞬間に `onerror` 属性のJavaScriptが実行されます（`<script>` タグは `innerHTML` 経由では実行されない仕様のため、攻撃者はイベントハンドラ属性を使うのが定石です。この理由は素朴なXSSと同じ）。
-
-#### 1.3 source と sink の整理（本資料が挙げる代表例）
-
-本資料は「どこから来て（source）、どこへ行き着くか（sink）」を明確に分けて把握することを求めます。特にDOMベースXSS特有のものを整理すると次のとおりです。
-
-**代表的な source（攻撃者が制御しうる入口）**
-
-| source | 説明 | サーバに届くか |
-|---|---|---|
-| `location.hash` | URLの `#` 以降 | **届かない**（後述） |
-| `location.search` | URLの `?` 以降（クエリ文字列） | 届く |
-| `location.href` / `document.URL` | URL全体 | 一部届かない |
-| `document.referrer` | 遷移元URL | 届くことがある |
-| `window.name` | ウィンドウ名（別サイトから設定可能） | 届かない |
-| `postMessage` の `event.data` | 他ウィンドウ/iframeからのメッセージ | 届かない |
-
-**代表的な sink（危険な代入先）**
-
-| sink | 何が起きるか | 危険な理由 |
-|---|---|---|
-| `element.innerHTML` / `element.outerHTML` | 文字列をHTMLとして解釈しDOM化 | タグ・イベント属性が生きる |
-| `document.write()` / `document.writeln()` | 解析中のドキュメントに文字列を書き込む | `<script>` すら実行されうる |
-| `element.setAttribute("href", ...)` / `.src` 等 | 属性値を設定 | `javascript:` スキームでスクリプト実行 |
-| `eval()` / `Function()` / `setTimeout(文字列)` | 文字列をコードとして実行 | 直接コード実行 |
-
-`document.write()` が `innerHTML` より危険なのは、**ドキュメントのパース（解析）がまだ進行中の段階に文字列を割り込ませる**ため、`innerHTML` では無視される `<script>` タグまで通常のスクリプトとして実行されうる点です。
-
-> 出典: JavaScript Security beyond HTML5（はせがわようすけ）— https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823
-
-#### 1.4 `location.hash` を使うDOM XSSが“怖い”3つの隠密性
-
-本資料の核心的なメッセージのひとつが、**`location.hash`（フラグメント）経由のDOMベースXSSは、反射型XSSと比べて格段に隠密性が高く、検知・防御が難しい**という指摘です。理由は「フラグメントはサーバへ送信されない」という**HTTPの仕様レベルの挙動**に由来します。
-
-URLの構造を思い出してください。
-
-```
-https://example.com/page?q=検索語#<img src=x onerror=alert(1)>
-                        ^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-                        クエリ       フラグメント（#以降）
-                        （サーバへ送る）（サーバへ送らない）
-```
-
-この「送られない」という一点から、次の3つの隠密性が生まれます。
-
-1. **ブラウザのXSSフィルタ（XSS Auditor／XSS Filter）をすり抜ける**：かつてChrome（XSS Auditor）やInternet Explorer/Edge（XSS Filter）は、「リクエストに含まれる文字列が、そのままレスポンスHTMLに現れたら反射型XSSかもしれない」と推測して遮断していました。しかしフラグメントは**リクエストとしてサーバに送られないので、フィルタが照合しようにも“入力側”を観測できず、素通りします**。（なおXSS AuditorはChrome 78（2019年）で廃止されており、現在の主防御はCSP（Content Security Policy）です。当時の資料が指摘した「フィルタ回避」という性質そのものは、DOMベースXSSがサーバ観測から漏れるという普遍的な事実として今も有効です。）
-
-2. **サーバのアクセスログに痕跡が残らない**：攻撃ペイロードはフラグメントに入っておりサーバへ届かないため、Webサーバのアクセスログには `?` 以降しか記録されません。インシデント調査で「何が送り込まれたか」を後から追うのが極めて困難になります。
-
-3. **利用者が気づきにくい／アドレスバーを偽装できる**：さらに `history.pushState()`（ページ遷移せずにアドレスバーのURLを書き換えられるHTML5のAPI）を悪用すると、攻撃実行後にアドレスバーを無害なURLに書き換えて、痕跡を利用者の目からも隠せます。
-
-**まとめると**：反射型XSSは「サーバを通る＝サーバ側で検知・遮断・記録できる」余地がありますが、`location.hash` 型のDOMベースXSSは**攻撃の全工程がブラウザ内で完結し、サーバから観測不能**です。だからこそ「クライアント側のコード（source→sink のデータフロー）」を直接監査する必要があります。
-
-> 出典: JavaScript Security beyond HTML5（はせがわようすけ）— https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823
-
-#### 1.5 属性経由の sink — `setAttribute` と `javascript:` スキーム
-
-本資料が挙げるもう一つの重要な sink が、**リンクの `href` に `javascript:` スキームのURLを入れる**パターンです。
+対策として資料が挙げるのは、HTMLエンティティへの手動エスケープと、テキストノードとして挿入する方法の2通りです。
 
 ```javascript
-// 攻撃者が制御する文字列を、そのまま href に設定してしまう
-a.setAttribute("href", userInput);   // userInput = "javascript:alert(document.cookie)"
+// (a) エスケープしてからHTMLとして挿入
+div.innerHTML = s.replace(/&/g, "&amp;")
+                 .replace(/</g, "&lt;")
+                 .replace(/>/g, "&gt;");
+
+// (b) そもそもHTMLとして解釈させない
+div.appendChild(document.createTextNode(s));
 ```
 
-**なぜ動くのか**：ブラウザは `href="javascript:..."` のリンクがクリックされると、`javascript:` 以降を**JavaScriptコードとして評価・実行**します。`innerHTML` のようにHTMLタグを注入しなくても、「URLを設定できる箇所」がそのままコード実行の sink になるのです。この性質は後述するSPAフレームワーク（Vue/React/Angular）でも共通の弱点として繰り返し登場します。フレームワークはテキストは自動エスケープしても、**「URL文字列に `javascript:` が入っているか」までは既定で検査しないことが多い**からです。
+**なぜ安全になるか**: (a) は `<` `>` `&` という「HTMLパーサに構造として解釈される特殊文字」を、パーサが構造として認識しない実体参照（`&lt;` など）に置き換えることで、**入力を常にテキストとしてのみ解釈させる**手法です。(b) はさらに直接的で、`createTextNode()` が作るのはHTMLとしてパースされないプレーンテキストノードであり、`appendChild()` はDOMツリーへのノード追加であって「文字列の再パース」を一切経由しません。**HTML文字列としての再解釈が起きない限りXSSは成立しない**という、DOMベースXSS対策の最も基本的な原則がここに表れています。
 
-対策の要点は、URLを sink に渡す前に**スキームを許可リスト方式で検証する**（`http:` / `https:` / `mailto:` など安全なものだけ通し、`javascript:` `data:` `vbscript:` を弾く）ことです。
+#### 1.3 HTML5の新要素とブラックリスト検出のすり抜け
 
-> 出典: JavaScript Security beyond HTML5（はせがわようすけ）— https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823
+資料はさらに、HTML5で新設・拡張されたタグや属性が**既存のフィルタのブラックリスト（禁止パターンの列挙によるフィルタリング）をすり抜ける**問題を指摘しています。例として挙げられているのが次のパターンです。
 
-#### 1.6 “beyond HTML5” — 新機能がそのまま新しい攻撃面になる
+```html
+<form><button formaction="javascript:alert(1)">click</button></form>
+```
 
-本資料のタイトルが示すとおり、HTML5以降にブラウザへ追加された機能群は、利便性と引き換えに新しい source/sink を大量に持ち込みました。代表例：
+**なぜ動くか**: `formaction` はHTML5で新設された属性で、`<button>` や `<input type="submit">` がフォーム送信時にどのURLへ遷移するかを個別に上書きできます。この属性値に `javascript:` スキームのURLを指定すると、ボタンがクリックされた瞬間にそのJavaScriptコードが実行されます。フィルタが `onclick=` や `<script>` のような"古典的な"危険パターンだけをブロックしていた場合、`formaction` のような**新しい属性名を知らない**ため素通りしてしまいます。これはHTML5に限らず、ブラウザ仕様が拡張され続ける限り繰り返される構造的な問題であり、資料はこれに対する根本対策として「**個々の危険パターンを禁止するのではなく、HTML生成時に必ずエスケープする**」という原則、すなわちブラックリスト方式ではなくエスケープ（またはアプローチとして許可リスト＝ホワイトリスト方式のサニタイズ）を徹底することを説いています。ブラックリストは「知らない攻撃パターン」に対して原理的に無力ですが、正しいエスケープは入力の中身を一切問わず安全側に倒せるためです。
 
-- **`postMessage`**：異なるオリジン（プロトコル+ホスト+ポートの組。同一オリジンかどうかがアクセス制御の基本単位）間でメッセージをやり取りできる。受信側が `event.origin`（送信元オリジン）を検証せずに `event.data` を `innerHTML` に流すと、任意サイトからXSSを撃ち込める source になる。
-- **SVG / MathML の統合**：HTMLの中にSVGやMathMLを直接書けるようになった結果、後述する**名前空間（namespace）の切り替え**を悪用した高度なサニタイザ回避（mXSS）が可能になった。
-- **`data:` URI / Blob URL**：`data:text/html,...` や `URL.createObjectURL(blob)` で「その場でHTMLドキュメントを生成」でき、文字コードの推測と組み合わさると新種のXSSを生む。
+#### 1.4 オープンリダイレクタ
 
-これらは「素朴な反射型XSS」の知識だけでは対処できない領域であり、次節ではその中でも最も難所である **mXSS（mutation XSS）** を、仕組みのレベルで掘り下げます。
+```javascript
+var url = decodeURIComponent(location.hash.substring(1));
+location.href = url;
+```
 
-> 出典: JavaScript Security beyond HTML5（はせがわようすけ）— https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823
+**なぜ危険か**: これは厳密にはスクリプト実行を伴わないバグですが、DOMベースXSSと発生源が同じ（URL由来のsourceをそのまま危険なsinkへ渡す）ため併記されています。`location.hash` から取り出した値をデコードし、そのまま `location.href`（ページ遷移を起こすsink）に代入すると、攻撃者は正規ドメインのURL（信頼されたドメイン）を経由してフィッシングサイトなど任意の外部URLへ被害者を転送できます。これは「一見信頼できるドメインのリンクなのに、実際には別サイトに飛ばされる」というオープンリダイレクタ脆弱性そのものです。フィッシング詐欺の踏み台や、OAuthのリダイレクトURI検証回避など、より深刻な攻撃の一部品として悪用されることが多い点が実務上重要です。
+
+対策として挙げられているのは、**遷移先を許可リスト（ホワイトリスト）で管理する**方法です。
+
+```javascript
+var pages = {foo: '/foo', bar: '/bar'};
+var url = pages[location.hash.substring(1)] || '/';
+location.href = url;
+```
+
+**なぜ安全か**: 攻撃者が制御できる `location.hash` の値は、もはや「遷移先URLそのもの」ではなく「事前定義済みマップのキー」としてしか使われません。マップに存在しないキーが来た場合は既定値 `/` にフォールバックするため、**攻撃者がどんな文字列を仕込んでも、開発者が用意した固定URL集合の外には絶対に出られません**。これは入力値そのものを検証・無害化するのではなく、「入力値を直接使わず、間接参照のキーとしてのみ使う」という設計転換によって脆弱性のクラス自体を排除する典型的なパターンです。
+
+#### 1.5 Web Storage（`localStorage` / `sessionStorage`）
+
+資料はHTML5で導入されたWeb Storageについて、**「ユーザ認証状態の時間差による混在」**というリスクを指摘しています。具体的には、共有端末でユーザAがログインしてストレージに何かを書き込み、ログアウトした後、同じオリジン（同一のプロトコル・ホスト・ポートの組み合わせ。ブラウザのセキュリティ境界の基本単位）で別のユーザBがログインした場合、**Web StorageはオリジンごとにOSプロセス／ブラウザプロファイル上に永続化されるため、ユーザAが書き込んだデータをユーザBが読めてしまう**可能性があるというものです。これはXSSそのものではなく情報漏えいの一種ですが、「クライアント側に永続化されたデータの取り扱い」という同じ論点系列に属します。対策として挙げられているのは、**キー名にユーザIDを含めて名前空間を分離する**単純な手法です。
+
+```javascript
+sessionStorage.setItem(userid + "-foo", "abcdefg");
+```
+
+**なぜ効くか**: ストレージ自体はオリジン単位でしか分離されないため、アプリケーション側の責任で**論理的なユーザ単位の分離**をキー設計に組み込む必要があります。ユーザIDをキーのプレフィックスにすることで、別ユーザのセッションでは意図したキーがヒットしなくなり、誤読み出しを防げます。
+
+#### 1.6 Web Workers
+
+```javascript
+new Worker(location.hash.substring(1));
+```
+
+**なぜ危険か**: `Worker` コンストラクタは、指定したURLのスクリプトを**別スレッド（バックグラウンド実行環境）として読み込み実行**します。URLの生成元をユーザ制御下の `location.hash` にしてしまうと、攻撃者は任意のスクリプトURLをWorkerとして実行させられます。Workerはメインスレッドとは隔離された実行コンテキストを持ち、DOMへの直接アクセスはできないものの、`postMessage` を介してメインスレッドと通信できるため、最終的にメインスレッド側のDOM操作を誘発する踏み台になり得ます。教訓は単純で、**動的に生成される実行対象（スクリプトURL）にユーザ入力を混ぜてはならない**という、`eval` 系sinkと同型のリスクです。
+
+#### 1.7 Cross-Document Messaging（`postMessage`）
+
+```javascript
+window.onmessage = function(e) {
+  if (e.origin == "http://example.com") {
+    alert(e.data);
+  }
+};
+```
+
+**なぜ `origin` 検証が必須か**: `postMessage` はウィンドウ間・iframe間で任意のオリジンをまたいでメッセージを送受信できるAPIです。受信側の `message` イベントには送信元を示す `event.origin` が付与されますが、**これを検証しないまま `event.data` を信頼してしまうと、任意の悪意あるページから送られたデータをそのまま処理してしまう**ことになります。上記コードはその模範例として `origin` の一致確認を行っていますが、資料はさらに一歩踏み込み、**送信側**が `postMessage()` の第2引数（送信先オリジンの指定）に `*`（任意のオリジンを意味するワイルドカード）を指定した場合、「意図しない別オリジンの受信者にメッセージが渡ってしまう」リスクにも言及しています。第2引数を `*` にすると、ページが（リダイレクトやiframeの差し替えなどで）想定と異なるオリジンに読み込まれていた場合でも、機密情報がそのまま送られてしまうため、**機密情報を送る際は必ず送信先オリジンを明示的に指定すべき**というのが結論です。この `postMessage` の攻撃面は本書第7章（Webメッセージング攻撃）でさらに詳しく扱います。
+
+> 出典: はせがわ「JavaScript Security beyond HTML5」— https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823
 
 ---
 
-### 2. mXSS（mutation XSS）と名前空間の混同 — サニタイザ防御の最難関
+### 2. Flatt Security『SPAにおけるインジェクション』
 
-> ⚠️ **本節の位置づけ（補足）**: 以下は、はせがわ氏「beyond HTML5」が扱う「HTML5の新機能が生む新種XSS」という主題を、現在の到達点まで延長した**補足的な仕組み解説**です。典拠は主に cure53（DOMPurifyの開発元）の公式Wikiと Pull Request、および Michał Bentkowski・Daniel Santos らによるバイパス公開記事です。（原資料そのものの逐語ではなく、同テーマの一次資料に基づく体系化である点に注意してください。）
+#### 2.1 問題設定 — なぜSPAではスキャナが無力化するのか
 
-#### 2.1 mXSSとは — 「サニタイズ後に別のDOMへ化ける」現象
+この記事の核心的な主張は、**「自動脆弱性スキャナはペイロードをHTTPリクエストとして送信し、レスポンスのHTML内にそれが反映されるかを機械的にチェックする」という前提そのものが、SPAでは成立しなくなる**という点です。SPA（Single Page Application）は、初回読み込み後の画面遷移や表示更新をサーバから新しいHTMLを取得することなく、クライアント側のJavaScript（React・Vue・Angularなどのフレームワーク）が**DOM操作だけで完結させる**アーキテクチャです。攻撃ペイロードを含む入力があっても、それが処理されるのは常にブラウザ内のJavaScript実行コンテキストであり、サーバから返るレスポンス自体には仕込んだ文字列がそのまま現れないケースが多いため、**「レスポンスHTMLに反射したかどうか」を見る古典的な検出ロジックはヒットしません**。記事では実際に、Active Scan（HTTPリクエスト/レスポンスの内容を機械的に走査する自動診断機能）を用いた検証で、明らかに存在するDOMベースXSSが検出されなかった事例が示されています。これはPortSwigger資料が示す「DOMベースXSSはサーバを介さないため防御側の可視性が下がる」という論点の、**診断ツールというレイヤーにおける具体化**と言えます。
 
-**mXSS（mutation XSS：突然変異型XSS）** とは、**サニタイザが検査した時点では安全だったDOMツリーが、その後シリアライズ（DOMを再びHTML文字列に戻す処理）と再パース（reparse：その文字列を再びHTMLとして解析し直す処理）を経ると、実行可能な別のDOMツリーに“化ける”**ことで成立するXSSです。
+#### 2.2 Vue.js — `v-html` ディレクティブ
 
-DOMベースのサニタイザ（DOMPurifyなど）の典型的な動作は次の流れです。
-
-```
-入力HTML文字列
-  → ①パースしてDOMツリー化
-  → ②ツリーを走査し危険な要素/属性を除去（ここで「安全」と判定）
-  → ③安全になったツリーをHTML文字列にシリアライズして返す
-  → ④アプリが返り値を innerHTML 等に代入（＝ブラウザが再パース）
-```
-
-mXSSの本質は、「②で見たツリー」と「④で最終的にできるツリー」が**食い違う**点にあります。サニタイザは②の姿しか検査できないのに、実際にブラウザで実行されるのは④の姿だからです。この「②→④で構造が変異する」からmutation（突然変異）XSSと呼ばれます。
-
-> 出典: Attack Classes & Bypass History — cure53/DOMPurify Wiki — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
-
-#### 2.2 なぜ“化ける”のか — HTMLパーサの文脈依存の再解釈
-
-化ける根本原因は、**HTMLの解析ルールが「文脈（どの要素の内側か・どの名前空間か）」によって変わる**ことです。同じ文字列でも、置かれる場所が違えば別のツリーになります。mXSSはこの文脈依存性を突きます。主な“化けの種”は次の3つです。
-
-**(A) rawtext / RCDATA 要素からのブレークアウト**
-`<style>` `<script>` `<textarea>` `<title>` `<xmp>` などは「生テキスト（rawtext）／RCDATA」要素と呼ばれ、**内側はタグとして解釈されない特別なモード**で読まれます。ところが、属性値の中に閉じタグ文字列を仕込んでおくと、再パース時に解析状態がずれます。
+Vueには、コンポーネントの状態（データ）をHTMLとしてそのまま描画するための `v-html` ディレクティブがあります。
 
 ```html
-<style><a title="</style><img src=x onerror=alert(1)>">
+<div v-html="userInput"></div>
 ```
 
-**なぜ動くのか**：①の初回パースでは `</style>` は「`title` 属性値という“文字データ”の一部」に見えるため、サニタイザは危険と判定しません。しかし③でシリアライズされた文字列を④で再パースすると、ブラウザは先に現れた `</style>` を**本物のstyle終了タグ**として扱い、そこで生テキストモードを抜け、後続の `<img onerror=...>` を**本物の要素**として生成します。これがブレークアウト（脱出）です。
-
-**(B) 深いネストのフラット化**
-WebKit/Blink系ブラウザは要素のネスト（入れ子）を約512段で打ち切ります。この上限を超えると、深い子孫が**兄弟要素として扱われる**など解析ツリーが変わり、mXSSの足がかりになります。
-
-**(C) 名前空間（namespace）の切り替え** ← 最重要。次項で詳述。
-
-> 出典: Attack Classes & Bypass History — cure53/DOMPurify Wiki — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
-
-#### 2.3 名前空間の混同（HTML / SVG / MathML）— mXSSの中核
-
-**名前空間（namespace）** とは、要素が「どの言語仕様のルールで解釈されるか」を決める区分です。ブラウザは主に3つの名前空間を持ちます。
-
-- **HTML名前空間**：通常のHTML。`<style>` の中身はテキスト、`<img>` は空要素、等。
-- **SVG名前空間**：`<svg>` 配下。要素名の大文字小文字が区別され、`<style>` の扱いも異なる。
-- **MathML名前空間**：`<math>` 配下（数式）。
-
-**同じ要素名でも、属する名前空間が違えばパース規則が違う**——これが混同攻撃の土台です。しかも仕様には、名前空間をまたいで**HTMLの解析を再開させる“統合ポイント（integration point）”** が存在します。
-
-- `<svg>` 内の `<foreignObject>`
-- `<math>` 内の `<annotation-xml>`、および `<mtext>` `<mi>` `<mo>` `<mn>` `<ms>`（MathML text integration point）
-
-これらの内側では「HTML名前空間として解析し直す」ため、**要素が名前空間の間を移動する**現象が起き、②で見た姿と④の姿がずれます。
-
-攻撃者は、`<form>` の入れ子や `<mglyph>` のような要素を巧妙に配置して、**サニタイズ時（②）にはHTML名前空間で無害に見える要素を、再パース時（④）にMathML/SVG名前空間へ滑り込ませ**、その結果 `<style>` の中身がテキストではなくなり、隠していた `<img onerror>` が“本物の要素”として蘇るように仕込みます。
-
-> 出典: Attack Classes & Bypass History — cure53/DOMPurify Wiki — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
-
-#### 2.4 実際のバイパスとその対象バージョン（陳腐化への注意）
-
-名前空間混同によるDOMPurify（cure53製の代表的なHTMLサニタイザ・ライブラリ。DOMベースで動く）のバイパスは、**歴史的に何度も発見され、その都度パッチされてきた**「イタチごっこ」です。学習上重要なのは、**どのペイロードがどのバージョンで塞がれたか**を明確に区別することです（古いバイパスは最新版では動きません）。
-
-**① `<mglyph>` を用いた名前空間混同（Michał Bentkowski、2020年公開）**
-`<form>` の入れ子と `<math><mtext>` を組み合わせ、本来HTML名前空間にある `<mglyph>` を再パース時にMathML名前空間の子へ移動させる古典的ゲーデット（gadget：攻撃の部品）。
+**なぜ危険か**: `v-html` はVueの通常のテンプレート補間（`{{ }}`、これは自動的にHTMLエスケープされテキストとしてのみ描画される）とは異なり、**バインドした値をHTML文字列として解釈し、そのままDOMに挿入する**指示です。内部的には対象要素の `innerHTML` へ代入する処理に相当するため、前節で見た「HTML文字列としての再パース」が起こり、DOMベースXSSの典型的なsinkになります。Vue自身は `<script>` タグそのものは実行されないようブロックしますが、**イベントハンドラ属性を使ったペイロードはブロックされません**。
 
 ```html
-<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>
+<img src=x onerror='alert(1)'>
 ```
 
-**なぜ動くのか**：`<mtext>` はMathML text integration point なのでその内側はHTML扱い。ところが `</form>` によるツリーの所有権変更（ownership mutation）で、再パース時に `<mglyph>` の親が `<mtext>`（MathML名前空間）に切り替わる。すると `<style>` もMathML名前空間となり**中身がテキストとして扱われなくなる**。続く `</math>` でMathMLを抜け、`<img>` がHTML名前空間の“本物の要素”として生成されて `onerror` が発火する。→ **DOMPurify 2.0.17 で対策**（それ以前のバージョンが影響。securitum の解説記事のタイトルも「DOMPurify 2.0.17 bypass」）。
+**なぜ動くか**: `<img>` タグの `src` 属性に無効な値（`x`）を指定すると画像の読み込みに失敗し、`onerror` イベントハンドラが発火します。`<script>` タグと違い `<img>` タグは通常のHTML要素としてパーサに受理されるため、`innerHTML`（および`v-html`）経由の挿入であってもブラウザによる"非実行"扱いの対象外であり、確実にJavaScriptとして実行されます。つまり `v-html` の「スクリプトタグだけをブロックする」という不完全な安全策は、**イベントハンドラ属性というまったく別の実行経路**によって容易に迂回されます。
 
-**② “From SVG and back”（Daniel Santos、2020〜2021年公開）**
-SVG名前空間へ入り、統合ポイントを通じてHTML名前空間へ「戻る」経路を悪用する続編バイパス。→ **DOMPurify 2.2.2 で修正**（`< 2.2.2` が影響）。
-
-**③ cure53 による包括的な名前空間検証の導入（PR #495、2020年12月マージ）**
-上記の個別対応を根本から塞ぐため、`_checkValidNamespace` 関数が追加されました。対象ペイロードの例：
+さらに記事は、URLを直接埋め込むバインディング（`v-bind:href` など、属性値をJavaScriptの式で動的に決定する構文）についても、値の検証を行わずにユーザ入力をそのままリンク先に使うと `javascript:` スキームのURLを注入できる点を指摘しています。
 
 ```html
-<!-- 例1（2019年報告の古典）: svg配下にp が入り再パースで構造が変わる -->
-<svg></p><style><a title="</style><img src onerror=alert(1)>">
-
-<!-- 例2: form + math + mtext + mglyph の名前空間切り替え -->
-<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>
+<a v-bind:href="userInput">click</a>
+<!-- userInput = "javascript:alert(1)" -->
 ```
 
-修正内容の要点：
-- SVG/MathMLとHTMLの間の名前空間切り替えは、**仕様が定める統合ポイント経由のみ許可**する。
-- SVG固有・MathML固有の要素は、**それぞれの名前空間内にしか存在できない**と検証し、予期しない名前空間の要素は削除する。
-- **`insertAdjacentHTML` の使用をやめ**、DOMノードを直接操作するよう変更。これはドキュメント解析モードとフラグメント解析モードの差異を突く再パース攻撃を防ぐため。
-→ **DOMPurify 2.2.6 以降で有効**。
+**なぜ動くか**: `href` 属性は本来 `http:`/`https:` のようなナビゲーション用のスキームを想定していますが、ブラウザは `javascript:` スキームも仕様上受理し、そのリンクがクリックされた瞬間に指定されたコードを実行します。これはDOMツリーの構造自体は書き換えられていない（sinkとしての `innerHTML` は経由しない）ため`v-html`のケースとは異なる系統の脆弱性ですが、「**URL文字列を受け取る箇所にはすべてスキーム検証が必要**」という、`location.href` への代入（前節1.4）と同型の教訓に帰着します。
 
-**④ 近年のCVE（arms raceは今も継続）**
-cure53のWikiによれば、その後も新しい攻撃クラスが報告され続けています（Wikiが列挙する例）：
+**対策**として記事が挙げるのは、プレーンテキストとして表示するだけなら `v-html` の代わりに通常のテキスト補間（`v-text` やMustache構文）を使うこと、どうしてもHTMLとして描画する必要がある場合は `sanitize-html` のようなサニタイズライブラリ（HTML文字列から危険なタグ・属性だけを除去するライブラリ）で無害化してから渡すこと、そしてURLバインディングには `sanitize-url` のようなライブラリで `javascript:` 等の危険なスキームを弾いてから使うことです。
 
-- **CVE-2024-47875 / CVE-2024-45801**：ネスト型mXSS。プロトタイプ汚染（prototype pollution：オブジェクトの共通の親 `Object.prototype` を書き換えて全オブジェクトの挙動を汚染する攻撃）がネスト深さチェックを弱め、これらが連鎖。3.1.1 系で数値の深さ上限を追加。
-- **CVE-2026-47423**：`<selectedcontent>` 要素。ブラウザが**サニタイズ実行後に**選択中の `<option>` の内容を再複製するため、検査済み領域に危険なコンテンツが後から出現。3.4.5 で修正。
-- **CVE-2026-41238**：プロトタイプ汚染によるサニタイザのダウングレード。3.4.0 で「プロトタイプなしオブジェクト初期化」により修正。
-- Wikiは **3.4.15 時点で列挙した全攻撃クラスが塞がれている**としています。
+#### 2.3 React — `dangerouslySetInnerHTML`
 
-**学習上の結論**：mXSS対策は「DOMPurifyを入れれば終わり」ではなく、**必ず最新版に追随し続ける**必要があります。バージョン依存の脆弱性は、対象バージョンと修正版・公開年をセットで理解しなければ意味がありません。
-
-> 出典: Attack Classes & Bypass History — cure53/DOMPurify Wiki — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
-> 出典: Harden protection against mutation XSS caused by namespace switching (PR #495) — cure53/DOMPurify — https://github.com/cure53/DOMPurify/pull/495
-> 出典（さらに深く学ぶ資料）: mutation XSS via namespace confusion – DOMPurify 2.0.17 bypass（Michał Bentkowski, securitum）/ From SVG and back, yet another mutation XSS via namespace confusion for DOMPurify < 2.2.2 bypass（Daniel Santos, Medium）/ mXSS Attacks: Attacking well-secured Web-Applications（Heiderich ほか, cure53）— https://cure53.de/fp170.pdf
-
-#### 2.5 DOMPurifyはどう塞ぐか — 防御機構の要点
-
-現在のDOMPurifyがmXSS系を塞ぐために備える主な機構（Wikiより）：
-
-- **名前空間検証**：各ノードを「タグ名」だけでなく**親の名前空間との整合性**で評価する（前項 `_checkValidNamespace`）。
-- **`SAFE_FOR_XML` 正規表現**：属性値に潜む危険なシーケンス——コメント/CDATA風の閉じ列 `(--!?|])>` や、生テキスト要素の閉じタグ `</style|script|title|...>`——を検出して無害化。前述の「属性値に `</style>` を仕込むブレークアウト」対策。
-- **キャッシュされたプロトタイプアクセッサ**：DOM clobbering（HTML要素に `id`/`name` を付けることで、JavaScriptから見た同名プロパティを要素で“上書き”してしまう攻撃）を防ぐため、セキュリティ関連プロパティへのアクセスをキャッシュした正規の参照経由に固定。
-
-そして安全性の検証には、文字列一致だけでなく **「サニタイズ→シリアライズ→再挿入→再パース」の全ライフサイクルをテストし、実際にDOMへ挿入した後に `onerror` 属性や `<script>` が残っていないか**を確認することが必須、とされています。これはmXSSの本質（②と④の食い違い）から論理的に導かれる検証方針です。
-
-> 出典: Attack Classes & Bypass History — cure53/DOMPurify Wiki — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
-
----
-
-### 3. GMO Flatt Security「SPA開発とセキュリティ」— React / Vue / Angular のDOMベースXSS
-
-#### 3.1 資料の位置づけと中心的主張
-
-本資料（GMO Flatt Security、2022年4月公開）は、**SPA（Single Page Application：初回に読み込んだ1枚のHTML上で、以降はJavaScriptがDOMを書き換えて画面遷移する方式のWebアプリ）** におけるインジェクション、とりわけ **DOMベースXSSを引き起こす「危険なAPIの誤用」を、Vue・React・Angular の3大フレームワークごとに具体的に解説し、対策を示す**ものです。
-
-中心的な主張は次の2点です。
-
-1. **こうした脆弱性は自動スキャナで見つけにくい**：攻撃の成否がクライアント側JavaScriptのデータフロー（source→sink）に依存するため、サーバ応答だけを見る旧来の脆弱性スキャナでは検出困難で、**手作業のコードレビュー／診断が不可欠**。
-2. **フレームワークの「自動エスケープ」は万能ではない**：現代のフレームワークは通常のテキスト表示を自動でエスケープ（HTMLとして特別な意味を持つ文字 `< > & " '` を `&lt;` 等に変換し、データをコードとして解釈させない処理）してくれる。この安心感が、**「エスケープの網から漏れる箇所」（後述の“抜け穴”API・URL属性）** の危険性を開発者に忘れさせる。ここに事故が集中する。
-
-> 出典: SPA開発とセキュリティ — DOM based XSS を引き起こすインジェクションの Vue, React, Angular における解説と対策（GMO Flatt Security Blog）— https://blog.flatt.tech/entry/spa_injection
-
-#### 3.2 3フレームワークに共通する「抜け穴」の型
-
-各フレームワークの詳細に入る前に、共通の構図を押さえます。フレームワークは「テキストの自動エスケープ」で反射型XSS的な事故の大半を防ぎますが、**設計上どうしても“生のHTML/URLを扱う口”を用意せざるを得ず**、そこが sink になります。抜け穴は大きく2種類です。
-
-| 抜け穴の型 | 何が危険か | 3FWでの現れ方 |
-|---|---|---|
-| **生HTMLの注入口**（自動エスケープを意図的に無効化するAPI） | 文字列をHTMLとして解釈しDOM化する。`<img onerror>` 等が生きる | Vue: `v-html` ／ React: `dangerouslySetInnerHTML` ／ Angular: `[innerHTML]` + `bypassSecurityTrustHtml` |
-| **URL/属性への注入**（`href` `src` 等に文字列を流す） | `javascript:` スキームでクリック時にコード実行 | 3FW共通：動的な `href`/`:href`/属性バインド |
-
-以下、フレームワークごとに具体化します。
-
-#### 3.3 Vue
-
-**既定の安全機構**：Vueはテキスト補間 `{{ userInput }}` と属性バインド `v-bind`（`:属性` 記法）で**自動的にエスケープ**します。したがって `{{ }}` に何を入れてもタグとしては解釈されず、通常の表示は安全です。
-
-**抜け穴①：`v-html`（生HTMLの sink）**
-`v-html` ディレクティブは、値を**エスケープせず生のHTMLとしてDOMに挿入**します。リッチテキスト表示・Markdownプレビュー・メールテンプレート描画などで多用され、事故が起きやすい代表格です。
-
-```html
-<!-- 危険: userHtml に攻撃者の値が入るとXSS -->
-<div v-html="userHtml"></div>
-```
-攻撃者が `userHtml = "<img src=x onerror=alert(document.cookie)>"` を送り込めば発火します。
-**なぜ動くのか**：`v-html` は内部的に `innerHTML` 相当の代入を行うため、第1節で見た `innerHTML` sink とまったく同じ理屈でイベントハンドラ属性が実行されます。
-
-**抜け穴②：`:href`（`v-bind:href`）への `javascript:` URL**
-属性バインドはテキストとしてはエスケープしますが、**「値が `javascript:` スキームか」は既定で検査しません**。
-
-```html
-<!-- 危険: userUrl = "javascript:alert(1)" だとクリックでコード実行 -->
-<a :href="userUrl">プロフィール</a>
-```
-本資料は、ユーザーのリンク入力欄に `javascript:alert(1)` を入れると、クリック時にalertが出る具体例を挙げています。
-**なぜ動くのか**：第1.5節の `setAttribute("href","javascript:...")` と同一の原理。属性バインドはHTMLエスケープはするがスキーム検証はしない。
-
-**対策**：ユーザー制御の内容には `v-html` を避け `v-text`（＝自動エスケープ表示）を使う。どうしても生HTMLが必要ならDOMPurify等で**表示直前にサニタイズ**する。URLは**バックエンドで**スキームを許可リスト検証してから保存する（フロントだけでのURLサニタイズは信頼できない）。
-
-> 出典: SPA開発とセキュリティ（GMO Flatt Security Blog）— https://blog.flatt.tech/entry/spa_injection
-> 出典（補強）: Security | Vue.js 公式ガイド — https://vuejs.org/guide/best-practices/security
-
-#### 3.4 React
-
-**既定の安全機構**：JSX（React独自のHTML風構文）に埋め込んだ値 `{userInput}` は**自動的にエスケープ**されるため、通常の描画は安全です。
-
-**抜け穴①：`dangerouslySetInnerHTML`（生HTMLの sink）**
-その名（dangerously＝危険なことに）どおり、**自動エスケープを意図的にバイパスして生HTMLを挿入する**唯一の口です。
+Reactにおける等価物が `dangerouslySetInnerHTML` です。
 
 ```jsx
-// 危険: __html に攻撃者の値が入るとXSS
-<div dangerouslySetInnerHTML={{ __html: userHtml }} />
-```
-ペイロード例：`{ __html: "<img src=x onerror='alert(localStorage.access_token)'>" }`
-**なぜ動くのか**：内部的に `innerHTML` へ代入するため、`<img onerror>` が本物の要素として生成され発火。`localStorage` からアクセストークンを窃取する等、実害に直結します。
-
-**抜け穴②：`href` への `javascript:` URL**
-動的に生成する `<a>` の `href` を攻撃者が制御できると `javascript:` URLを注入できます。
-
-```jsx
-// 危険: url = "javascript:alert(1)"
-<a href={url}>リンク</a>
-```
-（Reactは16.9以降、`javascript:` URLに対して**警告を出す**ようになりましたが、警告であって完全な遮断ではないバージョン・経路があり、依然として注意が必要です。）
-**なぜ動くのか**：属性値の `javascript:` スキームがクリック時に評価される、第1.5節と同一原理。
-
-**抜け穴③：`ref` 経由の直接DOM操作 / `eval`**
-`useRef`/`ref` で取得した生のDOM要素に対し `ref.current.innerHTML = ...` のように直接書き込むと、Reactのエスケープを完全に迂回します。また `eval()` や `new Function()` にユーザー入力を渡すのも当然に危険です。
-
-**対策**：ユーザー入力に `dangerouslySetInnerHTML` を使わない。必要ならDOMPurifyで**サニタイズしてから**渡す。URLは許可スキーム検証（フロントで完結させずバックエンドでも検証）。`ref` 直接操作・`eval` を避ける。
-
-> 出典: SPA開発とセキュリティ（GMO Flatt Security Blog）— https://blog.flatt.tech/entry/spa_injection
-> 出典（補強）: Exploiting Script Injection Flaws in ReactJS Apps（Bernhard Mueller, DailyJS/Medium）
-
-#### 3.5 Angular
-
-**既定の安全機構**：Angularは最も強力で、**DOMにバインドされる値をすべて“信頼できない”ものとして既定でサニタイズ**します。`[innerHTML]="userContent"` と書いても、Angularがまず**組み込みサニタイザ**を通し、`<script>` や `onerror` のような危険な要素・属性を除去してから描画します。
-
-```html
-<!-- Angularが自動サニタイズするので、これ自体は比較的安全 -->
-<div [innerHTML]="userContent"></div>
+<div dangerouslySetInnerHTML={{ __html: userInput }} />
 ```
 
-**抜け穴：`DomSanitizer.bypassSecurityTrust...` の誤用**
-Angularには、サニタイズを**意図的に無効化する“エスケープハッチ”** として `bypassSecurityTrustHtml()`（および `...Url` `...ResourceUrl` `...Script` `...Style`）があります。これに**ユーザー入力を渡すと、Angularの防御を自ら無力化**してXSSになります。
+**なぜ危険か**: このプロパティ名自体がReactチームによる「危険であることを自覚させるための意図的な命名」であり、内部的には対象要素の `innerHTML` に直接値を設定します。Vueの `v-html` とまったく同じ理由（HTML文字列としての再パース）でDOMベースXSSのsinkとなり、`<script>` タグは実行されない一方で `<img src=x onerror='alert(1)'>` のようなイベントハンドラ埋め込み型ペイロードは確実に実行される、という挙動もVueと共通しています。React自身の通常のJSX式展開（`{userInput}` のような中括弧構文）はデフォルトでエスケープされテキストとして描画されるため安全ですが、`dangerouslySetInnerHTML` を使った瞬間にその保護の外に出てしまう点が要注意です。
 
-```typescript
-// 危険: 信頼できない値に bypass を使うと自動サニタイズを無効化してXSS
-this.trusted = this.sanitizer.bypassSecurityTrustHtml(userHtml);
-```
-```html
-<div [innerHTML]="trusted"></div>
-```
-**なぜ動くのか**：`bypassSecurityTrust...` は「この値は自分が安全だと保証したので検査不要」という宣言。Angularはそれを信じてサニタイズをスキップし、生HTMLがそのまま `innerHTML` に到達する。
+URLバインディング（`<a href={link}>` のような属性への直接代入）についても、Vueと同様に `javascript:` スキームの注入を許してしまう点が指摘されています。
 
-**正しい使い方の原則**（Angular公式・本資料に共通）：`bypassSecurityTrust...` は**自分が書いた静的な安全な文字列にのみ**使い、ユーザー入力には決して使わない。使う場合は**値の発生源にできるだけ近い場所で・早い段階で**呼び、安全性を目視で確認しやすくする。
+**対策**として記事は、`dangerouslySetInnerHTML` の使用自体を可能な限り避けること、使う場合は `sanitize-html` 等でサニタイズしてから渡すこと、`href` などURLを受け取る属性には `@braintree/sanitize-url` のようなライブラリで危険なスキームを除去してから渡すことを推奨しています。
 
-**対策**：ユーザー入力は `[innerHTML]`（自動サニタイズ）に任せる、またはサーバ側HTMLサニタイザを使う。`bypassSecurityTrust...` を安易に使わない。加えて **Trusted Types**（後述）を有効化すると、ブラウザ自身が「承認済みポリシーを通した値しか危険な sink に代入できない」ことを強制でき、防御が一段強くなる。
+#### 2.4 Angular — フレームワーク側の自動サニタイズ
 
-> 出典: SPA開発とセキュリティ（GMO Flatt Security Blog）— https://blog.flatt.tech/entry/spa_injection
-> 出典（補強）: Security • Angular 公式ガイド / DomSanitizer • Angular — https://angular.dev/best-practices/security
+対照的に記事は、Angularは**デフォルトで `innerHTML` 相当のバインディングや `href` バインディングに対して自動的にサニタイズ処理を適用する**ため、Vue/Reactで示したのと同じ攻撃パターンを試しても防御される、と評価しています。これはAngularの `DomSanitizer`（信頼できないコンテンツを安全な形に変換する仕組みを提供するAngularのサービス）が、テンプレートバインディングの既定の挙動として「危険なコンテキストに渡る値は自動的に無害化する」という設計を取っているためです。逆に言えば、開発者が明示的に `bypassSecurityTrustHtml()` のようなAPI（Angularに「このコンテンツは安全だと信頼してよい」と申告し、自動サニタイズを迂回させるAPI）を呼び出してこの保護を意図的に外した場合は、Angularであっても当然同種のDOMベースXSSが成立します。つまりAngularの安全性は「フレームワークが安全策を自動適用する設計になっている」ことに由来するものであり、**開発者がその保護を明示的に無効化する操作をしない限りは安全**という条件付きの安全性である点を理解しておく必要があります。
 
-#### 3.6 3フレームワーク横断の防御まとめと多層防御
+#### 2.5 実務上の含意 — フレームワークの「安全なデフォルト」に対する過信の危険性
 
-本資料が導く実務上の指針を統合すると次のとおりです。
+この記事全体を通した含意は、**「モダンフレームワークを使っているから自動的にXSS対策済みである」という思い込みが最も危険**だということです。Vue/Reactはテンプレート補間やJSX式展開といった"通常の書き方"をしている限り自動エスケープの恩恵を受けられますが、`v-html` や `dangerouslySetInnerHTML` のような**「生のHTMLを扱いたい」という開発者の明示的な意図を表すAPI**を一度でも使うと、その瞬間にフレームワークの保護レイヤーの外に出ます。これは本節1.3ではせがわ資料が指摘した「ブラックリストは知らないパターンに無力」という論点の発展形であり、**「デフォルトが安全でも、危険なAPIへ抜け道があれば脆弱性は必ず出現する」**という、フレームワーク非依存の普遍的な教訓です。ペネトレーションテストやコードレビューの実務では、`grep` 等で `v-html` / `dangerouslySetInnerHTML` / `bypassSecurityTrust*` / `innerHTML` といったキーワードをソースコード全体から機械的に洗い出し、それぞれのデータフロー（どのsourceの値がそこに流れ込むか）を個別に追跡することが、自動スキャナに頼れないSPAにおける現実的な監査手法になります。
 
-1. **“抜け穴”APIを棚卸しする**：`v-html` / `dangerouslySetInnerHTML` / `[innerHTML]`＋`bypassSecurityTrust...` の全使用箇所を洗い出し、ユーザー入力が流れ込まないか監査する。
-2. **生HTMLが必要なら表示直前にサニタイズ**：**DOMPurify**（最新版）でサニタイズしてから sink に渡す。第2節のとおりバージョン追随が必須。
-3. **URLはスキームを許可リスト検証**：`javascript:` `data:` `vbscript:` を弾く。**フロントだけで完結させず、バックエンドで保存前に検証**する（「フロントでURLサニタイズが必要な時点で設計に問題がある」という指摘）。
-4. **エスケープハッチはヘルパー関数に閉じ込め、名前で意図を明示**：`bypassSecurityTrust...` のような危険関数は、用途が一目で分かる名前のヘルパーに包み、誤用を防ぐ。
-5. **多層防御（defense in depth）として CSP と Trusted Types**：
-   - **CSP（Content Security Policy）**：HTTPレスポンスヘッダ等で「スクリプトをどこから読み込み・実行してよいか」をブラウザに宣言する仕組み。インラインスクリプトや外部スクリプトの実行を制限し、万一XSSが注入されても発火の敷居を上げる（ただし**サニタイズの代替ではなく上乗せ**）。
-   - **Trusted Types**：`innerHTML` などの危険な sink に対し、「承認済みポリシーを通して生成した特別な型の値」しか代入できないよう**ブラウザ自身に強制**させる仕組み。DOMベースXSSの sink 到達そのものをブロックできる、現時点で最も強力な多層防御の一つ。
-
-これらは「どれか一つ」ではなく**重ねて**用いることで、フレームワークの自動エスケープ（1層目）→ サニタイズ／スキーム検証（2層目）→ CSP／Trusted Types（3層目）という多段構えを作るのが要諦です。
-
-> 出典: SPA開発とセキュリティ（GMO Flatt Security Blog）— https://blog.flatt.tech/entry/spa_injection
+> 出典: 「SPAにおけるインジェクション」 GMO Flatt Security Blog — https://blog.flatt.tech/entry/spa_injection
 
 ---
 
-### 4. セクションのまとめ — 「サーバの外」で完結する攻撃と、その多層防御
+### 3. まとめ — 素のDOM XSSからフレームワーク時代のDOM XSSへ
 
-本セクションで押さえるべき要点を凝縮します。
-
-- **DOMベースXSSは source→sink のデータフロー問題**。特に `location.hash` 経由の攻撃は**サーバに届かない**ため、XSSフィルタ・アクセスログ・利用者の目のいずれからも隠れやすく、`history.pushState` で痕跡すら消せる（はせがわ資料の核心）。
-- **HTML5以降の新機能（`postMessage`・SVG/MathML統合・`data:`/Blob URL）は、そのまま新しい source/sink になった**。「beyond HTML5」。
-- その最難関が **mXSS（mutation XSS）**。サニタイザが見た②のツリーと、ブラウザが実行する④のツリーが**名前空間の切り替え・rawtextブレークアウト・深いネストのフラット化**で食い違うことで成立する。DOMPurifyへの名前空間混同バイパスは **2.0.17 / 2.2.2 / 2.2.6** で順次修正され、その後も CVE が続く**イタチごっこ**であり、**最新版への追随が絶対条件**。
-- **SPAフレームワークの自動エスケープは通常のテキストしか守らない**。`v-html` / `dangerouslySetInnerHTML` / `[innerHTML]`＋`bypassSecurityTrustHtml` という**生HTMLの抜け穴**と、`javascript:` URL を通す**属性/URLの抜け穴**に事故が集中する（Flatt資料）。
-- 防御は**多層**で：フレームワークの自動エスケープ → DOMPurifyによるサニタイズと**バックエンドでのURLスキーム検証** → **CSP / Trusted Types**。そして自動スキャナに頼り切らず、**source→sink を追う手作業のコードレビュー**が不可欠。
-
-> 出典: JavaScript Security beyond HTML5（はせがわようすけ）— https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823
-> 出典: SPA開発とセキュリティ — DOM based XSS を引き起こすインジェクションの Vue, React, Angular における解説と対策（GMO Flatt Security Blog）— https://blog.flatt.tech/entry/spa_injection
-> 出典: cure53/DOMPurify Wiki（Attack Classes & Bypass History）/ PR #495 — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
+はせがわ資料（2013年）が示した原則は、**「HTML文字列としての再解釈が起きる代入先（sink）に、検証していない外部データを渡してはならない」**という一言に集約されます。この原則は `innerHTML` への直接代入であろうと、10年後のVue/Reactの `v-html` / `dangerouslySetInnerHTML` であろうと、**内部実装が結局は同じ `innerHTML` 相当の操作に帰着する以上、まったく同じ形で当てはまり続けます**。フレームワークが変わっても、URLスキームの検証漏れ（`javascript:` インジェクション）、ブラックリスト検出の限界、そして「サーバを介さないためログにもスキャナにも引っかからない」というDOMベースXSS特有の可視性の低さは一貫して再生産されています。次節以降では、この「sinkの危険性」をさらに掘り下げ、`postMessage` を悪用したクロスオリジンの攻撃（第7章）や、フレームワークのサニタイズをすり抜けるより高度な手法へと話を進めます。

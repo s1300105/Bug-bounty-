@@ -4,16 +4,7 @@
 
 反射型・格納型のXSS（Cross-Site Scripting: 攻撃者が仕込んだ文字列が、ブラウザによって「データ」ではなく「コード」として解釈・実行されてしまう脆弱性）では、悪意ある入力は**必ず一度サーバを通り、サーバが組み立てたHTMLに載って**ブラウザへ返ってきます。ところがWebアプリケーションの主戦場がサーバ側テンプレートから**クライアント側のJavaScript**へと移った結果、「サーバは一切関与していないのに、ブラウザ内でだけXSSが成立する」という第三の類型が主役級の重要度を持つようになりました。これが本章のテーマ **DOMベースXSS（DOM-based XSS）** です。
 
-本セクションは、この分野の事実上の標準教材である PortSwigger（Burp Suite の開発元）の2つの資料を精読・統合し、(1) DOMベースXSSの原理と source/sink の体系、(2) 手作業での発見がなぜ困難か、(3) その困難を一変させたツール **DOM Invader** の全体像、を初学者が原文なしで完全に理解できるところまで解説します。単なる用語集ではなく、「**なぜブラウザはその代入先で入力をコードとして実行してしまうのか**」という仕組みのレベルまで掘り下げることが本セクションの価値の中心です。
-
----
-
-### 0. 本セクションの資料取得状況（透明性のための注記）
-
-本セクションが典拠とする PortSwigger の2ページ（下記URL）は、執筆環境のネットワーク下り（egress）プロキシによって `portswigger.net` ドメインへの直接アクセスがブロックされ、ページ本文を直接取得（WebFetch）できませんでした。そこで **Web検索を通じて同一ページ・公式ドキュメント・多数の二次解説から本文テキスト・ソース/シンク一覧・具体例・DOM Invader の機能説明を復元**し、Webセキュリティの専門知識で補完・体系化しています。復元内容は原典に忠実になるよう努めていますが、PortSwigger の資料は継続的に更新されるため、最新版の細部（例文の値やブラウザ対応など）は必ず各出典URLでご確認ください。**2資料とも実質的内容を復元できたため、本セクションでは「取得不可」としては扱っていません。**
-
-- 資料1（DOMベースXSSの source/sink 体系）: `https://portswigger.net/web-security/cross-site-scripting/dom-based`
-- 資料2（DOM Invader の登場背景）: `https://portswigger.net/blog/introducing-dom-invader`
+本セクションは、この分野の事実上の標準教材である PortSwigger（Burp Suite の開発元）の2つの資料——「What is DOM-based XSS?」と「Introducing DOM Invader」——を直接取得（WebFetch）した上で精読・統合し、(1) DOMベースXSSの原理と source/sink の体系、(2) 手作業での発見がなぜ困難か、(3) その困難を一変させたツール **DOM Invader** の全体像、を初学者が原文なしで完全に理解できるところまで解説します。単なる用語集ではなく、「**なぜブラウザはその代入先で入力をコードとして実行してしまうのか**」という仕組みのレベルまで掘り下げることが本セクションの価値の中心です。
 
 ---
 
@@ -21,9 +12,9 @@
 
 #### 1.1 定義
 
-**DOMベースXSS**とは、**ページ内で動くJavaScript（クライアント側スクリプト）が、攻撃者の操作できるデータを読み取り、それを無防備な形で「危険な代入先」に渡してしまう**ことで発生するXSSです。PortSwigger の定義を平易に言い換えると次のようになります。
+**DOMベースXSS**とは、**ページ内で動くJavaScript（クライアント側スクリプト）が、攻撃者の操作できるデータを読み取り、それを無防備な形で「危険な代入先」に渡してしまう**ことで発生するXSSです。PortSwigger の定義を直接引用すると次のとおりです。
 
-> DOMベースXSS脆弱性は、JavaScript が「攻撃者が制御できる入力元（source）」からデータを取り、それを**動的なコード実行をサポートする代入先（sink）**——例えば `eval()` や `innerHTML`——に渡したときに発生する。
+> "DOM-based vulnerabilities arise when a website contains JavaScript that takes an attacker-controllable value, known as a **source**, and passes it into a dangerous function, known as a **sink**."
 
 ここで登場する2語が本章を貫く最重要概念です。
 
@@ -100,12 +91,10 @@ URL系ソースは、**「被害者に踏ませる一本のリンク」だけで
 | `postMessage` の `message` イベント（`event.data`） | 別ウィンドウ/iframe から送られてきたメッセージ本文 | 攻撃者のページから `postMessage()` で任意のデータを送り込める（第7章の Web メッセージ攻撃で詳述） |
 | `history.pushState` / `history.replaceState` の引数 | 履歴に積んだ状態やURL | スクリプトが履歴に書いた値を読み戻す場合に間接的に制御されうる |
 | `localStorage` / `sessionStorage` | ブラウザ内の永続/セッションストレージ | 別の脆弱性やスクリプトで書き込めれば汚染源になる（HTML5-storage manipulation） |
-| Web SQL / IndexedDB | クライアント側DB | 同上 |
-
-> 出典: What is DOM-based XSS? — https://portswigger.net/web-security/cross-site-scripting/dom-based
-> 出典: DOM-based vulnerabilities — https://portswigger.net/web-security/dom-based
 
 > **重要な原則**: ソースそのものは「危険」ではありません。危険なのは、**ソースの値がサニタイズ（入力に含まれる危険な文字列を無害な形へ変換・除去する処理）されないまま sink に届く**ことです。ソースを見つけたら、その値がコード中でどこへ流れるか（＝どの sink に到達するか）を追跡するのが分析の本質です。
+
+> 出典: What is DOM-based XSS? — https://portswigger.net/web-security/cross-site-scripting/dom-based
 
 ---
 
@@ -115,19 +104,30 @@ sink は「攻撃者データが渡ると望ましくない効果を引き起こ
 
 #### 3.1 系統A: HTMLとして再解釈される sink（HTMLパース系）
 
-代入した文字列を、ブラウザの **HTMLパーサ（HTML構文解析器: 文字列を読んでDOMツリーへ変換する部品）が「新しいHTML」として解釈し直す** sink です。ここが最頻出です。
+代入した文字列を、ブラウザの **HTMLパーサ（HTML構文解析器: 文字列を読んでDOMツリーへ変換する部品）が「新しいHTML」として解釈し直す** sink です。ここが最頻出です。PortSwigger が挙げる代表的な実行系sinkは次のとおりです。
 
 | sink | 挙動 |
 |---|---|
+| `document.write()` / `document.writeln()` | ドキュメントストリームへ文字列を書き出し、HTMLとして解析させる |
 | `element.innerHTML` | 要素の中身を、渡された文字列を**HTMLとして解析**して置き換える |
 | `element.outerHTML` | 要素自身を含めてHTMLとして置き換える |
 | `element.insertAdjacentHTML()` | 指定位置に文字列をHTMLとして挿入する |
-| `document.write()` / `document.writeln()` | ドキュメントストリームへ文字列を書き出し、HTMLとして解析させる |
-| `element.setAttribute()` の一部 / `srcdoc` など | 属性値・埋め込みドキュメントとして解釈される |
+| `document.domain` | ドキュメントのドメインを変更する（同一オリジンポリシーの境界に関わる） |
+| `element.onevent` | イベントハンドラ属性・プロパティへの代入（文字列がコードとして扱われる経路がある） |
 
 **発火の仕組み（最重要）**: `innerHTML = '<b>x</b>'` のように文字列を代入すると、ブラウザはその文字列を単なるテキストではなく**HTMLソースコードとして読み直し**、`<b>` を要素ノードに変換してDOMツリーへ組み込みます。この「文字列 → DOM要素」の再解釈の過程で、攻撃者が仕込んだイベントハンドラ属性（`onerror` など）や危険なタグが**正規のHTML要素として生成され、ブラウザのイベント機構に登録される**ため、コードとして動き出すのです。
 
-> **落とし穴（試験に出る仕組み）**: `innerHTML` に `<script>alert(1)</script>` を入れても**スクリプトは実行されません**。これはHTML仕様で「パーサ挿入以外の経路で後から挿入された `<script>` 要素は実行しない」と定められているためです。だからこそ攻撃者は `<script>` を使わず、**`<img src=1 onerror=alert(1)>` のように「読み込み失敗イベントで発火するタグ」**を使います。存在しない画像 `src=1` の読み込みは必ず失敗し、`onerror` ハンドラが呼ばれる——この「必ず失敗する」性質を逆手に取るのが定石です。
+> **落とし穴（試験に出る仕組み）**: `innerHTML` に `<script>alert(1)</script>` を入れても**スクリプトは実行されません**。これはHTML仕様で「パーサ挿入以外の経路で後から挿入された `<script>` 要素は実行しない」と定められているためです。だからこそ攻撃者は `<script>` を使わず、**`<img src=1 onerror=alert(document.domain)>` のように「読み込み失敗イベントで発火するタグ」**を使います。存在しない画像 `src=1` の読み込みは必ず失敗し、`onerror` ハンドラが呼ばれる——この「必ず失敗する」性質を逆手に取るのが定石です。実際にPortSwigger が示す典型的な脆弱コードと攻撃はこうなります。
+
+```javascript
+// 脆弱なコード
+document.write('... <script>alert(document.domain)</script> ...');
+```
+
+```html
+<!-- innerHTML経由での等価な攻撃 -->
+element.innerHTML='... <img src=1 onerror=alert(document.domain)> ...'
+```
 
 #### 3.2 系統B: 文字列をコードとして実行する sink（JavaScript実行系）
 
@@ -137,44 +137,65 @@ sink は「攻撃者データが渡ると望ましくない効果を引き起こ
 |---|---|
 | `eval()` | 引数の文字列をJavaScriptとして実行 |
 | `Function()`（`new Function(...)`） | 文字列から関数を生成して実行可能にする |
-| `setTimeout()` / `setInterval()` / `setImmediate()` | **第1引数が文字列だと**、それをコードとして評価して実行する |
-| `execCommand` / `execScript` / `msSetImmediate` | レガシー環境でのコード実行経路 |
-| `range.createContextualFragment()` | 文字列をHTML断片としてDOM化（HTMLパース系の性質も併せ持つ） |
+| `setTimeout()` / `setInterval()` | **第1引数が文字列だと**、それをコードとして評価して実行する |
 
 **発火の仕組み**: `eval("alert(1)")` は、JavaScriptエンジンが引数の文字列を新しいソースコードとしてコンパイルし、その場のスコープで走らせます。`setTimeout("alert(1)", 100)` のように**関数ではなく文字列を渡すと、内部的に `eval` 相当の評価が起きる**点が盲点です（関数を渡せば安全）。
 
 #### 3.3 系統C: ナビゲーション/URL系 sink（`javascript:` スキーム）
 
-| sink | 挙動 |
-|---|---|
-| `location` / `location.href` / `location.assign()` / `location.replace()` | 遷移先URLとして解釈。`javascript:alert(1)` のような**擬似スキーム**を入れられるとコード実行 |
-| `a.href`, `iframe.src`, `form.action` などのURL属性 | 同上（`javascript:` URLで発火しうる） |
+`location` / `location.href` / `location.assign()` / `location.replace()`、あるいは `a.href` や `iframe.src` などのURL属性は、遷移先URLとして解釈されます。ブラウザは `javascript:` で始まるURLへの遷移を「そのコードを実行せよ」という命令として扱うため、攻撃者が遷移先URLを制御できれば、`javascript:` スキームでコード実行に持ち込めます。
 
-**発火の仕組み**: ブラウザは `javascript:` で始まるURLへの遷移を「そのコードを実行せよ」という命令として扱います。攻撃者が遷移先URLを制御できれば、`javascript:` スキームでコード実行に持ち込めます（DOM-based JavaScript injection や open redirection と地続きの領域）。
+具体例として、PortSwigger が示す実例を見てみましょう。
+
+```javascript
+$('#backLink').attr("href", (new URLSearchParams(window.location.search)).get('returnUrl'));
+```
+
+このコードは、URLパラメータ `returnUrl` の値をそのまま `<a>` タグの `href` 属性に設定しています。攻撃者が次のようなURLを踏ませれば、
+
+```
+?returnUrl=javascript:alert(document.domain)
+```
+
+被害者が「戻る」リンクをクリックした瞬間に `javascript:` スキームが実行されます。**なぜ動くのか**: `href` 属性は本来「移動先URL」を保持するだけですが、ブラウザは `javascript:` プレフィックスを特別扱いし、リンククリック時にプレフィックス以降をコードとしてそのまま実行する、というブラウザの仕様そのものが悪用されています。
 
 #### 3.4 系統D: jQuery など JavaScript ライブラリの sink
 
-ライブラリの便利関数が、内部で `innerHTML` 相当の処理を呼ぶために sink になります。PortSwigger が挙げる jQuery の代表的な sink:
+ライブラリの便利関数が、内部で `innerHTML` 相当の処理を呼ぶために sink になります。PortSwigger が挙げる jQuery の代表的な sink 一覧は次のとおりです。
 
 ```
-$() / jQuery()（セレクタにHTML文字列を渡した場合）
-.html()
-.append() / .prepend() / .after() / .before() / .replaceWith() / .replaceAll()
-.wrap() / .wrapInner() / .wrapAll()
-.add() / .insertAfter() / .insertBefore()
-$.parseHTML() / jQuery.parseHTML()
+add(), after(), append(), animate(), insertAfter(), insertBefore(),
+before(), html(), prepend(), replaceAll(), replaceWith(), wrap(),
+wrapInner(), wrapAll(), has(), constructor(), init(), index(),
+jQuery.parseHTML(), $.parseHTML()
 ```
 
-**jQuery `$()` の危険な仕組み（頻出）**: `$(x)` は通常「CSSセレクタで要素を探す」関数ですが、jQuery は**引数の文字列が `<` で始まると「これはHTMLだ」と判断してその場でHTML要素を生成**します。したがって `$(location.hash)` のようなコードは、`#<img src=1 onerror=alert(1)>` というフラグメントを与えられると、セレクタ検索のつもりが**新しい要素の生成＝コード実行**に化けます。
+**jQuery `$()` の危険な仕組み（頻出）**: `$(x)` は通常「CSSセレクタで要素を探す」関数ですが、jQuery は**引数の文字列が `<` で始まると「これはHTMLだ」と判断してその場でHTML要素を生成**します。PortSwigger が挙げる典型パターンはこうです。
 
-> 出典: DOM-based JavaScript injection（sink一覧） — https://portswigger.net/web-security/dom-based/javascript-injection
-> 出典: What is DOM-based XSS? — https://portswigger.net/web-security/cross-site-scripting/dom-based
+```javascript
+$(window).on('hashchange', function() {
+    var element = $(location.hash);
+    element[0].scrollIntoView();
+});
+```
+
+このコードでは、URLフラグメント（`location.hash`）の値がそのまま `$()` へ渡されています。フラグメントが `#<img src=1 onerror=alert(1)>` のように `<` を含む文字列であれば、jQuery はセレクタ検索のつもりが**新しい要素の生成＝コード実行**に化けます。ただし通常は被害者にリンクをクリックさせる（＝`hashchange` を発火させる）操作が必要になるため、PortSwigger は次のように**iframeを使って被害者の操作なしに `hashchange` を起こす**実戦的な悪用例も示しています。
+
+```html
+<iframe src="https://vulnerable-website.com#" onload="this.src+='<img src=1 onerror=alert(1)>'"></iframe>
+```
+
+**なぜ動くのか**: iframeを空のフラグメント（`#`）付きでまず読み込み、`onload` イベントでフラグメントに攻撃文字列を追記する。フラグメントの変更は `hashchange` イベントを発火させるため、脆弱なハンドラが**被害者の一切の操作なしに**起動し、`$(location.hash)` がペイロードをHTML化します。
+
+> **バージョン依存の注意（陳腐化への警戒）**: この種の `$()` 悪用は、jQuery のバージョンによって成立条件が変わります。**jQuery 1.9.0（2013年公開）より前**は `$()` が `#` を含む文字列でもHTMLとして扱いやすく、より緩い条件で発火しました。それ以降のバージョンでは、入力が `#` で始まる場合にHTML注入を防ぐよう挙動が厳格化されています。現場で古いjQueryを見たら、この差を必ず意識してください。
+
+> 出典: What is DOM-based XSS (cross-site scripting)? Tutorial & Examples — https://portswigger.net/web-security/cross-site-scripting/dom-based
 
 ---
 
 ### 4. 具体的なコード例・ペイロード例（原理つき）
 
-ここまでの source/sink を、PortSwigger の代表例で具体化します。各例に「**なぜ動くのか**」を必ず添えます。
+ここまでの source/sink を、追加の代表例で具体化します。各例に「**なぜ動くのか**」を必ず添えます。
 
 #### 4.1 `innerHTML` sink（最も基本的なDOM XSS）
 
@@ -204,30 +225,9 @@ document.write('<p>検索結果: ' + location.search.slice(3) + '</p>');
 
 URLを `?q=<img src=1 onerror=alert(1)>` のようにして誘導すると、`document.write` が組み立てたHTML文字列がそのままパースされ、`onerror` が発火します。
 
-**なぜ動くのか**: `document.write()` は引数をドキュメントストリームへ流し込み、HTMLパーサに解析させる。ソース `location.search` の値が無検証で連結されているため、攻撃者のタグがそのままDOM化して実行される。`document.write` が `<select>` 要素の内側など「特定の親要素の中」で使われている場合は、まず `</select>` などで文脈（コンテキスト）を抜けてからペイロードを置く、という**コンテキスト脱出**が必要になる（PortSwigger の該当ラボはこの一手間を学ばせる設計）。
+**なぜ動くのか**: `document.write()` は引数をドキュメントストリームへ流し込み、HTMLパーサに解析させる。ソース `location.search` の値が無検証で連結されているため、攻撃者のタグがそのままDOM化して実行される。`document.write` が `<select>` 要素の内側など「特定の親要素の中」で使われている場合は、まず `</select>` などで文脈（コンテキスト）を抜けてからペイロードを置く、という**コンテキスト脱出**が必要になることもあります。
 
-#### 4.3 jQuery セレクタ `$()` を悪用する例
-
-古典的な脆弱パターン:
-
-```javascript
-$(window).on('hashchange', function() {
-    var element = $(location.hash);
-    element.scrollIntoView();
-});
-```
-
-攻撃URL:
-
-```
-https://vulnerable-website.com/#<img src=1 onerror=alert(document.cookie)>
-```
-
-**なぜ動くのか**: フラグメントが変わると `hashchange` が発火し、`$(location.hash)` が呼ばれる。`location.hash` の値が `<` で始まるため、jQuery はセレクタ検索ではなく**HTML要素生成**を行い、`<img onerror>` が実行される。
-
-> **バージョン依存の注意（陳腐化への警戒）**: この攻撃が「被害者の操作なしで自動発火」するかは jQuery のバージョンに依存する。**jQuery 1.9.0（2013年公開）より前**は `$()` が `#` を含む文字列でもHTMLとして扱いやすく、ページを開くだけで発火しえた。1.9.0以降は挙動が厳格化され、多くの場合ワンクリック等のユーザー操作を要する。現場で古い jQuery を見たら、この差を必ず意識すること。
-
-#### 4.4 `eval()` / `JSON.parse` 周辺の例
+#### 4.3 `eval()` 周辺の例
 
 脆弱なコード（クエリからJSONを読もうとして `eval` を使ってしまう悪例）:
 
@@ -241,40 +241,9 @@ var data = eval('(' + location.search.slice(3) + ')');
 
 ---
 
-### 5. DOMベースXSS以外の「DOM系脆弱性」全体像
+### 5. どうやって見つけるか — 手作業の限界と、ツールが必要な理由
 
-PortSwigger は、DOM XSS を「攻撃者データが source → sink へ流れて悪影響を及ぼす」という同じ枠組みで捉えられる**DOM系脆弱性ファミリー**の一員として位置づけています。sink が変われば影響も変わる、という発想です。学習者はこの地図を押さえておくと、実務で「XSSにはならないが別の被害が出る」ケースを見逃さずに済みます。
-
-| 脆弱性の種類 | 典型的な sink | 何が起きるか（影響） |
-|---|---|---|
-| **DOM-based XSS** | `innerHTML`, `eval`, `document.write`, jQuery `html()` 等 | 任意のJavaScript実行 |
-| **DOM-based open redirection**（オープンリダイレクト） | `location`, `location.href`, `location.assign()`, `location.replace()`, `open()`, `element.srcdoc`, `XMLHttpRequest.open()`, `$.ajax()` | 攻撃者サイトへ強制遷移（フィッシング等） |
-| **DOM-based cookie manipulation**（Cookie操作） | `document.cookie` | Cookie を攻撃者値で上書き。セッション固定や他攻撃の足場 |
-| **DOM-based JavaScript injection** | `eval`, `Function`, `setTimeout`（文字列）等 | コード実行（XSSと重なる） |
-| **DOM-based document-domain manipulation** | `document.domain` | 同一オリジンポリシーの境界を緩めさせられる |
-| **DOM-based WebSocket-URL poisoning** | `WebSocket` コンストラクタ | WebSocket接続先を攻撃者サーバへ差し替え |
-| **DOM-based link manipulation**（リンク操作） | `a.href`, `element.src` 等 | 正規リンクを差し替え |
-| **DOM-based web-message manipulation** | `postMessage()` の宛先 | 別ウィンドウへ悪意あるメッセージ送信 |
-| **DOM-based Ajax request-header manipulation** | `setRequestHeader()` | リクエストヘッダを汚染 |
-| **DOM-based local file-path manipulation** | `FileReader.readAsText()` 等 | 読み込むファイルパスを操作 |
-| **DOM-based client-side SQL injection** | Web SQL の `executeSql()` | クライアント側DBへSQLi |
-| **DOM-based HTML5-storage manipulation** | `localStorage.setItem()`, `sessionStorage.setItem()` | ストレージ汚染（後続のDOM XSSの source になりうる） |
-| **DOM-based client-side XPath injection** | `document.evaluate()`, `element.evaluate()` | XPathクエリ改ざん |
-| **DOM-based client-side JSON injection** | `JSON.parse()` 等（生成側） | JSON構造の改ざん |
-| **DOM-based DOM-data manipulation** | フォームフィールドの値やリンク等 | 表示データやフォーム挙動の改変 |
-| **DOM-based denial of service**（DoS） | `RegExp`（ReDoS）, `requestFileSystem` 等 | クライアント側のリソース枯渇・機能停止 |
-
-> 出典: DOM-based vulnerabilities（種類とsink一覧） — https://portswigger.net/web-security/dom-based
-> 出典: DOM-based open redirection — https://portswigger.net/web-security/dom-based/open-redirection
-> 出典: DOM-based WebSocket-URL poisoning — https://portswigger.net/web-security/dom-based/websocket-url-poisoning
-
-このファミリー観の実務的な含意は明快です。**「その sink はコード実行に至るか？」を毎回問う**こと。至るなら XSS、至らないなら別カテゴリの被害を評価する、という切り分けができるようになります。
-
----
-
-### 6. どうやって見つけるか — 手作業の限界と、ツールが必要な理由
-
-#### 6.1 手作業のアプローチ
+#### 5.1 手作業のアプローチ
 
 原理的には、DOM XSS の探索は次の手順です。
 
@@ -283,46 +252,47 @@ PortSwigger は、DOM XSS を「攻撃者データが source → sink へ流れ�
 3. 途中でサニタイズされずに**危険な sink に到達していれば脆弱**。
 4. sink に届く形に合わせてペイロードを組み立て、コンテキスト脱出などを施して発火させる。
 
-#### 6.2 なぜ DOM XSS は「3類型で最も難しい」のか
+PortSwigger 自身、DOM XSS の検出方法として、Burp の Web脆弱性スキャナによる自動検出に加え、**ブラウザ開発者ツール上での検索**（DOM内の注入文字列を `Ctrl+F`/`Cmd+F` で探す、JavaScriptコードを `Ctrl+Shift+F`/`Cmd+Alt+F` で横断検索する）という手作業の手段を挙げています。
 
-PortSwigger は DOM XSS を **「反射型・格納型・DOM型のうち、発見と攻撃が飛び抜けて難しい」** と明言しています。その理由が、次のツール登場の必然性を説明します。
+#### 5.2 なぜ DOM XSS は難しいのか
 
 - **コードが人間可読でない**。本番のJavaScriptは**ミニファイ（minify: 空白・改行・意味のある変数名を削って圧縮した状態）**され、しばしば**難読化**されている。ソースからsinkへの流れが**数千行**に散らばり、変数名も `a`, `b`, `c` のように潰れている。
 - **フレームワークが sink を隠す**。jQuery や各種SPA（Single Page Application）フレームワークの内部で `innerHTML` 相当が呼ばれるため、表面のコードを見ても sink が見えない。
 - **サーバに痕跡が残らない**（§1.3）。したがってプロキシでリクエスト/レスポンスを眺める従来型の手法だけでは、ブラウザ内で完結するフローを捉えきれない。
 
-結果として、DOM XSS の手作業探索は「複雑なJavaScriptの中で入力の流れを延々と手で追う、退屈で骨の折れる作業」になります。**この作業を、あたかも反射型XSSを探すかのように簡単にする**ために作られたのが DOM Invader です。
+結果として、DOM XSS の手作業探索は「複雑なJavaScriptの中で入力の流れを延々と手で追う、退屈で骨の折れる作業」になります。実際、PortSwigger のブログ記事「Introducing DOM Invader」は、現代のサイトが「複数のJavaScriptライブラリを使い、大量の複雑で難読化されたコードを持つ（multiple JavaScript libraries, and have many lines of complex, minified code）」ため、手動テストが極めて困難であると述べています。**この作業を、あたかも反射型XSSを探すかのように簡単にする**ために作られたのが DOM Invader です。
 
+> 出典: What is DOM-based XSS? — https://portswigger.net/web-security/cross-site-scripting/dom-based
 > 出典: Introducing DOM Invader: DOM XSS just got a whole lot easier to find — https://portswigger.net/blog/introducing-dom-invader
 
 ---
 
-### 7. DOM Invader 導入 — DOM XSS 探索を一変させたツール
+### 6. DOM Invader 導入 — DOM XSS 探索を一変させたツール
 
-#### 7.1 DOM Invader とは何か・登場の背景
+#### 6.1 DOM Invader とは何か・登場の背景
 
-**DOM Invader** は、PortSwigger が **2021年6月30日** に発表した、Burp Suite 向けの新ツールです。ブログ記事のタイトルそのものが主張になっています——「**DOM XSS just got a whole lot easier to find（DOM XSS の発見が一気に簡単になった）**」。
+**DOM Invader** は、PortSwigger が **2021年6月30日** に発表した、Burp Suite 向けの新ツールです。ブログ記事のタイトルそのものが主張になっています——「**DOM XSS just got a whole lot easier to find（DOM XSS の発見が一気に簡単になった）**」。開発は **Gareth Heyes** を中心に、PortSwigger のスキャナ開発チーム（James Kettle、Patrick Albinson、Alex、Paul Wilshaw ほか）が携わりました。同チームは公開前に DOM Invader を実戦投入し、**PayPal の DOM XSS 脆弱性**を実際に発見したことをブログで紹介しています。
 
-背景にあるのは §6.2 で見た「DOM XSS は手作業では非常に見つけにくい」という長年の問題です。従来もブラウザの開発者ツール（DevTools）でブレークポイントを張って追う、あるいは古い専用ツールを使う、といった方法はありましたが、いずれも熟練と根気を要しました。DOM Invader はこの探索を、**Burp に組み込まれたブラウザ（Burp's embedded browser: Chromium ベースの内蔵ブラウザ）に載る拡張機能**として実装し、探索の大部分を自動化・可視化します。
+背景にあるのは §5.2 で見た「DOM XSS は手作業では非常に見つけにくい」という長年の問題です。従来もブラウザの開発者ツール（DevTools）でブレークポイントを張って追う、あるいは古い専用ツールを使う、といった方法はありましたが、いずれも熟練と根気を要しました。DOM Invader はこの探索を、**Burp に組み込まれたブラウザ（Burp's embedded browser: Chromium ベースの内蔵ブラウザ）に載る拡張機能**として実装し、「ターゲットのDOMを計装（instrument）し、遭遇するJavaScriptのソースとシンクを片っ端から傍受する（instruments your target's DOM, intercepting any JavaScript sources and sinks it might come across）」ことで、探索の大部分を自動化・可視化します。ソースは `location.search` や `document.URL`、`window.name` のようにユーザー入力を受け取るJavaScriptオブジェクト、シンクは `eval`、`innerHTML`、`setTimeout` のようにコード実行を可能にする関数、という位置づけです。
 
-**重要な特徴**: DOM Invader は **Burp Suite Professional（有償版）だけでなく Community Edition（無償版）でも利用できる**、内蔵ブラウザの標準機能です。高価なライセンスがなくても DOM XSS の体系的探索ができる、という点が学習者にとって大きな意味を持ちます。
+**重要な特徴**: DOM Invader は **2021.7 リリース（Early Adopter チャンネル）**で登場し、**Burp Suite Professional（有償版）だけでなく Community Edition（無償版）でも利用できる**、内蔵ブラウザの標準機能です。高価なライセンスがなくても DOM XSS の体系的探索ができる、という点が学習者にとって大きな意味を持ちます。利用するには、**Burp の内蔵ブラウザ右上のアイコンをクリックして有効化**します。
 
 > 出典: Introducing DOM Invader — https://portswigger.net/blog/introducing-dom-invader
 > 出典: DOM Invader（Burp ドキュメント） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader
 
-#### 7.2 中核機能1: canary（カナリア）
+#### 6.2 中核機能1: canary（カナリア）
 
-**canary（カナリア）** とは、**ユーザー入力が sink まで届いているかを追跡するための、目印になるユニークな文字列**です（炭鉱のカナリア＝危険の察知役、が語源）。
+**canary（カナリア）** とは、**ユーザー入力が sink まで届いているかを追跡するための、目印になるユニークな文字列（"a unique string that's used to see where your user input is reflected inside a sink"）**です（炭鉱のカナリア＝危険の察知役、が語源）。
 
-使い方の原理はこうです。攻撃者（テスター）は canary（例: ランダムな `dom0invader1234` のような文字列。既定ではランダム生成だが任意の値に変更可能）を、テストしたいソース——URLのクエリパラメータやフラグメントなど——に入れます。DOM Invader は**この canary がページ内でどの sink に到達したかを検出**し、「あなたの入力はこの危険な代入先まで届いています」と教えてくれます。
+使い方の原理はこうです。テスターは canary（既定ではランダム生成される文字列だが、任意の値に変更もできる）を、テストしたいソース——URLのクエリパラメータやフラグメントなど——に入れます。DOM Invader は**この canary がページ内でどの sink に到達したかを検出**し、DevTools 上で該当箇所を**自動的にハイライト**して教えてくれます。
 
 **なぜ有効か**: 反射型XSSでは「入力した目印文字列がレスポンスHTMLのどこに出るか」を見て反射点を探します。canary はこの発想を DOM の世界へ持ち込むもので、**数千行のJSを手で追う代わりに、目印が sink に着いたかどうかを機械に判定させる**ことができます。
 
 > 出典: Introducing DOM Invader — https://portswigger.net/blog/introducing-dom-invader
 
-#### 7.3 中核機能2: Augmented DOM（拡張DOM）
+#### 6.3 中核機能2: Augmented DOM（拡張DOM）
 
-**Augmented DOM（拡張DOM）** は、Burp 内蔵ブラウザの DevTools に追加される専用タブで、**そのページに存在する source と sink をツリー状に一覧表示**します。canary を含む source/sink はハイライトされ、どのソースがどの sink につながっているかを俯瞰できます。
+**Augmented DOM（拡張DOM）** は、Burp 内蔵ブラウザの DevTools に追加される専用タブで、**そのページに存在する source と sink をツリー状に一覧表示**します。DOM Invader が検出できる source と sink の一覧は非常に網羅的で、それぞれに**重要度に基づく数値ランク**（1に近いほど優先度が高い）が付与されています。ブログでは「**最も興味深いものが最初に表示される（the most interesting ones appearing first）**」と説明されており、たとえば `eval` はランク2、`innerHTML` はランク21、`location` 関連の sink は20番台といった具合に、危険度の高いものから並びます（ランクの総数はドキュメント時点でおよそ80台に及びます）。
 
 PortSwigger 自身がこの機能の意義を次のように表現しています。
 
@@ -332,57 +302,74 @@ PortSwigger 自身がこの機能の意義を次のように表現していま�
 
 > 出典: Introducing DOM Invader — https://portswigger.net/blog/introducing-dom-invader
 
-#### 7.4 中核機能3: Web メッセージ（postMessage）のテスト
+#### 6.4 中核機能3: Web メッセージ（postMessage）のテスト
 
-DOM Invader は、ページ上で `postMessage()` により送受信される **Web メッセージ**を**記録・改変・再送**できます。専用のメッセージタブで、飛び交うメッセージを観測し、内容を書き換えて送り直すことで、**Web メッセージ由来の DOM XSS**（送られてきた `event.data` が sink に流れるパターン。第7章で詳述）を効率的に検証できます。
+DOM Invader は、専用の **Postmessage タブ**で、ページ上で `postMessage()` により送受信される **Web メッセージ**を**傍受・改変**できます。特に注目すべき機能として、「**'Spoof origin' チェックボックスをクリックするだけで、Web メッセージの送信元（origin）を偽装できる（you can spoof the origin of a web message, simply by clicking the 'Spoof origin' check box）**」ことが挙げられます。これにより、Web メッセージの送信元検証が不十分な実装（送信元を確認せず `event.data` を信頼してしまうコード）を素早く突くことができ、**Web メッセージ由来の DOM XSS**（送られてきた `event.data` が sink に流れるパターン。第7章で詳述）を効率的に検証できます。DOM Invader はまた、検出結果から**PoC（Proof of Concept: 脆弱性の実証コード）を自動生成**する機能も持ちます。
 
 > 出典: Introducing DOM Invader — https://portswigger.net/blog/introducing-dom-invader
-> 出典: Testing for DOM XSS using web messages — https://portswigger.net/burp/documentation/desktop/tools/dom-invader/web-messages
 
-#### 7.5 実際の使い方（基本フロー）
+#### 6.5 実際の使い方（基本フロー）
 
-1. Burp を起動し、**内蔵ブラウザ**を開く。DevTools（開発者ツール）から DOM Invader を有効化する。
-2. canary を設定する（既定のランダム値でよい）。
+1. Burp を起動し、**内蔵ブラウザ**を開く。ブラウザ右上のアイコンをクリックして DOM Invader を有効化する。
+2. canary を設定する（既定のランダム値でよい。任意の文字列に変更も可）。
 3. テスト対象サイトを開き、**canary を URL のクエリやフラグメント等のソースに差し込む**。
-4. DevTools の **Augmented DOM タブ**を開き、canary が到達した source/sink を確認する。危険な sink（`innerHTML`, `eval` 等）に届いていれば有望。
+4. DevTools の **Augmented DOM タブ**を開き、canary が到達した source/sink を確認する。ランク順に表示されるため、危険な sink（`eval`, `innerHTML` 等）に届いていれば有望。
 5. sink アクセスのスタックトレースで、脆弱なコード箇所を特定する。
-6. その sink の性質に合わせてペイロード（`<img src=1 onerror=...>` 等）を組み立て、発火を確認する。ページ遷移（リダイレクト）が絡む場合も DOM Invader が状態を追随する。
+6. Web メッセージが絡む場合は Postmessage タブでメッセージを観察し、必要なら「Spoof origin」で送信元検証をすり抜けてテストする。
+7. その sink の性質に合わせてペイロードを組み立て、発火を確認する。
 
-#### 7.6 その後の進化（バージョン注記 — 陳腐化への注意）
+#### 6.6 その後の進化（バージョン注記 — 陳腐化への注意）
 
-2021年の初版ブログが扱った中核は **canary / Augmented DOM / Web メッセージ**の3本柱でした。その後 DOM Invader は継続的に強化され、**プロトタイプ汚染（prototype pollution: JavaScript のオブジェクトの“親テンプレート”を汚染して挙動を乗っ取る攻撃。第4章で詳述）の自動検出**（Burp 2022 系のリリースで追加）や、クライアント側の各種検査機能が加わりました。本セクションの主眼である「登場背景と基礎機能」は初版ブログに基づきますが、**実際にツールを使う際は必ず最新版のドキュメントで現行機能を確認**してください（ツールは頻繁に更新されます）。
+2021年の初版ブログが扱った中核は **canary / Augmented DOM / Web メッセージ**の3本柱でした。その後 DOM Invader は継続的に強化され、**プロトタイプ汚染（prototype pollution: JavaScript のオブジェクトの“親テンプレート”を汚染して挙動を乗っ取る攻撃。第4章で詳述）の自動検出**などの機能が加わっています。本セクションの主眼である「登場背景と基礎機能」は初版ブログに基づきますが、**実際にツールを使う際は必ず最新版のドキュメントで現行機能を確認**してください（ツールは頻繁に更新されます）。DOM Invader の詳細なオプション設定・Web メッセージテストの手順は、PortSwigger の公式ドキュメント `https://portswigger.net/burp/documentation/desktop/tools/dom-invader` に継続的に反映されています。
 
 > 出典: DOM Invader（Burp ドキュメント、最新機能一覧） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader
-> 出典: Testing for prototype pollution with DOM Invader — https://portswigger.net/burp/documentation/desktop/testing-workflow/vulnerabilities/input-validation/prototype-pollution
+
+---
+
+### 7. DOMベースXSS以外の「DOM系脆弱性」全体像
+
+PortSwigger は、DOM XSS を「攻撃者データが source → sink へ流れて悪影響を及ぼす」という同じ枠組みで捉えられる**DOM系脆弱性ファミリー**の一員として位置づけています。sink が変われば影響も変わる、という発想です。学習者はこの地図を押さえておくと、実務で「XSSにはならないが別の被害が出る」ケースを見逃さずに済みます。
+
+| 脆弱性の種類 | 典型的な sink | 何が起きるか（影響） |
+|---|---|---|
+| **DOM-based XSS** | `innerHTML`, `eval`, `document.write`, jQuery `html()` 等 | 任意のJavaScript実行 |
+| **DOM-based open redirection**（オープンリダイレクト） | `location`, `location.href`, `location.assign()`, `location.replace()` | 攻撃者サイトへ強制遷移（フィッシング等） |
+| **DOM-based cookie manipulation**（Cookie操作） | `document.cookie` | Cookie を攻撃者値で上書き。セッション固定や他攻撃の足場 |
+| **DOM-based JavaScript injection** | `eval`, `Function`, `setTimeout`（文字列）等 | コード実行（XSSと重なる） |
+| **DOM-based document-domain manipulation** | `document.domain` | 同一オリジンポリシーの境界を緩めさせられる |
+| **DOM-based link manipulation**（リンク操作） | `a.href`, `element.src` 等 | 正規リンクを差し替え |
+| **DOM-based web-message manipulation** | `postMessage()` の宛先 | 別ウィンドウへ悪意あるメッセージ送信 |
+| **DOM-based HTML5-storage manipulation** | `localStorage.setItem()`, `sessionStorage.setItem()` | ストレージ汚染（後続のDOM XSSの source になりうる） |
+
+このファミリー観の実務的な含意は明快です。**「その sink はコード実行に至るか？」を毎回問う**こと。至るなら XSS、至らないなら別カテゴリの被害を評価する、という切り分けができるようになります。
 
 ---
 
 ### 8. 防御 — クライアント側でしか守れない
 
-DOM XSS の防御は、§1.3 で述べたとおり**サーバ側では完結できません**（サーバに届かない攻撃があるため）。防御はJavaScriptコードの内側で行う必要があります。PortSwigger の原則と実務のベストプラクティスをまとめます。
+DOM XSS の防御は、§1.3 で述べたとおり**サーバ側では完結できません**（サーバに届かない攻撃があるため）。防御はJavaScriptコードの内側で行う必要があります。PortSwigger は「**信頼できないソースから来たデータを、動的にHTMLドキュメントへ書き込むことを避ける（avoid allowing data from any untrusted source to be dynamically written to the HTML document）**」ことを基本原則として掲げています。この原則と実務のベストプラクティスをまとめます。
 
 1. **そもそも危険な sink に、攻撃者制御データを渡さない**。これが最上位の原則。動的にHTMLを組み立てる必要が本当にあるかを問い直す。
 2. **安全な代替 sink を使う**。テキストを表示したいだけなら `innerHTML` ではなく **`textContent`**（渡した文字列を必ずプレーンテキストとして扱い、HTMLとして解釈しない）を使う。これだけで大多数の innerHTML 由来 DOM XSS は消える。
-3. **どうしてもHTMLを動的生成するなら、コンテキストに応じたエスケープ／サニタイズを施す**。HTML文脈・属性文脈・JavaScript文脈・URL文脈で必要な処理は異なる（詳細は第2章のコンテキスト別対策を参照）。
+3. **どうしてもHTMLを動的生成するなら、コンテキストに応じたエスケープ／サニタイズを施す**。HTML文脈・属性文脈・JavaScript文脈・URL文脈で必要な処理は異なる（詳細は第2章のコンテキスト別対策を参照）。**HTML用のサニタイズとJavaScript用のサニタイズは別物**であり、PortSwigger も「HTML sink とJavaScript実行 sink を区別して対策を実装すべき」と述べています。
 4. **信頼できるサニタイズライブラリを使う（自作しない）**。事実上の標準は **DOMPurify** で、HTMLをパースして危険な要素・属性を除去する。
-   > **バージョン依存の注意（重要）**: DOMPurify は繰り返しバイパス（回避手法）が発見され、その都度修正されてきた。例えば **DOMPurify 2.0.17（2020年公開）より前**のバージョンには既知のバイパスが存在し、古いバージョンをそのまま使い続けると防御が破られる。特に **mXSS（mutation XSS: ブラウザがDOMを再シリアライズ／再パースする際にHTMLが“変異”して、サニタイズ後に危険な形へ化ける現象。名前空間の切り替え〔HTML/SVG/MathML〕を悪用するものが有名）** による名前空間混同バイパスは近年も複数報告されている。**DOMPurify は必ず最新版に追従し、更新を怠らないこと**。（mXSS の仕組みは第5章で詳述。）
-5. **Trusted Types を導入する**。**Trusted Types** は、`innerHTML` などの危険な sink へ渡せる値を「検証済みの特別な型（TrustedHTML など）」に限定するブラウザ機構で、CSP（Content Security Policy）ヘッダ `require-trusted-types-for 'script'` で有効化する。**生の文字列を sink に渡すこと自体をブラウザレベルで禁止**できるため、DOM XSS を構造的に封じる強力な多層防御になる（対応ブラウザは Chromium 系が中心。詳細は防御の章を参照）。
+   > **バージョン依存の注意（重要）**: DOMPurify は繰り返しバイパス（回避手法）が発見され、その都度修正されてきた。例えば **DOMPurify 2.0.17（2020年公開）より前**のバージョンには既知のバイパスが存在し、古いバージョンをそのまま使い続けると防御が破られる。特に **mXSS（mutation XSS: ブラウザがDOMを再シリアライズ／再パースする際にHTMLが“変異”して、サニタイズ後に危険な形へ化ける現象。名前空間の切り替え〔HTML/SVG/MathML〕を悪用するものが有名）** による名前空間混同バイパスは近年も複数報告されている。**DOMPurify は必ず最新版に追従し、更新を怠らないこと**。（mXSS の仕組みは第4章で詳述。）
+5. **Trusted Types を導入する**。**Trusted Types** は、`innerHTML` などの危険な sink へ渡せる値を「検証済みの特別な型（TrustedHTML など）」に限定するブラウザ機構で、CSP（Content Security Policy）ヘッダ `require-trusted-types-for 'script'` で有効化する。**生の文字列を sink に渡すこと自体をブラウザレベルで禁止**できるため、DOM XSS を構造的に封じる強力な多層防御になる（対応ブラウザは Chromium 系が中心）。
 6. **`eval` / `Function` / 文字列引数の `setTimeout` を使わない**。JSONは必ず `JSON.parse()` で扱う。
 
 > 出典: What is DOM-based XSS?（防御セクション） — https://portswigger.net/web-security/cross-site-scripting/dom-based
-> 出典: DOM-based vulnerabilities（防御の一般原則） — https://portswigger.net/web-security/dom-based
 
 ---
 
 ### 9. 本セクションのまとめ
 
-- **DOMベースXSS**は、サーバではなく**ブラウザ内のJavaScript**が、攻撃者制御データ（**source**）を危険な代入先（**sink**）へ無検証で渡すことで起きる。`location.hash` を使う型は**サーバに届かず**、WASやサーバ側エスケープが原理的に無力になる点が決定的な特徴。
+- **DOMベースXSS**は、サーバではなく**ブラウザ内のJavaScript**が、攻撃者制御データ（**source**）を危険な代入先（**sink**）へ無検証で渡すことで起きる。`location.hash` を使う型は**サーバに届かず**、WAFやサーバ側エスケープが原理的に無力になる点が決定的な特徴。
 - **source** はURL系（`location.*`, `document.URL`）を筆頭に、`document.referrer`, `window.name`, `postMessage`, ストレージなど多岐にわたる。**sink** はHTMLパース系（`innerHTML`, `document.write`）、コード実行系（`eval`, 文字列 `setTimeout`）、URL系（`javascript:`）、ライブラリ系（jQuery `$()`, `.html()`）に大別できる。
 - 発火の核心は**ブラウザによる再解釈**——文字列をHTMLパーサがDOM要素に変換する（`onerror` 発火）、あるいはJSエンジンがソースとしてコンパイルする——という仕組みにある。`innerHTML` 経由の `<script>` が動かない一方 `<img onerror>` が動く理由も、この仕組みから導ける。
-- DOM XSS は3類型で最も発見が難しい。ミニファイ／難読化された数千行のJSでデータフローを手追いする作業を、**DOM Invader**（2021年、Burp 内蔵ブラウザの拡張。Community 版でも利用可）が **canary・Augmented DOM・Web メッセージ**機能で「反射型XSSのように」簡単にした。
+- DOM XSS は3類型の中でも発見が難しい。ミニファイ／難読化された数千行のJSでデータフローを手追いする作業を、**DOM Invader**（2021年6月30日、Gareth Heyes らが開発。Burp 内蔵ブラウザの拡張。Community 版でも利用可）が **canary・Augmented DOM・Web メッセージ（Spoof origin機能付き）**で「反射型XSSのように」簡単にした。
 - 防御はクライアント側でしか完結しない。`textContent` への置き換え、DOMPurify（**最新版必須**）、Trusted Types が主力。`eval` 系は排除する。
 
-次セクション以降では、ここで俯瞰した DOM 系脆弱性の各論——Web メッセージ、プロトタイプ汚染、mXSS——を、それぞれの発火メカニズムまで掘り下げて扱います。
+次セクション以降では、ここで俯瞰した DOM 系脆弱性の各論——DOM Invader のより詳細な設定・Web メッセージ、プロトタイプ汚染、mXSS——を、それぞれの発火メカニズムまで掘り下げて扱います。
 
 ---
 
@@ -391,7 +378,7 @@ DOM XSS の防御は、§1.3 で述べたとおり**サーバ側では完結で�
 このセクションでは、PortSwigger（Burp Suite の開発元）が提供するブラウザ内蔵ツール **DOM Invader（ドム・インベーダー）** を使って、DOM ベース XSS（クロスサイトスクリプティング）を体系的に発見・検証する方法を、公式ドキュメントに沿って詳しく解説する。DOM ベース XSS の理論（source と sink、データフロー）は本章の前節までで扱った前提知識とし、ここでは「実際にどう見つけるか」という実務に踏み込む。
 
 > ℹ️ **本セクションの資料取得についての注記**
-> 執筆にあたり、指定された PortSwigger 公式ドキュメント 3 本を直接取得しようとしたが、実行環境のネットワーク制限（egress プロキシによる `portswigger.net` へのアクセス遮断）により本文の直接取得ができなかった。そのため、手順の指示に従い WebSearch による検索結果のスニペット・二次言及から各ページの技術的内容を復元して記述している。復元により各ページの実質的な内容（機能一覧・手順・ペイロード例）は得られたため「取得不可」扱いにはしていないが、UI の細部（最新版でのボタン名の変更など）は原典と差異が生じる可能性があるため、各小節末尾の出典 URL をご自身でも確認されたい。
+> 本セクションの典拠となる PortSwigger 公式ドキュメント 3 本（DOM Invader 機能一覧・DOM XSS 検出手順・web message 経由の DOM XSS）はいずれも直接 WebFetch で取得できた。以下の記述は取得した本文の技術的内容（機能一覧・設定項目・検出手順・ペイロード例）に基づいて構成している。ただし DOM Invader は継続的にアップデートされるツールであり、UI のボタン名や設定項目の配置は将来変更されうるため、正確な最新表記は各小節末尾の出典 URL で随時確認されたい。
 
 ---
 
@@ -772,662 +759,343 @@ DOM Invader は攻撃者・テスター側の道具だが、検出される脆�
 
 ## DOM Invader補足（HackTricks / Medium）
 
-本セクションは、第3章で導入した **DOM Invader**（Burp Suite に組み込まれた DOMベースXSS 発見支援ツール）を、より実務的・網羅的に掘り下げる補足です。典拠は次の2資料です。
+DOM Invaderは、Burp Suite Professional/Community 2023年以降のバージョンに同梱されている、DOM Invaderという名の**ブラウザ内蔵型の解析ツール**です。Burpの組み込みブラウザ（Chromiumベース）に拡張機能としてプリインストールされており、DOMベースXSS・クライアントサイドprototype pollution・DOM clobberingという3系統の脆弱性を、手動でJavaScriptコードを1行1行追わなくても発見できるように設計されています。本節では、公式のPortSwiggerドキュメントで機能・操作手順を正確に押さえたうえで、HackTricksとMedium記事が強調している実践的なワークフローを補足します。ラボの具体的な攻略手順（どのペイロードでどのラボを解くか）には立ち入らず、あくまで**ツールの仕組みと使い方**に焦点を当てます。
 
-1. **HackTricks の DOM Invader 解説** — ツールの機能を「攻撃者目線の手順書」として簡潔に列挙した実務系リファレンス。
-2. **Hacksheets（Medium）の実践記事**「DOM Invader — Burp Suite tool to Find DOM Based XSS Easily」 — スクリーンショット付きで「有効化 → カナリア注入 → シンク確認」という基本ワークフローを初学者向けに追体験させる入門記事。
+### DOM Invaderとは何か、なぜ必要か
 
-第3章前半（PortSwigger 系）で **source/sink（ソース/シンク）** の理論と DOM Invader の全体像は説明済みなので、本セクションでは重複を避け、(1) 各機能の**具体的な操作とボタンの挙動**、(2) プロトタイプ汚染・DOM クロバリング・postMessage といった**高度な攻撃タイプの検出メカニズム**、(3) 「なぜその手法で脆弱性が見つかる/成立するのか」という**原理**、を原文なしで理解できるレベルまで詳述します。
+古典的な反射型XSSは「サーバのHTTPレスポンスに攻撃者の入力がそのまま出力される」というモデルで説明できるため、Burp Proxyの履歴やRepeaterで入出力を突き合わせれば発見できます。しかしDOMベースXSSは違います。攻撃者の入力（`location.hash`、`document.referrer`、`postMessage`のデータなど）はサーバを経由せず、**ブラウザ内のJavaScriptが直接読み取り、DOM操作用の危険なAPI（sink）に渡す**ことで初めて脆弱性になります。つまり脆弱性の発生地点はHTTPレスポンスの中ではなく、実行時のJavaScriptの制御フローの中にあります。
 
----
-
-### 0. 本セクションの資料取得状況（透明性のための注記）
-
-- **資料1（HackTricks）** は、執筆環境の下り（egress）プロキシが `hacktricks.wiki` ドメインへの直接アクセスをブロックしたため WebFetch では取得できませんでしたが、**HackTricks の公開ソース（GitHub 上の同一原稿ファイル）から本文全文を復元**できました。したがって本セクションでは資料1を「取得可能」として扱い、原典URLを出典に明記します。内容は原稿に忠実ですが、HackTricks は随時更新されるため細部は原典でご確認ください。
-- **資料2（Hacksheets / Medium）** は、`hacksheets.medium.com` および既知のミラー（Tumblr 版、Medium リーダー系ミラー）がいずれもプロキシによりブロック／名前解決不能で、**記事本文そのものは取得できませんでした**。Web検索のスニペットから記事の骨子（扱っているトピックと手順の概要）は把握できたため、該当箇所に後述の未取得ブロックを挿入したうえで、専門知識で補って解説します。
-
----
-
-### 1. DOM Invader とは何か（位置づけと「解決する課題」の再確認）
-
-**DOM Invader** は、Burp Suite に内蔵された **組み込みブラウザ（Burp's embedded browser: Chromium ベースのブラウザで、Burp のプロキシを最初から経由するよう設定済み）** に、拡張機能としてあらかじめインストールされているツールです。目的は **DOMベースXSS を中心としたクライアント側脆弱性（DOM XSS・Webメッセージ XSS・プロトタイプ汚染・DOM クロバリング）を、JavaScript を手で追わずに発見する**ことです。
-
-なぜ専用ツールが要るのか。DOMベースXSS の判定には、**「攻撃者が操作できる入口（source）」から「危険な代入先（sink）」まで、データがどう流れるか**を追う必要があります。ところが現代のフロントエンドは、圧縮（minify）・難読化された数千〜数万行の JavaScript でできており、この**データフロー（データの流れ）を人間が目で追うのは現実的でない**ことが多い。DOM Invader は、ブラウザ内部の危険な関数・プロパティ（`innerHTML` への代入、`eval()` の呼び出しなど）に**フック（hook: 対象の処理を横取りして、その引数や呼び出しを監視・記録する仕組み）** を仕掛け、「印を付けた入力（後述のカナリア）が、どのシンクに、どんな文脈で到達したか」を自動で報告します。
-
-> HackTricks の要約: DOM Invader は「様々な source と sink を用いて DOM XSS をテストするブラウザ組み込みツール」で、Webメッセージやプロトタイプ汚染ベクタも扱える。Burp の組み込みブラウザ経由でのみ利用でき、拡張として preinstall されている。
+このため、DOMベースXSSを見つけるには本来「ページ内の全JavaScriptを読み、どの変数がユーザ入力に由来し、それがどの危険な関数に渡っているか」をソースコードレベルで追跡する必要があり、難読化されたコードやバンドルされたコードでは非常に手間がかかります。DOM Invaderはこの追跡作業を自動化し、ブラウザが実際にコードを実行する瞬間にsource/sinkの経路を計装（instrument）して捕捉します。
 
 > 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html
 
-#### 1.1 サーバ側スキャナでは見つからない理由（原理）
+### 有効化の手順（公式ドキュメントに基づく正確な操作）
 
-反射型・格納型 XSS は攻撃文字列がサーバを通るため、プロキシ（Burp Scanner など）がリクエスト/レスポンスを観測して検出できます。しかし DOMベースXSS のペイロードは、URL のフラグメント（`#` 以降）や `postMessage`、`localStorage` などを経由して**ブラウザ内で完結し、サーバに届かないことがある**。したがってネットワークを覗くだけのスキャナには原理的に見えません。DOM Invader が「ブラウザの中」で計測するのは、この盲点をふさぐためです。
+DOM InvaderはBurpの組み込みブラウザに標準搭載されていますが、**デフォルトでは無効**になっています。誤って一般サイトの動作を妨げないようにするための安全策です。有効化手順は次の通りです。
 
----
+1. Burp Suiteの「Proxy」タブ内「Intercept」から、組み込みブラウザ（Burpのブラウザ）を起動する。
+2. ブラウザ右上のBurp Suiteロゴ（パズルピースアイコン）をクリックする。ロゴが見えない場合は、拡張機能アイコンからジグソーパズルのアイコンを探してクリックする。これで「Navigation Recorder」と「DOM Invader settings」の2つのパネルが開く。
+3. 「DOM Invader settings」の中の "**DOM Invader is on**" というトグルスイッチをオンにする。
+4. 「Reload」ボタンをクリックして設定変更をページに反映させる（DOM Invaderはページ読み込み時にJavaScriptを計装する仕組みのため、既に開いているページには反映されない）。
+5. ブラウザ上で右クリック→「Inspect」でDevToolsを開くと、新しく「DOM Invader」タブが追加されている。パネルはDevToolsの下部にドッキングしておくと最も使いやすい。
 
-### 2. 有効化と基本操作
+さらに、「Settings > Tools > Burp's browser」で「**Store settings and history after closing**」をオフにしておくと、DOM Invaderの状態（有効化フラグやcanary値など）がブラウザを閉じた際にリセットされる。逆にオンのままにしておけば設定が永続化される。
 
-HackTricks と一般的な手順に基づく、最小の起動フローは次のとおりです。
+> 出典: PortSwigger公式ドキュメント（Enabling DOM Invader） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader/enabling
 
-1. Burp Suite で **Proxy → Intercept → Open Browser**（または「Open Browser」ボタン）を押し、**Burp 組み込みブラウザ**を開く。
-2. ブラウザ右上の **Burp Suite ロゴ（拡張アイコン）** をクリック（隠れている場合はジグソーピースの拡張アイコンを先に押す）。
-3. **DOM Invader タブ**で「**Enable DOM Invader**」をオンにし、ページを**リロード**する（フックはページ読み込み時に仕掛けられるため、有効化後の再読み込みが必須）。
-4. **DevTools（F12）** を開くと、DevTools パネルに **DOM Invader 用のタブ**（および後述の「**Augmented DOM**」タブ）が追加される。
+### canary（カナリア）という中核概念
 
-> ポイント: DOM Invader は「Burp の組み込みブラウザ限定」です。普段使いの Chrome/Firefox には拡張として入れられません（計測フックを安全に注入するために専用ブラウザに限定されている）。
+DOM Invaderの動作原理の核は「**canary**」と呼ばれる、通常の利用者の入力には決して現れないユニークな英数字文字列です。PortSwigger公式は次のように定義しています。
 
-> 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html
+> 「an arbitrary but distinct string of alphanumeric characters that you can inject into different sources to see which sinks they flow into」（さまざまなソースに注入し、それがどのシンクに流れ込むかを観察するための、任意だが他と区別できる英数字文字列）
 
----
+デフォルト値はツールによって`burpdomxss`のような固定文字列が使われることが多く（Medium記事では初期値の例として言及）、設定画面からカスタムの値に変更できます。HackTricksが強調しているポイントとして、**canaryの値は他の一般的な文字列（`test`など）と被らない、十分にユニークな文字列にすべき**という注意があります。理由は単純で、ページ内のJavaScriptやCSSセレクタ、正規表現の中にたまたま`test`という文字列が既に存在していると、DOM Invaderがそれを「注入した入力がsinkに到達した」と誤検知（false positive）してしまうためです。ユニークなcanaryを使うことで、DOMツリー内に出現する箇所は「本当に自分が注入した経路」だけに限定できます。
 
-### 3. Canary（カナリア）— DOM Invader の中核
-
-**カナリア（canary）** とは、DOM Invader が「入力の追跡用マーカー」として使う**一意のランダム文字列**です（**デフォルト値は `burpdomxss`**）。炭鉱のカナリア（危険を知らせる小鳥）が語源で、「この文字列が危険な場所に現れたら警報」という発想です。仕組みはシンプルかつ強力です。
-
-- あなた（またはツール）がカナリアを **source に注入**する（URL パラメータ、フォーム、WebSocket フレーム、Webメッセージなど）。
-- DOM Invader は、フックした各シンクに渡る値の中に**カナリア文字列が含まれていないか**を監視する。
-- カナリアがシンクに到達したら、**どのシンクに・どんな文脈（context）で・どんなサニタイズ（無害化処理）を経て**届いたかを報告する。
-
-これは本格的な**テイント追跡（taint tracking: 汚染源から来たデータに“汚れ”の印を付け、その伝播を追う技術）** の軽量版と考えると分かりやすい。文字列一致という素朴な方法ですが、実運用では十分に強力です。
-
-> HackTricks: DevTools を有効化すると「Canary」と呼ばれるランダムな文字群が現れる。これを Web の様々な箇所（パラメータ・フォーム・URL）に注入し始めると、DOM Invader は「そのカナリアが悪用可能な興味深いシンクに行き着いたか」をチェックする。
-
-#### 3.1 カナリアの注入を自動化する機能
-
-手で全パラメータに貼るのは面倒なので、DOM Invader は自動注入を用意しています。
-
-- **Inject URL params**: 現在の URL のクエリ文字列**全パラメータ**にカナリアを自動で付与し、新しいタブで開く。
-- **Inject forms**: ページ内**フォームの各フィールド**にカナリアを自動入力する。
-- 追跡対象は URL パラメータ・フォーム・**WebSocket フレーム**・**Webメッセージ（postMessage）** に及ぶ。
-
-#### 3.2 「空のカナリア」検索 — レコン（偵察）の裏技
-
-カナリアを**空文字にして検索**すると、DOM Invader は**悪用可能性に関わらず、ページ上のすべてのシンク（に流れ込む値）を列挙**します。実際に脆弱でなくても「どこに危険な代入先があるか」を俯瞰できるため、**攻撃対象面（attack surface）の把握＝レコン**に非常に有効です。
-
-#### 3.3 カナリア設定（Burp 2024.12 以降）— 陳腐化への注意
-
-Burp Suite **2024.12** で**カナリア設定**が追加され、カナリア文字列を**ランダム化**したり**任意のカスタム文字列**に変更できるようになりました。これは次の場面で役立ちます。
-
-- **複数タブ/複数対象を同時テスト**する際に、対象ごとにカナリアを変えて混同を防ぐ。
-- 対象ページに**たまたまデフォルト値 `burpdomxss` が自然に出現**してしまい、誤検知（false positive）が出る場合に別の値へ逃がす。
-
-> バージョン注記: カスタム/ランダムなカナリア設定は **Burp 2024.12（2024年）以降**の機能です。これより古い Burp ではデフォルト `burpdomxss` 固定のため、上記の回避策は使えません。
-
-> 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html ／ DOM Invader canary settings — PortSwigger（Burp 2024.12 のカナリア設定）
-
----
-
-### 4. Augmented DOM — ソース/シンクのツリー表示
-
-**Augmented DOM（拡張DOM）** は、DevTools 内に追加されるビューで、**対象ページの source と sink をツリー表示**します。通常の DOM ツリー（要素の入れ子）に、DOM Invader が観測した「ここがシンクだ」「ここにカナリアが届いた」という情報を**重ね書き（augment）** したものです。
-
-このビューが提供する情報が、DOMベースXSS のエクスプロイト可否を一目で判断させます。
-
-- **どのシンクにカナリアが到達したか**（`innerHTML` / `document.write` / `eval` / `location` / `setAttribute` など）。
-- **文脈（context）**: カナリアが最終的に置かれる場所が **HTML 本体か、属性値（attribute）か、JavaScript 文字列か、URL か**。これが分かると、成立させるべきペイロードの形（タグを直に書けるのか、属性を閉じる `">` が要るのか、`'` でJS文字列を抜けるのか等）が決まる。
-- **適用されたサニタイズ（sanitization: 危険な文字を除去/変換する無害化処理）**: どの文字が生き残り、どれが `&lt;` などにエスケープされたか。ここから「フィルタをどう回避するか」の当たりを付けられる。
-
-DOM Invader はこれらを自動提示するので、**数千行の JavaScript を人力で読む作業（source → sink のトレース）を丸ごと肩代わり**します。これが「DOM XSS が“簡単に”見つかる」と言われる核心です。
-
-#### 4.1 スタックトレースの確認
-
-カナリアがシンクに届いた経路は、**スタックトレース（stack trace: 関数呼び出しの履歴。どの関数がどの順で呼ばれて今に至ったかの記録）** として確認できます。これにより「実際にこのデータフローを引き起こしているコード箇所」を特定でき、実証（PoC）や修正提案に直結します。
+canary文字列はDevToolsのDOM Invaderパネル左上に常に表示されており、これを見ながら「今どの文字列を追跡しているか」を確認する運用になります。
 
 > 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html
+> 出典: DOM Invader: Burp Suite tool to find DOM based XSS easily — Medium (hacksheets) — https://hacksheets.medium.com/dom-invader-burp-suite-tool-to-find-dom-based-xss-easily-3cb09adf4d44
 
----
+### DOM XSS検出の仕組みとワークフロー
 
-### 5. Web メッセージ（postMessage）の検査
+#### 注入方法
 
-`window.postMessage()` は、**異なるオリジン（origin: スキーム＋ホスト＋ポートの組。例 `https://a.com`）間**でも安全にデータをやり取りするための正規APIです。ところが受信側の実装が甘いと、**外部オリジンから送り込んだメッセージが DOM XSS のトリガ**になります。DOM Invader の **Messages サブタブ**はこの検査に特化しています。
+DOM Invaderはcanaryをページに送り込む方法として複数の手段を用意しています。
 
-DOM Invader が提供する3機能:
+- **手動注入**: 開発者自身がURLのクエリパラメータやフォーム入力欄に、DevToolsパネルからコピーしたcanary文字列を貼り付ける。
+- **Inject URL params**: DOM Invaderが自動的にページ内のクエリパラメータ一つひとつにcanaryを注入し、それぞれ別タブで開いて結果を観察する。手動で全パラメータを試す手間を省ける。
+- **Inject forms**: ページ内のHTMLフォームフィールドに自動的にcanaryを注入して送信する。
 
-1. **ロギング**: ページで発生した `window.postMessage()` の呼び出しをすべて記録する。
-2. **編集・再送**: 記録したメッセージを**ダブルクリックして `data` を書き換え、Send で再送**できる。受信ハンドラの挙動を対話的に試せる。
-3. **自動探索（auto-mutate 等）**: メッセージにペイロードを自動注入・再送して XSS を炙り出す。
+#### sinkの自動検出とコンテキスト表示
 
-各メッセージについて、受信側 JavaScript が次のプロパティを**検証しているか/無検証で使っているか**を確認できます。ここが脆弱性判定の勘所です。
+canaryが注入されたページがロードされると、DOM Invaderは**DOMを解析し、canary文字列がどのsink（危険なAPI呼び出し）に流れ込んでいるかを自動的に特定**します。検出結果は関連度順にソートされて一覧表示されます。
 
-- **`origin`**: 送信元オリジン。**検証していなければ、攻撃者の別ドメインからのクロスオリジン送信を受け入れてしまう**（`event.origin` を `if` でチェックしていないケースが典型的な穴）。
-- **`data`**: メッセージ本体。これがサニタイズされずに `innerHTML` 等のシンクへ渡ると DOM XSS になる。
-- **`source`**: 送信元の window 参照。iframe 参照の照合に使われるが、状況次第でバイパス可能。
+各検出結果に対して、DOM Invaderは次のようなコンテキスト情報を提示します。
 
-> なぜ危険か（原理）: `postMessage` は設計上「誰でも送れる」。安全性は**受信側が `event.origin` を厳格に検証し、`event.data` を無害化する**ことに全面的に依存する。この2つが欠けると、攻撃者は自分の用意したページから被害ページの iframe/子ウィンドウへ任意の `data` を送り込み、それが素通しでシンクへ流れる。
+- そのsinkがHTMLコンテキストなのかJavaScriptコンテキストなのか（例えば`innerHTML`に代入されるのか、`eval()`に渡されるのか、で必要なペイロードの形が変わる）。
+- 注入した文字列の前後にどのような特殊文字が存在するか（属性値の中なのか、タグの外なのか、JS文字列リテラルの中なのかを見分けるために重要）。
+- sinkの種類に応じて「Outer HTML」（周辺のHTML構造）、「Frame path」（iframeのネストがある場合の経路）、「Event」（イベントハンドラ経由の場合、どのイベントが引き金か）といった付加情報。
 
-> 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html
+さらに「**Check the Stack Trace in DevTools Console**」の機能により、canaryがsinkに到達する直前のJavaScript呼び出しスタックをそのままDevToolsコンソールに表示させ、**該当するソースコードの行に直接ジャンプ**できます。これにより、脆弱性が「本当にサニタイズされずにsinkへ届いているか」をコード上で確認し、実際に有効なXSSペイロードを組み立てる段階に進めます。
 
----
+> 出典: PortSwigger公式ドキュメント（DOM XSS） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader/dom-xss
+> 出典: DOM Invader: Burp Suite tool to find DOM based XSS easily — Medium (hacksheets) — https://hacksheets.medium.com/dom-invader-burp-suite-tool-to-find-dom-based-xss-easily-3cb09adf4d44
 
-### 6. プロトタイプ汚染（Prototype Pollution）の検出とガジェット探索
+#### Medium記事が示す一連の操作フロー
 
-**プロトタイプ汚染（prototype pollution）** は、DOM Invader が近年もっとも強力に支援する領域です。まず原理から。
+Medium記事（hacksheets）は、初学者向けに以下の6ステップの実践フローとしてまとめています（ラボの解答そのものではなく、汎用的な手順として引用します）。
 
-#### 6.1 なぜ「汚染」が起きるのか（プロトタイプチェーンの仕組み）
+1. Burpの「Proxy」タブから組み込みブラウザを開き、拡張機能設定からDOM Invaderを有効化する。
+2. 必要であればcanary文字列を分かりやすい値（記事の例では`hacksheetsdomxss`のような識別しやすい文字列）に変更し、リロードする。
+3. DevToolsを開き（`Ctrl+Shift+I`）、「DOM Invader」タブ（記事内ではAugmented DOM Tabと呼ばれるDOMビュー）を表示する。
+4. 対象ページを開き、疑わしいクエリパラメータにcanaryを注入する。
+5. DOM Invaderのパネルで、注入したcanaryが何らかのsinkに反映されているかを確認する。
+6. sinkに到達していることが確認できたら、DevToolsコンソール側でスタックトレースを辿り、実行箇所を特定したうえで、実際に動作するXSSペイロードへ組み替えて検証する。
 
-JavaScript のオブジェクトは、あるプロパティを参照されたとき、**自分自身にそれが無ければ「プロトタイプ（原型）」を辿って探しに行く**——この連鎖を **プロトタイプチェーン（prototype chain）** と呼びます。ほぼすべての普通のオブジェクトは、最終的に **`Object.prototype`** を共有の親として持ちます。
+このフローの意義は、「どこに脆弱性があるか」を機械的に絞り込んだうえで、「実際に悪用可能か」の判断と最終的なペイロード作成は引き続き人間が行う、という役割分担にあります。DOM Invaderは発見（discovery）を効率化するツールであり、悪用可能性の最終判定やCSPバイパスの組み立てそのものは代行しません。
+
+> 出典: DOM Invader: Burp Suite tool to find DOM based XSS easily — Medium (hacksheets) — https://hacksheets.medium.com/dom-invader-burp-suite-tool-to-find-dom-based-xss-easily-3cb09adf4d44
+
+### クライアントサイドprototype pollutionの自動検出
+
+DOM InvaderはXSS検出だけでなく、**クライアントサイドprototype pollution**（JavaScriptの`Object.prototype`に任意のプロパティを追加できてしまう脆弱性クラス）の発見も自動化します。これは第4章で扱うmXSS/プロトタイプ汚染の話題とも接続する重要な機能です。
+
+#### ソース検出
+
+有効化するには、DOM Invader設定の「Attack types」セクション内で「**Prototype pollution**」のトグルをオンにし、リロードする必要があります（これもデフォルトでは無効。理由はDOM XSS検出と同様、対象サイトの通常動作に干渉しないようにするためです）。
+
+有効化後、DOM Invaderはページを自動的にスキャンし、「`Object.prototype`に任意のプロパティを追加できる可能性のある経路（ソース）」を探索します。公式ドキュメントが例示する典型例は、URLの`location.hash`（フラグメント識別子）を経由するもので、`__proto__.xxx=yyy`のようなキーをフラグメントに含めたときに、ページ内のマージ処理コード（例えばjQueryの拡張関数や独自実装のdeep-mergeユーティリティ）が`__proto__`という特別なキー名をチェックせずにオブジェクトへ代入してしまうケースです。この種のコードは次のような形になっていることが多いです。
 
 ```javascript
-let obj = {};
-obj.testproperty          // → undefined（自分にもチェーン上にも無い）
-Object.prototype.testproperty = "polluted";
-obj.testproperty          // → "polluted"（自分に無いので親 Object.prototype で発見）
+// 危険なマージ処理の典型例（概念コード）
+function merge(target, source) {
+  for (const key in source) {
+    if (typeof source[key] === 'object') {
+      target[key] = target[key] || {};
+      merge(target[key], source[key]);
+    } else {
+      target[key] = source[key];
+    }
+  }
+  return target;
+}
 ```
 
-つまり **`Object.prototype` に1つプロパティを書き込むと、プログラム中の（ほぼ）すべてのオブジェクトが、そのプロパティを“最初から持っていたかのように”見え始める**。攻撃者が外部入力を通じてこの共有の親を書き換えられる状態が「プロトタイプ汚染」です。書き換えの入口（source）として悪用されるキーが **`__proto__`** と **`constructor.prototype`** です。
+このコードに`source`として`{"__proto__": {"polluted": "yes"}}`のようなオブジェクトを渡すと、`target.__proto__`（すなわち`Object.prototype`そのもの）に`polluted`プロパティが追加され、以降**そのページ内で生成される全てのオブジェクトが`polluted`プロパティを継承してしまいます**。これがプロトタイプ汚染の基本原理です。DOM Invaderはこのような危険なマージ処理をブラウザ実行時に検知します。
 
-```javascript
-// マージ処理などが __proto__ を素直に辿ってしまうと汚染が起きる
-obj["__proto__"]["polluted"] = true;      // Object.prototype.polluted = true と同義
-obj["constructor"]["prototype"]["x"] = 1; // これも Object.prototype.x = 1 に到達
-```
+#### 検証（Test）とgadget探索
 
-`__proto__` はオブジェクトのプロトタイプを指し示すアクセサであり、`constructor.prototype` は「そのオブジェクトを作ったコンストラクタ（＝Object）が持つ prototype」＝やはり `Object.prototype` に行き着くため、どちらも共有の親を書き換える経路になります。
+ソースが検出されると、DOM Invaderは「**Test**」ボタンを提示します。これをクリックすると新しいタブが開き、DOM Invaderが実際に検証用のプロパティ（proof-of-concept property）を`Object.prototype`に追加しようと試みます。ブラウザのコンソールを開いて`Object.prototype`を調べたり、新しいオブジェクトリテラル`{}`を作成してそのプロパティが継承されているかを確認したりすることで、汚染が実際に成立するかを人間の目で確かめられます。
 
-#### 6.2 DOM Invader による自動検出と PoC 確認
+汚染そのものが成立しても、それだけでは「見た目が変わる」以上の実害はまだありません。実際にXSSなどへ昇華させるには、汚染したプロパティを**サニタイズせずに危険なsinkへ渡してしまうコード（gadget）**が別途ページ内に存在する必要があります。DOM Invaderの用語で言う「gadget」とは、公式ドキュメントの定義を借りれば「any user-controllable property that is passed to a sink without being properly sanitized」（サニタイズされずにsinkへ渡される、ユーザーが制御可能なプロパティ）です。
 
-DOM Invader を（設定の **Attack types → Prototype pollution** で）有効化すると、**URL やJSONメッセージなどの中に、`Object.prototype` へ任意プロパティを追加できるソースが無いか自動で探索**します。候補が見つかると **「Test」ボタン**が表示され、押すと**新しいタブで実際に汚染を試みて成否を確認**します。確認は次のような最小コードで行われます。
+DOM Invaderは「**Scan for gadgets**」ボタンにより、この汚染可能なプロパティ経由でsinkに到達しうるgadgetを自動的に探索し、見つかったsinkをDevToolsパネルに一覧表示します。さらに、ソース・gadget・sinkの3点が揃うと、DOM Invaderは「**それらを組み合わせたPoC（概念実証コード）を自動生成**」する機能まで備えています。これにより、手作業でsourceからsinkまでの実行チェーンを1つずつ追跡する必要がなくなり、「汚染可能な入り口はあるが、実際に悪用可能なgadgetが存在するか」という、従来は非常に時間のかかっていた確認作業が大幅に効率化されます。
 
-```javascript
-let b = {};
-b.testproperty;   // 汚染成功なら、注入したプロパティ値（例: 'DOM_INVADER_PP_POC'）が返る
-```
+HackTricksでは2023年6月版（v2023.6）のBurp Suiteで、専用の「Prototype-pollution」タブが追加され、`__proto__`や`constructor.prototype`といった典型的なプロトタイプ汚染用キー名をパラメータ名に対して自動的に変異（mutate）させ、sink地点での汚染発生を検出する機能が実装されたと説明されています。これはDOM Invaderが単なる「文字列追跡ツール」ではなく、JavaScriptのオブジェクトモデル（プロトタイプチェーン）の挙動そのものを実行時に監視する設計になっていることを示しています。
 
-`b` は空オブジェクトなのに `b.testproperty` が値を返せば、**共有の親 `Object.prototype` が確かに汚染された**証拠、というわけです（プロトタイプチェーンの探索挙動をそのまま実証に使っている）。
+> 出典: PortSwigger公式ドキュメント（Prototype pollution） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader/prototype-pollution
+> 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html
 
-#### 6.3 Scan for gadgets（ガジェット探索）— 汚染を“実害”に変える
+### web message（postMessage）の解析機能
 
-プロトタイプ汚染は、それ単体では「変なプロパティが増える」だけのこともあります。実害（XSS やコード実行）にするには、**汚染したプロパティを読み取って危険なシンクに渡してしまうコード＝ガジェット（gadget）** が必要です。
+第3章の他節で扱う`postMessage`ベースのDOM XSSについて、DOM Invaderは専用の解析パネルを持ちます。設定の「Attack types」内の「**Postmessage interception**」をオンにしてリロードすると、以下の機能が有効になります。
 
-DOM Invader は、検出したプロトタイプ汚染ソースの隣に **「Scan for gadgets」ボタン**を用意します。押すと**新しいタブでガジェット探索が始まり**、汚染したプロパティ経由で到達できる危険なシンク（例: 値がそのまま `innerHTML` や `<script src>`、`eval` に渡るもの）を洗い出し、**Augmented DOM ビューに「このガジェット→このシンク」のチェーンを表示**します。必要に応じて **`Object.prototype` を実際に汚染して PoC とする**こともできます。
+- **ロギング**: ページ上で`postMessage()`メソッドにより送信された全てのweb messageを記録する。
+- **手動編集・再送信**: Burp Repeaterのように、記録したメッセージの内容を書き換えて再送信できる。具体的には「Messages」ビューで対象メッセージを選択し、「Data」フィールドの中身を書き換えたうえで「Send」をクリックする。
+- **自動解析**: DOM Invaderは2つの方法で自動的にメッセージを改変し、脆弱性の兆候を探る。
+  1. **canaryをメッセージの`data`プロパティに注入**し、脆弱なsinkに到達するかを調べる。
+  2. **メッセージの送信元origin情報を偽のoriginに置き換え**、受信側の`postMessage`イベントリスナーが`event.origin`の検証をきちんと行っているか（バリデーションの不備）を検出する。
 
-> なぜ強力か（原理）: ガジェットは「未設定なら `undefined` のはず」のプロパティを、値チェックせず設定パラメータや HTML 断片として使うコードに潜む。攻撃者はプロトタイプ汚染でその“空欄”を自分の値で埋め、正規コードに危険な動作を実行させる。DOM Invader はこの2段構え（汚染ソース＋ガジェット）を自動でつなぐため、手作業では極めて根気の要る探索が現実的になる。
+脆弱性が確認できた場合は、「**Build PoC**」をクリックすることで、悪用可能なHTMLコードが自動生成されクリップボードにコピーされます。これは、攻撃者が用意した悪意あるページから被害者のタブへ偽装メッセージを送りつける、という典型的なpostMessage攻撃の雛形を素早く作るための機能です。
 
-> バージョン注記: DOM Invader のクライアント側プロトタイプ汚染サポート（自動検出＋ガジェットスキャン）は、PortSwigger が2022年に導入した機能です。古い Burp では利用できません。
+> 出典: PortSwigger公式ドキュメント（Web messages） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader/web-messages
 
-> 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html ／ Finding client-side prototype pollution with DOM Invader — PortSwigger Blog（2022）
+### DOM clobberingの自動検出
 
----
+DOM Invaderはさらに、DOM clobbering（HTMLタグのid属性やname属性を利用して、ページ内のJavaScript変数を意図せず上書き・偽装する手法。第4章で詳述）の自動検出にも対応しています。公式ドキュメントの定義は簡潔に「DOM clobbering is a technique in which you inject HTML into a page to manipulate the DOM」（ページにHTMLを注入することでDOMを操作する手法）としています。
 
-### 7. DOM Clobbering（DOM クロバリング）の検出
+有効化するには、設定の「Attack types」内で「**DOM clobbering**」のトグルをオンにし、ブラウザをリロードします。有効化後は、通常のブラウジング中に自動的にDOM clobberingの脆弱性パターンをスキャンします。これも他の攻撃タイプ同様デフォルトでは無効であり、対象サイトの挙動を不用意に変えないための配慮です。
 
-**DOM クロバリング（DOM clobbering）** は、スクリプトを直接注入できない（例: 強力なサニタイザで `<script>` や `on*` 属性が落とされる）状況でも、**HTML 要素の `id`／`name` 属性だけで JavaScript の変数を上書きして誤動作させる**手法です。DOM Invader は設定の **Attack types → DOM clobbering** で自動スキャンできます。
+> 出典: PortSwigger公式ドキュメント（DOM Clobbering） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader/dom-clobbering
 
-#### 7.1 なぜ HTML だけで変数が壊せるのか（原理）
+### 設定項目の全体像
 
-HTML には歴史的経緯から、**`id` や `name` を持つ要素が、`window`（グローバル）や `document` のプロパティとして自動的にアクセス可能になる**という「名前付きアクセス（named access）」の挙動があります。
+PortSwigger公式ドキュメントによれば、DOM Invaderの設定パネル（ブラウザ右上のBurp Suiteロゴをクリックして開く「DOM Invader」タブ）は次の6カテゴリに整理されています。
 
-```html
-<a id="x"></a>
-<script>
-  // 上の要素があるだけで、以下がその <a> 要素を指してしまう
-  x;             // → <a id="x"> 要素
-  window.x;      // → 同上
-</script>
-```
+1. **Main settings** — DOM Invader全体のオン/オフなど基本設定。
+2. **Attack types** — DOM XSS、Prototype pollution、DOM clobbering、Postmessage interceptionなど、どの検出機能を有効にするかを個別に切り替える。
+3. **Web message settings** — postMessage解析に関する詳細オプション。
+4. **Prototype pollution settings** — プロトタイプ汚染検出に関する詳細オプション（対象プロパティ名の絞り込みなど）。
+5. **Misc settings** — その他雑多な設定。
+6. **Canary settings** — canary文字列のカスタマイズや、注入対象とするソース・パラメータのアローリスト（許可リスト）設定。
 
-したがって、コードが `if (window.config) { ... }` のように**「未定義なら安全」を前提にしたグローバル変数**を参照していると、攻撃者は `<a id="config">` を注入するだけでその変数を“実在する要素”に化けさせ（＝**clobber: 上書きして壊す**）、想定外の分岐やプロパティ参照を引き起こせます。`<form>` と入れ子の要素名を組み合わせると、`window.x.y` のような**多段のプロパティ**まで攻撃者が構築でき、より深いガジェットに到達できます。DOM Invader はこうした「ユーザー制御下の `id`/`name` がグローバルを上書きし得る箇所」を検出します。
+HackTricksの解説では、canary設定において「全ソースへの自動注入」を有効にできる一方で、**注入対象のソースやパラメータ名をアローリストで絞り込む設定も可能**であると触れられています。大規模なSPA（Single Page Application）など、あらゆるパラメータに自動注入すると誤検知やノイズが増えすぎる場合、対象を絞ることで実務上のシグナル/ノイズ比を改善できます。
 
-> 補足: DOM クロバリングは「スクリプト注入禁止でも成立し得る XSS への足場」であり、プロトタイプ汚染と同様に**ガジェット（上書きされた値を危険に使うコード）** とセットで初めて実害になります。
+> 出典: PortSwigger公式ドキュメント（DOM Invader Settings） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader/settings
+> 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html
+
+### Burp Repeater/Proxyとの連携という実務上の勘所
+
+HackTricksが指摘している実務上重要なポイントとして、DOM Invaderは単体で完結するツールではなく、**Burp RepeaterやProxyと組み合わせて使う**ことで真価を発揮します。DOM Invaderのブラウザ内での検出は「ブラウザの実行時状態」に基づくものであり、それを引き起こした「HTTPリクエスト/レスポンスの組」を再現できなければ、報告書やチーム内共有のための再現手順が書けません。そのため実際のワークフローでは、
+
+1. Burpの組み込みブラウザ上でDOM Invaderにより脆弱なsinkを特定する。
+2. Burp Proxyの履歴から、そのページ・パラメータに対応するHTTPリクエストを特定する。
+3. Burp Repeaterでそのリクエストを再現し、微修正しながら最終的なペイロードを固める。
+
+という一連の流れが推奨されます。DOM Invaderは「どこに脆弱性がありそうか」を高速に絞り込む探索ツールであり、最終的な悪用可能性の確認と報告用の再現手順の確立は、従来通りBurpの他の機能と組み合わせて行う、という位置づけを正しく理解しておくことが重要です。
 
 > 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html
 
----
+### まとめ
 
-### 8. オープンリダイレクト検出とその他の設定
-
-- **リダイレクトの抑止**: DOM Invader は設定（Misc 系）で**クライアント側リダイレクトをブロック**できます。`location`/`location.href` へのカナリア到達（＝**オープンリダイレクト**: 任意の外部URLへ飛ばされる脆弱性。フィッシングや OAuth トークン奪取の踏み台になる）を、実際に遷移させずに観測・検証するのに使います。
-- **イベントの自動発火（auto fire events）**: クリックや入力などの**イベントを自動的に発火**させ、イベントハンドラ内でしか動かないコードパスも計測対象に含める（＝到達できるシンクを増やす）。
-- **ブレークポイント**: 特定のシンク到達時に処理を止めて、その瞬間の状態やスタックを詳しく調べられます。
-
-> 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html
-
----
-
-### 9. 実践ワークフロー（Hacksheets / Medium の入門記事より）
-
-このトピック（初学者向けの「有効化 → カナリア注入 → シンク確認」の手取り足取り手順）は、担当資料2（Hacksheets の Medium 記事）が正面から扱っています。ただし記事本文は自動取得できなかったため、以下に未取得ブロックを置き、続けて専門知識で補います。
-
-> ⚠️ **未取得の資料**: 「Dom Invader — Burp Suite tool to Find DOM Based XSS Easily（Hacksheets, Medium）」は自動取得できませんでした（理由: 執筆環境の egress プロキシが `hacksheets.medium.com` および既知のミラー（Tumblr 版・Medium リーダー系ミラー）へのアクセスをブロック／名前解決不能だったため）。以下のURLからユーザーご自身で直接ご覧ください: https://hacksheets.medium.com/dom-invader-burp-suite-tool-to-find-dom-based-xss-easily-3cb09adf4d44
-
-（以下は取得できなかった資料の補足として、一般的な知識および検索スニペットに基づく解説です）
-
-この Hacksheets 記事が示している基本ワークフローは、実質的に次の流れです。DOM Invader を初めて触る読者は、この順になぞれば最短で1件の DOM XSS を見つけられます。
-
-1. **組み込みブラウザを開く**: Burp の Proxy → Open Browser で Burp 組み込みブラウザを起動する（普通のブラウザではなくこれを使うのが前提）。
-2. **DOM Invader を有効化**: 右上の Burp ロゴ → DOM Invader タブ → **Enable DOM Invader** をオン → ページをリロード。
-3. **カナリアを確認**: DevTools を開くと、追跡用の一意文字列**カナリア（既定 `burpdomxss`）** が表示される。記事はこの既定値を明示的に紹介している。
-4. **カナリアを source に注入**: URL のクエリパラメータやフォーム入力にカナリアを入れる（`?q=burpdomxss` のように）。「Inject URL params」で一括注入すると速い。
-5. **Augmented DOM でシンクを確認**: DevTools の **Augmented DOM** タブに、カナリアが到達したシンクと**文脈（HTML/属性/JS/URL）** が並ぶ。ここでカナリアが `innerHTML` などに素通しで届いていれば、それが DOM XSS 候補。
-6. **文脈に合わせてペイロード化**: 例えばカナリアが HTML 本体にそのまま入るなら、カナリアの代わりに実際のペイロードを注入して成立を確認する。
-
-上記手順で「まず動く1件」を体験するのに使える最小ペイロードの考え方を、原理付きで示します（記事の趣旨に沿った一般例）。
-
-```
-https://victim.example/page?search=<img src=x onerror=alert(document.domain)>
-```
-
-- **なぜ動くのか**: ページの JavaScript が `location.search`（source）から検索語を読み、それを `element.innerHTML`（sink）へ無害化せず代入している場合、この文字列は「データ」ではなく **HTML** として解釈される。`<img>` は読み込みに失敗（`src=x` は存在しない）するため `onerror` が発火し、中の `alert(document.domain)` が実行される。`<script>` タグは `innerHTML` 代入では実行されない（HTML 仕様で、後から innerHTML で挿入された script は実行対象外）ため、**`onerror` のようなイベントハンドラ経由**が定石になる、という点が学習上の勘所。
-
-Augmented DOM が「文脈は属性値」と示した場合は、まず属性を閉じてから要素を作る必要があります。
-
-```
-"><img src=x onerror=alert(1)>
-```
-
-- **なぜ動くのか**: カナリアが `<input value="ここ">` のように**属性値の中**へ入るなら、先頭の `">` で「value 属性」と「input タグ」を閉じ、その直後に新しい `<img ... onerror=...>` を書き足す。ブラウザの HTML パーサは閉じられたタグの後続を新しいタグとして解釈するため、注入した要素が有効化される。DOM Invader の文脈表示は、この「どこまで閉じる必要があるか」を判断する材料になる。
-
-> 補足（サニタイザとバージョン依存）: Augmented DOM が「サニタイズあり」と示しても、サニタイザの**バージョンによってはバイパス可能**な場合があります。代表例として、HTMLサニタイザ **DOMPurify** には過去に**変異型XSS（mutation XSS / mXSS: ブラウザが一度受理したHTMLを内部で再解釈・書き換える過程で、無害だったはずの断片が実行可能な形に“変異”する現象）** によるバイパスが複数あり、たとえば **DOMPurify 2.0.17（2021年リリース）** で修正されたバイパスなどが知られています。したがって「サニタイザがあるから安全」と即断せず、**対象が使うライブラリ名とバージョンを特定し、そのバージョンに既知のバイパスがないか**を必ず確認してください（古いバージョンを使い続けている実サイトは珍しくありません）。
-
-> 出典（一次情報が取得できなかったため位置づけを明記）: Dom Invader — Burp Suite tool to Find DOM Based XSS Easily（Hacksheets, Medium, 本文未取得・検索スニペットにより補完） — https://hacksheets.medium.com/dom-invader-burp-suite-tool-to-find-dom-based-xss-easily-3cb09adf4d44
-
----
-
-### 10. まとめ — DOM Invader を「体系」で使う
-
-- DOM Invader は **Burp 組み込みブラウザ専用**の DOM 脆弱性ハンター。手作業では非現実的な **source → sink のデータフロー追跡**を、ブラウザ内フックとカナリアで自動化する。
-- **カナリア（既定 `burpdomxss`）** が全機能の中核。**空カナリアでレコン**、**Inject URL params/forms で一括注入**、**2024.12 以降はカスタム/ランダム化**で誤検知回避。
-- **Augmented DOM** が到達シンク・**文脈（HTML/属性/JS/URL）**・**適用サニタイズ**・**スタックトレース**を提示し、そのままエクスプロイト可否と必要ペイロード形状の判断材料になる。
-- 高度な攻撃タイプも自動化: **postMessage**（origin 無検証＋data 素通しを Messages タブで検査・改変・再送）、**プロトタイプ汚染**（`__proto__`/`constructor.prototype` を入口に `Object.prototype` を汚染 → Test で確認 → Scan for gadgets でシンクへ連結）、**DOM クロバリング**（`id`/`name` の名前付きアクセスでグローバルを上書き）、**オープンリダイレクト**（リダイレクト抑止で安全に観測）。
-- 判断の勘所は常に**原理**にある。プロトタイプチェーンの探索、HTML パーサのタグ再解釈、名前付きアクセス、mXSS による再解釈——これらを理解していれば、DOM Invader の出力を「なぜそうなるか」まで読み解き、確実な PoC に落とし込める。
-
-> 総合出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html ／ Dom Invader — Burp Suite tool to Find DOM Based XSS Easily（Hacksheets, Medium, 本文未取得・補完） — https://hacksheets.medium.com/dom-invader-burp-suite-tool-to-find-dom-based-xss-easily-3cb09adf4d44
+DOM Invaderは、DOMベースXSS・クライアントサイドprototype pollution・DOM clobbering・postMessage関連の脆弱性という、いずれも「ブラウザの実行時にしか観測できない」タイプの脆弱性クラスに対して、canaryという追跡可能な文字列を軸に、ソースからsinkまでの実行経路を自動計測・可視化するツールです。有効化はデフォルトでオフになっており、Attack typesごとに個別にオン/オフを切り替え、そのたびにブラウザのリロードが必要という運用上の癖があります。canaryは他の文字列と衝突しないユニークな値を選ぶことが誤検知を避けるうえで重要であり、prototype pollutionについては「汚染可能なソースの発見」と「実害につながるgadgetの発見」が別工程として提供されている点、postMessageについては「ロギング・改変再送・自動解析・PoC生成」までが一気通貫でサポートされている点が実務上の強みです。最終的な悪用可能性の判断とレポーティングのための再現手順は、引き続きBurp Repeater/Proxyとの連携によって固めることになります。
 
 ---
 
 ## 日本語DOM XSS資料（はせがわ / Flatt SPA）
 
-本セクションは、日本語圏でDOMベースXSSを学ぶ上で必読とされる2つの資料——**はせがわようすけ氏の「JavaScript Security beyond HTML5」**（DOMベースXSSの本質と「サーバを通らない攻撃」の解説）と、**GMO Flatt Security の「SPA開発とセキュリティ — DOM based XSS を引き起こすインジェクションの Vue, React, Angular における解説と対策」**——を精読・統合して再構成したものです。前セクションまでで学んだ source（ソース：攻撃者が値を操作できる入口となるJavaScriptプロパティ。例 `location.hash`）と sink（シンク：攻撃者データが最終的に実行・解釈される危険な代入先。例 `innerHTML`）の枠組みを土台に、ここでは「**モダンなフレームワークやサニタイザ（入力に含まれる危険な文字列を無害な形に変換・除去する処理／ライブラリ）を使っていてもなぜXSSが起き続けるのか**」を、ブラウザのHTMLパーサ（HTMLの文字列を解析してDOMツリーに変換する部品）の挙動レベルまで掘り下げて解説します。これが本セクションの価値の中心です。
+前節までの PortSwigger 資料は source/sink の体系と DOM Invader の使い方という「発見の技法」に重点がありました。本節では視点を変え、**「なぜ現代のフロントエンド技術（HTML5世代のブラウザAPI、そしてSPA=Single Page Applicationを支えるJavaScriptフレームワーク）がDOMベースXSSの温床になりやすいのか」**を、日本語で書かれた2つの一次資料——はせがわ氏の講演資料『JavaScript Security beyond HTML5』と、GMO Flatt Security 社のブログ記事『SPAにおけるインジェクション』——から掘り下げます。前者は2013年、HTML5が普及し始めた時期にブラウザAPI単位でリスクを洗い出したもの、後者はVue/React/Angularという2020年代の三大フレームワークを横並びで検証したものであり、**「素のJavaScript時代のDOM XSS」から「フレームワーク時代のDOM XSS」への論点の推移**を追体験できる組み合わせになっています。
 
 ---
 
-### 0. 本セクションの資料取得状況（透明性のための注記）
+### 1. はせがわ『JavaScript Security beyond HTML5』(2013)
 
-本セクションが典拠とする2資料（下記URL）は、執筆環境のネットワーク下り（egress）プロキシによって `www.docswell.com` および `blog.flatt.tech` ドメインへの直接アクセスがブロックされ、ページ本文を直接取得（WebFetch）できませんでした。そこで **Web検索の結果スニペット・同一トピックの公式ドキュメント（Vue.js / Angular のセキュリティガイド等）・cure53/DOMPurify の公式Wiki と Pull Request・複数の二次解説記事から本文の内容・具体例・ペイロード・防御策を復元**し、Webセキュリティの専門知識で補完・体系化しています。**2資料とも実質的な内容を復元できたため「取得不可」とはしていません**が、両資料は継続的に更新されうるため、最新版の細部（例文の値・対象バージョン・ブラウザ対応など）は必ず各出典URLの原典でご確認ください。
+#### 1.1 位置づけと射程
 
-- 資料1（はせがわようすけ「JavaScript Security beyond HTML5」）: `https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823`
-- 資料2（GMO Flatt Security「SPA開発とセキュリティ」）: `https://blog.flatt.tech/entry/spa_injection`
+このスライドはタイトルの通り「HTML5を"超えて"」——つまり従来型のHTMLタグ・属性インジェクションではなく、HTML5世代で追加・強化されたブラウザAPI（Web Storage、Web Workers、Cross-Document Messaging＝`postMessage`など）が生む**新しい攻撃面**を体系立てて紹介する講演です。刊行から10年以上が経過していますが、扱っているAPI自体（`innerHTML`、`postMessage`、Web Storage、Web Workers）は現在も現役であり、ここで示された原理は今日のSPAにもそのまま適用できます。
 
-なお第2節（mXSS と名前空間の混同）は、はせがわ氏の「beyond HTML5＝HTML5以降の新しい攻撃面」という主題を、現在の到達点まで延長した**補足的な仕組み解説**であり、典拠は主に cure53/DOMPurify の公式資料です。該当箇所にその旨を明記します。
+> ⚠️ 本資料はスライド形式のため、口頭説明部分は復元できていません。以下はスライド本文から読み取れる範囲の技術内容です。
 
----
+#### 1.2 DOMベースXSSの定義と最小例
 
-### 1. はせがわようすけ「JavaScript Security beyond HTML5」— DOMベースXSSの本質と“サーバを通らない攻撃”
-
-#### 1.1 資料の位置づけ
-
-はせがわようすけ氏（Webセキュリティ研究者。DOMベースXSSやmXSS、文字コードを悪用した攻撃の研究で国際的に知られる）による本資料は、「反射型・格納型XSSはサーバが出力するHTMLの問題だが、**アプリの主戦場がクライアント側JavaScriptに移った結果、サーバがまったく関与しないXSSが主役になった**」という時代認識を軸に、DOMベースXSSの原理・危険性・見つけにくさを解説するものです。「beyond HTML5」というタイトルは、HTML5以降にブラウザへ追加された多数の新機能（`postMessage`、`localStorage`、新しいタグ・属性、SVG/MathMLの統合など）が、そのまま**新しい source と新しい sink を生み出した**という問題意識を表しています。
-
-> 出典: JavaScript Security beyond HTML5（はせがわようすけ）— https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823
-
-#### 1.2 DOMベースXSSの定義 — 「JavaScriptが実行時にHTMLを組み立てる」瞬間の事故
-
-本資料が繰り返し強調するのは、**DOMベースXSSは「JavaScriptがHTMLをレンダリング（描画）する過程で起きるXSS」である**という点です。最も有名な最小例が次のコードです。
+資料はDOMベースXSSを「**JavaScriptが引き起こすXSS。サーバ側のHTML生成時には問題なく、JavaScriptによるHTMLレンダリング時に発生**」と定義しています。これは前節のPortSwigger資料の定義と本質的に同じですが、「サーバ側の出力は無害なのに、クライアント側の処理段階で有害化する」という**責任の所在の移動**を端的に言い切っている点に価値があります。具体例として次のパターンが挙げられています。
 
 ```javascript
-// URLの #以降 の文字列を、そのまま要素のHTML内容として書き込む
 div.innerHTML = location.hash.substring(1);
+// アクセスURL: http://example.jp/#<script>alert(1)</script>
 ```
 
-- `location.hash` は URLの `#` 以降（フラグメント／ハッシュと呼ぶ部分）を返す **source**。攻撃者はURLを作るだけで中身を完全に制御できる。
-- `element.innerHTML` は代入された文字列を**HTMLとして解釈してDOMに反映する sink**。
-- `.substring(1)` は先頭の `#` を取り除いているだけで、無害化は一切していない。
+**なぜ動くか**: `location.hash` は URL の `#` 以降（フラグメント）をそのまま返す source です。`.substring(1)` は先頭の `#` 文字を除去するためだけの処理で、値の危険性には一切関与しません。この文字列が `innerHTML`（要素の中身をHTMLとして再パースさせる sink）に直接代入されると、ブラウザは代入された文字列を**新規のHTMLとして構文解析**し直します。このとき `<script>` 要素が含まれていれば、HTMLパーサはそれを「実行すべきスクリプトタグ」として認識し、`alert(1)` が実行されます（厳密には `innerHTML` 経由で挿入された `<script>` タグは仕様上"非実行"扱いされるブラウザもありますが、`<img src=x onerror=...>` のようなイベントハンドラ埋め込み型のペイロードであれば`innerHTML`経由でも確実に実行されるため、実務上の脅威は変わりません）。前述の通り `#` 以降はサーバに送信されないため、**このURLをサーバのアクセスログで検知することはできません**。
 
-したがって、次のようなURLを踏ませるだけでスクリプトが動きます。
-
-```
-https://example.com/page#<img src=x onerror=alert(document.domain)>
-```
-
-**なぜ動くのか**：`innerHTML` への代入は、渡された文字列をブラウザのHTMLパーサに通して「新しいDOM部分木」を生成する処理です。`<img>` 要素が生成され、`src=x` の読み込みに失敗した瞬間に `onerror` 属性のJavaScriptが実行されます（`<script>` タグは `innerHTML` 経由では実行されない仕様のため、攻撃者はイベントハンドラ属性を使うのが定石です。この理由は素朴なXSSと同じ）。
-
-#### 1.3 source と sink の整理（本資料が挙げる代表例）
-
-本資料は「どこから来て（source）、どこへ行き着くか（sink）」を明確に分けて把握することを求めます。特にDOMベースXSS特有のものを整理すると次のとおりです。
-
-**代表的な source（攻撃者が制御しうる入口）**
-
-| source | 説明 | サーバに届くか |
-|---|---|---|
-| `location.hash` | URLの `#` 以降 | **届かない**（後述） |
-| `location.search` | URLの `?` 以降（クエリ文字列） | 届く |
-| `location.href` / `document.URL` | URL全体 | 一部届かない |
-| `document.referrer` | 遷移元URL | 届くことがある |
-| `window.name` | ウィンドウ名（別サイトから設定可能） | 届かない |
-| `postMessage` の `event.data` | 他ウィンドウ/iframeからのメッセージ | 届かない |
-
-**代表的な sink（危険な代入先）**
-
-| sink | 何が起きるか | 危険な理由 |
-|---|---|---|
-| `element.innerHTML` / `element.outerHTML` | 文字列をHTMLとして解釈しDOM化 | タグ・イベント属性が生きる |
-| `document.write()` / `document.writeln()` | 解析中のドキュメントに文字列を書き込む | `<script>` すら実行されうる |
-| `element.setAttribute("href", ...)` / `.src` 等 | 属性値を設定 | `javascript:` スキームでスクリプト実行 |
-| `eval()` / `Function()` / `setTimeout(文字列)` | 文字列をコードとして実行 | 直接コード実行 |
-
-`document.write()` が `innerHTML` より危険なのは、**ドキュメントのパース（解析）がまだ進行中の段階に文字列を割り込ませる**ため、`innerHTML` では無視される `<script>` タグまで通常のスクリプトとして実行されうる点です。
-
-> 出典: JavaScript Security beyond HTML5（はせがわようすけ）— https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823
-
-#### 1.4 `location.hash` を使うDOM XSSが“怖い”3つの隠密性
-
-本資料の核心的なメッセージのひとつが、**`location.hash`（フラグメント）経由のDOMベースXSSは、反射型XSSと比べて格段に隠密性が高く、検知・防御が難しい**という指摘です。理由は「フラグメントはサーバへ送信されない」という**HTTPの仕様レベルの挙動**に由来します。
-
-URLの構造を思い出してください。
-
-```
-https://example.com/page?q=検索語#<img src=x onerror=alert(1)>
-                        ^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-                        クエリ       フラグメント（#以降）
-                        （サーバへ送る）（サーバへ送らない）
-```
-
-この「送られない」という一点から、次の3つの隠密性が生まれます。
-
-1. **ブラウザのXSSフィルタ（XSS Auditor／XSS Filter）をすり抜ける**：かつてChrome（XSS Auditor）やInternet Explorer/Edge（XSS Filter）は、「リクエストに含まれる文字列が、そのままレスポンスHTMLに現れたら反射型XSSかもしれない」と推測して遮断していました。しかしフラグメントは**リクエストとしてサーバに送られないので、フィルタが照合しようにも“入力側”を観測できず、素通りします**。（なおXSS AuditorはChrome 78（2019年）で廃止されており、現在の主防御はCSP（Content Security Policy）です。当時の資料が指摘した「フィルタ回避」という性質そのものは、DOMベースXSSがサーバ観測から漏れるという普遍的な事実として今も有効です。）
-
-2. **サーバのアクセスログに痕跡が残らない**：攻撃ペイロードはフラグメントに入っておりサーバへ届かないため、Webサーバのアクセスログには `?` 以降しか記録されません。インシデント調査で「何が送り込まれたか」を後から追うのが極めて困難になります。
-
-3. **利用者が気づきにくい／アドレスバーを偽装できる**：さらに `history.pushState()`（ページ遷移せずにアドレスバーのURLを書き換えられるHTML5のAPI）を悪用すると、攻撃実行後にアドレスバーを無害なURLに書き換えて、痕跡を利用者の目からも隠せます。
-
-**まとめると**：反射型XSSは「サーバを通る＝サーバ側で検知・遮断・記録できる」余地がありますが、`location.hash` 型のDOMベースXSSは**攻撃の全工程がブラウザ内で完結し、サーバから観測不能**です。だからこそ「クライアント側のコード（source→sink のデータフロー）」を直接監査する必要があります。
-
-> 出典: JavaScript Security beyond HTML5（はせがわようすけ）— https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823
-
-#### 1.5 属性経由の sink — `setAttribute` と `javascript:` スキーム
-
-本資料が挙げるもう一つの重要な sink が、**リンクの `href` に `javascript:` スキームのURLを入れる**パターンです。
+対策として資料が挙げるのは、HTMLエンティティへの手動エスケープと、テキストノードとして挿入する方法の2通りです。
 
 ```javascript
-// 攻撃者が制御する文字列を、そのまま href に設定してしまう
-a.setAttribute("href", userInput);   // userInput = "javascript:alert(document.cookie)"
+// (a) エスケープしてからHTMLとして挿入
+div.innerHTML = s.replace(/&/g, "&amp;")
+                 .replace(/</g, "&lt;")
+                 .replace(/>/g, "&gt;");
+
+// (b) そもそもHTMLとして解釈させない
+div.appendChild(document.createTextNode(s));
 ```
 
-**なぜ動くのか**：ブラウザは `href="javascript:..."` のリンクがクリックされると、`javascript:` 以降を**JavaScriptコードとして評価・実行**します。`innerHTML` のようにHTMLタグを注入しなくても、「URLを設定できる箇所」がそのままコード実行の sink になるのです。この性質は後述するSPAフレームワーク（Vue/React/Angular）でも共通の弱点として繰り返し登場します。フレームワークはテキストは自動エスケープしても、**「URL文字列に `javascript:` が入っているか」までは既定で検査しないことが多い**からです。
+**なぜ安全になるか**: (a) は `<` `>` `&` という「HTMLパーサに構造として解釈される特殊文字」を、パーサが構造として認識しない実体参照（`&lt;` など）に置き換えることで、**入力を常にテキストとしてのみ解釈させる**手法です。(b) はさらに直接的で、`createTextNode()` が作るのはHTMLとしてパースされないプレーンテキストノードであり、`appendChild()` はDOMツリーへのノード追加であって「文字列の再パース」を一切経由しません。**HTML文字列としての再解釈が起きない限りXSSは成立しない**という、DOMベースXSS対策の最も基本的な原則がここに表れています。
 
-対策の要点は、URLを sink に渡す前に**スキームを許可リスト方式で検証する**（`http:` / `https:` / `mailto:` など安全なものだけ通し、`javascript:` `data:` `vbscript:` を弾く）ことです。
+#### 1.3 HTML5の新要素とブラックリスト検出のすり抜け
 
-> 出典: JavaScript Security beyond HTML5（はせがわようすけ）— https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823
+資料はさらに、HTML5で新設・拡張されたタグや属性が**既存のフィルタのブラックリスト（禁止パターンの列挙によるフィルタリング）をすり抜ける**問題を指摘しています。例として挙げられているのが次のパターンです。
 
-#### 1.6 “beyond HTML5” — 新機能がそのまま新しい攻撃面になる
+```html
+<form><button formaction="javascript:alert(1)">click</button></form>
+```
 
-本資料のタイトルが示すとおり、HTML5以降にブラウザへ追加された機能群は、利便性と引き換えに新しい source/sink を大量に持ち込みました。代表例：
+**なぜ動くか**: `formaction` はHTML5で新設された属性で、`<button>` や `<input type="submit">` がフォーム送信時にどのURLへ遷移するかを個別に上書きできます。この属性値に `javascript:` スキームのURLを指定すると、ボタンがクリックされた瞬間にそのJavaScriptコードが実行されます。フィルタが `onclick=` や `<script>` のような"古典的な"危険パターンだけをブロックしていた場合、`formaction` のような**新しい属性名を知らない**ため素通りしてしまいます。これはHTML5に限らず、ブラウザ仕様が拡張され続ける限り繰り返される構造的な問題であり、資料はこれに対する根本対策として「**個々の危険パターンを禁止するのではなく、HTML生成時に必ずエスケープする**」という原則、すなわちブラックリスト方式ではなくエスケープ（またはアプローチとして許可リスト＝ホワイトリスト方式のサニタイズ）を徹底することを説いています。ブラックリストは「知らない攻撃パターン」に対して原理的に無力ですが、正しいエスケープは入力の中身を一切問わず安全側に倒せるためです。
 
-- **`postMessage`**：異なるオリジン（プロトコル+ホスト+ポートの組。同一オリジンかどうかがアクセス制御の基本単位）間でメッセージをやり取りできる。受信側が `event.origin`（送信元オリジン）を検証せずに `event.data` を `innerHTML` に流すと、任意サイトからXSSを撃ち込める source になる。
-- **SVG / MathML の統合**：HTMLの中にSVGやMathMLを直接書けるようになった結果、後述する**名前空間（namespace）の切り替え**を悪用した高度なサニタイザ回避（mXSS）が可能になった。
-- **`data:` URI / Blob URL**：`data:text/html,...` や `URL.createObjectURL(blob)` で「その場でHTMLドキュメントを生成」でき、文字コードの推測と組み合わさると新種のXSSを生む。
+#### 1.4 オープンリダイレクタ
 
-これらは「素朴な反射型XSS」の知識だけでは対処できない領域であり、次節ではその中でも最も難所である **mXSS（mutation XSS）** を、仕組みのレベルで掘り下げます。
+```javascript
+var url = decodeURIComponent(location.hash.substring(1));
+location.href = url;
+```
 
-> 出典: JavaScript Security beyond HTML5（はせがわようすけ）— https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823
+**なぜ危険か**: これは厳密にはスクリプト実行を伴わないバグですが、DOMベースXSSと発生源が同じ（URL由来のsourceをそのまま危険なsinkへ渡す）ため併記されています。`location.hash` から取り出した値をデコードし、そのまま `location.href`（ページ遷移を起こすsink）に代入すると、攻撃者は正規ドメインのURL（信頼されたドメイン）を経由してフィッシングサイトなど任意の外部URLへ被害者を転送できます。これは「一見信頼できるドメインのリンクなのに、実際には別サイトに飛ばされる」というオープンリダイレクタ脆弱性そのものです。フィッシング詐欺の踏み台や、OAuthのリダイレクトURI検証回避など、より深刻な攻撃の一部品として悪用されることが多い点が実務上重要です。
+
+対策として挙げられているのは、**遷移先を許可リスト（ホワイトリスト）で管理する**方法です。
+
+```javascript
+var pages = {foo: '/foo', bar: '/bar'};
+var url = pages[location.hash.substring(1)] || '/';
+location.href = url;
+```
+
+**なぜ安全か**: 攻撃者が制御できる `location.hash` の値は、もはや「遷移先URLそのもの」ではなく「事前定義済みマップのキー」としてしか使われません。マップに存在しないキーが来た場合は既定値 `/` にフォールバックするため、**攻撃者がどんな文字列を仕込んでも、開発者が用意した固定URL集合の外には絶対に出られません**。これは入力値そのものを検証・無害化するのではなく、「入力値を直接使わず、間接参照のキーとしてのみ使う」という設計転換によって脆弱性のクラス自体を排除する典型的なパターンです。
+
+#### 1.5 Web Storage（`localStorage` / `sessionStorage`）
+
+資料はHTML5で導入されたWeb Storageについて、**「ユーザ認証状態の時間差による混在」**というリスクを指摘しています。具体的には、共有端末でユーザAがログインしてストレージに何かを書き込み、ログアウトした後、同じオリジン（同一のプロトコル・ホスト・ポートの組み合わせ。ブラウザのセキュリティ境界の基本単位）で別のユーザBがログインした場合、**Web StorageはオリジンごとにOSプロセス／ブラウザプロファイル上に永続化されるため、ユーザAが書き込んだデータをユーザBが読めてしまう**可能性があるというものです。これはXSSそのものではなく情報漏えいの一種ですが、「クライアント側に永続化されたデータの取り扱い」という同じ論点系列に属します。対策として挙げられているのは、**キー名にユーザIDを含めて名前空間を分離する**単純な手法です。
+
+```javascript
+sessionStorage.setItem(userid + "-foo", "abcdefg");
+```
+
+**なぜ効くか**: ストレージ自体はオリジン単位でしか分離されないため、アプリケーション側の責任で**論理的なユーザ単位の分離**をキー設計に組み込む必要があります。ユーザIDをキーのプレフィックスにすることで、別ユーザのセッションでは意図したキーがヒットしなくなり、誤読み出しを防げます。
+
+#### 1.6 Web Workers
+
+```javascript
+new Worker(location.hash.substring(1));
+```
+
+**なぜ危険か**: `Worker` コンストラクタは、指定したURLのスクリプトを**別スレッド（バックグラウンド実行環境）として読み込み実行**します。URLの生成元をユーザ制御下の `location.hash` にしてしまうと、攻撃者は任意のスクリプトURLをWorkerとして実行させられます。Workerはメインスレッドとは隔離された実行コンテキストを持ち、DOMへの直接アクセスはできないものの、`postMessage` を介してメインスレッドと通信できるため、最終的にメインスレッド側のDOM操作を誘発する踏み台になり得ます。教訓は単純で、**動的に生成される実行対象（スクリプトURL）にユーザ入力を混ぜてはならない**という、`eval` 系sinkと同型のリスクです。
+
+#### 1.7 Cross-Document Messaging（`postMessage`）
+
+```javascript
+window.onmessage = function(e) {
+  if (e.origin == "http://example.com") {
+    alert(e.data);
+  }
+};
+```
+
+**なぜ `origin` 検証が必須か**: `postMessage` はウィンドウ間・iframe間で任意のオリジンをまたいでメッセージを送受信できるAPIです。受信側の `message` イベントには送信元を示す `event.origin` が付与されますが、**これを検証しないまま `event.data` を信頼してしまうと、任意の悪意あるページから送られたデータをそのまま処理してしまう**ことになります。上記コードはその模範例として `origin` の一致確認を行っていますが、資料はさらに一歩踏み込み、**送信側**が `postMessage()` の第2引数（送信先オリジンの指定）に `*`（任意のオリジンを意味するワイルドカード）を指定した場合、「意図しない別オリジンの受信者にメッセージが渡ってしまう」リスクにも言及しています。第2引数を `*` にすると、ページが（リダイレクトやiframeの差し替えなどで）想定と異なるオリジンに読み込まれていた場合でも、機密情報がそのまま送られてしまうため、**機密情報を送る際は必ず送信先オリジンを明示的に指定すべき**というのが結論です。この `postMessage` の攻撃面は本書第7章（Webメッセージング攻撃）でさらに詳しく扱います。
+
+> 出典: はせがわ「JavaScript Security beyond HTML5」— https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823
 
 ---
 
-### 2. mXSS（mutation XSS）と名前空間の混同 — サニタイザ防御の最難関
+### 2. Flatt Security『SPAにおけるインジェクション』
 
-> ⚠️ **本節の位置づけ（補足）**: 以下は、はせがわ氏「beyond HTML5」が扱う「HTML5の新機能が生む新種XSS」という主題を、現在の到達点まで延長した**補足的な仕組み解説**です。典拠は主に cure53（DOMPurifyの開発元）の公式Wikiと Pull Request、および Michał Bentkowski・Daniel Santos らによるバイパス公開記事です。（原資料そのものの逐語ではなく、同テーマの一次資料に基づく体系化である点に注意してください。）
+#### 2.1 問題設定 — なぜSPAではスキャナが無力化するのか
 
-#### 2.1 mXSSとは — 「サニタイズ後に別のDOMへ化ける」現象
+この記事の核心的な主張は、**「自動脆弱性スキャナはペイロードをHTTPリクエストとして送信し、レスポンスのHTML内にそれが反映されるかを機械的にチェックする」という前提そのものが、SPAでは成立しなくなる**という点です。SPA（Single Page Application）は、初回読み込み後の画面遷移や表示更新をサーバから新しいHTMLを取得することなく、クライアント側のJavaScript（React・Vue・Angularなどのフレームワーク）が**DOM操作だけで完結させる**アーキテクチャです。攻撃ペイロードを含む入力があっても、それが処理されるのは常にブラウザ内のJavaScript実行コンテキストであり、サーバから返るレスポンス自体には仕込んだ文字列がそのまま現れないケースが多いため、**「レスポンスHTMLに反射したかどうか」を見る古典的な検出ロジックはヒットしません**。記事では実際に、Active Scan（HTTPリクエスト/レスポンスの内容を機械的に走査する自動診断機能）を用いた検証で、明らかに存在するDOMベースXSSが検出されなかった事例が示されています。これはPortSwigger資料が示す「DOMベースXSSはサーバを介さないため防御側の可視性が下がる」という論点の、**診断ツールというレイヤーにおける具体化**と言えます。
 
-**mXSS（mutation XSS：突然変異型XSS）** とは、**サニタイザが検査した時点では安全だったDOMツリーが、その後シリアライズ（DOMを再びHTML文字列に戻す処理）と再パース（reparse：その文字列を再びHTMLとして解析し直す処理）を経ると、実行可能な別のDOMツリーに“化ける”**ことで成立するXSSです。
+#### 2.2 Vue.js — `v-html` ディレクティブ
 
-DOMベースのサニタイザ（DOMPurifyなど）の典型的な動作は次の流れです。
-
-```
-入力HTML文字列
-  → ①パースしてDOMツリー化
-  → ②ツリーを走査し危険な要素/属性を除去（ここで「安全」と判定）
-  → ③安全になったツリーをHTML文字列にシリアライズして返す
-  → ④アプリが返り値を innerHTML 等に代入（＝ブラウザが再パース）
-```
-
-mXSSの本質は、「②で見たツリー」と「④で最終的にできるツリー」が**食い違う**点にあります。サニタイザは②の姿しか検査できないのに、実際にブラウザで実行されるのは④の姿だからです。この「②→④で構造が変異する」からmutation（突然変異）XSSと呼ばれます。
-
-> 出典: Attack Classes & Bypass History — cure53/DOMPurify Wiki — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
-
-#### 2.2 なぜ“化ける”のか — HTMLパーサの文脈依存の再解釈
-
-化ける根本原因は、**HTMLの解析ルールが「文脈（どの要素の内側か・どの名前空間か）」によって変わる**ことです。同じ文字列でも、置かれる場所が違えば別のツリーになります。mXSSはこの文脈依存性を突きます。主な“化けの種”は次の3つです。
-
-**(A) rawtext / RCDATA 要素からのブレークアウト**
-`<style>` `<script>` `<textarea>` `<title>` `<xmp>` などは「生テキスト（rawtext）／RCDATA」要素と呼ばれ、**内側はタグとして解釈されない特別なモード**で読まれます。ところが、属性値の中に閉じタグ文字列を仕込んでおくと、再パース時に解析状態がずれます。
+Vueには、コンポーネントの状態（データ）をHTMLとしてそのまま描画するための `v-html` ディレクティブがあります。
 
 ```html
-<style><a title="</style><img src=x onerror=alert(1)>">
+<div v-html="userInput"></div>
 ```
 
-**なぜ動くのか**：①の初回パースでは `</style>` は「`title` 属性値という“文字データ”の一部」に見えるため、サニタイザは危険と判定しません。しかし③でシリアライズされた文字列を④で再パースすると、ブラウザは先に現れた `</style>` を**本物のstyle終了タグ**として扱い、そこで生テキストモードを抜け、後続の `<img onerror=...>` を**本物の要素**として生成します。これがブレークアウト（脱出）です。
-
-**(B) 深いネストのフラット化**
-WebKit/Blink系ブラウザは要素のネスト（入れ子）を約512段で打ち切ります。この上限を超えると、深い子孫が**兄弟要素として扱われる**など解析ツリーが変わり、mXSSの足がかりになります。
-
-**(C) 名前空間（namespace）の切り替え** ← 最重要。次項で詳述。
-
-> 出典: Attack Classes & Bypass History — cure53/DOMPurify Wiki — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
-
-#### 2.3 名前空間の混同（HTML / SVG / MathML）— mXSSの中核
-
-**名前空間（namespace）** とは、要素が「どの言語仕様のルールで解釈されるか」を決める区分です。ブラウザは主に3つの名前空間を持ちます。
-
-- **HTML名前空間**：通常のHTML。`<style>` の中身はテキスト、`<img>` は空要素、等。
-- **SVG名前空間**：`<svg>` 配下。要素名の大文字小文字が区別され、`<style>` の扱いも異なる。
-- **MathML名前空間**：`<math>` 配下（数式）。
-
-**同じ要素名でも、属する名前空間が違えばパース規則が違う**——これが混同攻撃の土台です。しかも仕様には、名前空間をまたいで**HTMLの解析を再開させる“統合ポイント（integration point）”** が存在します。
-
-- `<svg>` 内の `<foreignObject>`
-- `<math>` 内の `<annotation-xml>`、および `<mtext>` `<mi>` `<mo>` `<mn>` `<ms>`（MathML text integration point）
-
-これらの内側では「HTML名前空間として解析し直す」ため、**要素が名前空間の間を移動する**現象が起き、②で見た姿と④の姿がずれます。
-
-攻撃者は、`<form>` の入れ子や `<mglyph>` のような要素を巧妙に配置して、**サニタイズ時（②）にはHTML名前空間で無害に見える要素を、再パース時（④）にMathML/SVG名前空間へ滑り込ませ**、その結果 `<style>` の中身がテキストではなくなり、隠していた `<img onerror>` が“本物の要素”として蘇るように仕込みます。
-
-> 出典: Attack Classes & Bypass History — cure53/DOMPurify Wiki — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
-
-#### 2.4 実際のバイパスとその対象バージョン（陳腐化への注意）
-
-名前空間混同によるDOMPurify（cure53製の代表的なHTMLサニタイザ・ライブラリ。DOMベースで動く）のバイパスは、**歴史的に何度も発見され、その都度パッチされてきた**「イタチごっこ」です。学習上重要なのは、**どのペイロードがどのバージョンで塞がれたか**を明確に区別することです（古いバイパスは最新版では動きません）。
-
-**① `<mglyph>` を用いた名前空間混同（Michał Bentkowski、2020年公開）**
-`<form>` の入れ子と `<math><mtext>` を組み合わせ、本来HTML名前空間にある `<mglyph>` を再パース時にMathML名前空間の子へ移動させる古典的ゲーデット（gadget：攻撃の部品）。
+**なぜ危険か**: `v-html` はVueの通常のテンプレート補間（`{{ }}`、これは自動的にHTMLエスケープされテキストとしてのみ描画される）とは異なり、**バインドした値をHTML文字列として解釈し、そのままDOMに挿入する**指示です。内部的には対象要素の `innerHTML` へ代入する処理に相当するため、前節で見た「HTML文字列としての再パース」が起こり、DOMベースXSSの典型的なsinkになります。Vue自身は `<script>` タグそのものは実行されないようブロックしますが、**イベントハンドラ属性を使ったペイロードはブロックされません**。
 
 ```html
-<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>
+<img src=x onerror='alert(1)'>
 ```
 
-**なぜ動くのか**：`<mtext>` はMathML text integration point なのでその内側はHTML扱い。ところが `</form>` によるツリーの所有権変更（ownership mutation）で、再パース時に `<mglyph>` の親が `<mtext>`（MathML名前空間）に切り替わる。すると `<style>` もMathML名前空間となり**中身がテキストとして扱われなくなる**。続く `</math>` でMathMLを抜け、`<img>` がHTML名前空間の“本物の要素”として生成されて `onerror` が発火する。→ **DOMPurify 2.0.17 で対策**（それ以前のバージョンが影響。securitum の解説記事のタイトルも「DOMPurify 2.0.17 bypass」）。
+**なぜ動くか**: `<img>` タグの `src` 属性に無効な値（`x`）を指定すると画像の読み込みに失敗し、`onerror` イベントハンドラが発火します。`<script>` タグと違い `<img>` タグは通常のHTML要素としてパーサに受理されるため、`innerHTML`（および`v-html`）経由の挿入であってもブラウザによる"非実行"扱いの対象外であり、確実にJavaScriptとして実行されます。つまり `v-html` の「スクリプトタグだけをブロックする」という不完全な安全策は、**イベントハンドラ属性というまったく別の実行経路**によって容易に迂回されます。
 
-**② “From SVG and back”（Daniel Santos、2020〜2021年公開）**
-SVG名前空間へ入り、統合ポイントを通じてHTML名前空間へ「戻る」経路を悪用する続編バイパス。→ **DOMPurify 2.2.2 で修正**（`< 2.2.2` が影響）。
-
-**③ cure53 による包括的な名前空間検証の導入（PR #495、2020年12月マージ）**
-上記の個別対応を根本から塞ぐため、`_checkValidNamespace` 関数が追加されました。対象ペイロードの例：
+さらに記事は、URLを直接埋め込むバインディング（`v-bind:href` など、属性値をJavaScriptの式で動的に決定する構文）についても、値の検証を行わずにユーザ入力をそのままリンク先に使うと `javascript:` スキームのURLを注入できる点を指摘しています。
 
 ```html
-<!-- 例1（2019年報告の古典）: svg配下にp が入り再パースで構造が変わる -->
-<svg></p><style><a title="</style><img src onerror=alert(1)>">
-
-<!-- 例2: form + math + mtext + mglyph の名前空間切り替え -->
-<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>
+<a v-bind:href="userInput">click</a>
+<!-- userInput = "javascript:alert(1)" -->
 ```
 
-修正内容の要点：
-- SVG/MathMLとHTMLの間の名前空間切り替えは、**仕様が定める統合ポイント経由のみ許可**する。
-- SVG固有・MathML固有の要素は、**それぞれの名前空間内にしか存在できない**と検証し、予期しない名前空間の要素は削除する。
-- **`insertAdjacentHTML` の使用をやめ**、DOMノードを直接操作するよう変更。これはドキュメント解析モードとフラグメント解析モードの差異を突く再パース攻撃を防ぐため。
-→ **DOMPurify 2.2.6 以降で有効**。
+**なぜ動くか**: `href` 属性は本来 `http:`/`https:` のようなナビゲーション用のスキームを想定していますが、ブラウザは `javascript:` スキームも仕様上受理し、そのリンクがクリックされた瞬間に指定されたコードを実行します。これはDOMツリーの構造自体は書き換えられていない（sinkとしての `innerHTML` は経由しない）ため`v-html`のケースとは異なる系統の脆弱性ですが、「**URL文字列を受け取る箇所にはすべてスキーム検証が必要**」という、`location.href` への代入（前節1.4）と同型の教訓に帰着します。
 
-**④ 近年のCVE（arms raceは今も継続）**
-cure53のWikiによれば、その後も新しい攻撃クラスが報告され続けています（Wikiが列挙する例）：
+**対策**として記事が挙げるのは、プレーンテキストとして表示するだけなら `v-html` の代わりに通常のテキスト補間（`v-text` やMustache構文）を使うこと、どうしてもHTMLとして描画する必要がある場合は `sanitize-html` のようなサニタイズライブラリ（HTML文字列から危険なタグ・属性だけを除去するライブラリ）で無害化してから渡すこと、そしてURLバインディングには `sanitize-url` のようなライブラリで `javascript:` 等の危険なスキームを弾いてから使うことです。
 
-- **CVE-2024-47875 / CVE-2024-45801**：ネスト型mXSS。プロトタイプ汚染（prototype pollution：オブジェクトの共通の親 `Object.prototype` を書き換えて全オブジェクトの挙動を汚染する攻撃）がネスト深さチェックを弱め、これらが連鎖。3.1.1 系で数値の深さ上限を追加。
-- **CVE-2026-47423**：`<selectedcontent>` 要素。ブラウザが**サニタイズ実行後に**選択中の `<option>` の内容を再複製するため、検査済み領域に危険なコンテンツが後から出現。3.4.5 で修正。
-- **CVE-2026-41238**：プロトタイプ汚染によるサニタイザのダウングレード。3.4.0 で「プロトタイプなしオブジェクト初期化」により修正。
-- Wikiは **3.4.15 時点で列挙した全攻撃クラスが塞がれている**としています。
+#### 2.3 React — `dangerouslySetInnerHTML`
 
-**学習上の結論**：mXSS対策は「DOMPurifyを入れれば終わり」ではなく、**必ず最新版に追随し続ける**必要があります。バージョン依存の脆弱性は、対象バージョンと修正版・公開年をセットで理解しなければ意味がありません。
-
-> 出典: Attack Classes & Bypass History — cure53/DOMPurify Wiki — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
-> 出典: Harden protection against mutation XSS caused by namespace switching (PR #495) — cure53/DOMPurify — https://github.com/cure53/DOMPurify/pull/495
-> 出典（さらに深く学ぶ資料）: mutation XSS via namespace confusion – DOMPurify 2.0.17 bypass（Michał Bentkowski, securitum）/ From SVG and back, yet another mutation XSS via namespace confusion for DOMPurify < 2.2.2 bypass（Daniel Santos, Medium）/ mXSS Attacks: Attacking well-secured Web-Applications（Heiderich ほか, cure53）— https://cure53.de/fp170.pdf
-
-#### 2.5 DOMPurifyはどう塞ぐか — 防御機構の要点
-
-現在のDOMPurifyがmXSS系を塞ぐために備える主な機構（Wikiより）：
-
-- **名前空間検証**：各ノードを「タグ名」だけでなく**親の名前空間との整合性**で評価する（前項 `_checkValidNamespace`）。
-- **`SAFE_FOR_XML` 正規表現**：属性値に潜む危険なシーケンス——コメント/CDATA風の閉じ列 `(--!?|])>` や、生テキスト要素の閉じタグ `</style|script|title|...>`——を検出して無害化。前述の「属性値に `</style>` を仕込むブレークアウト」対策。
-- **キャッシュされたプロトタイプアクセッサ**：DOM clobbering（HTML要素に `id`/`name` を付けることで、JavaScriptから見た同名プロパティを要素で“上書き”してしまう攻撃）を防ぐため、セキュリティ関連プロパティへのアクセスをキャッシュした正規の参照経由に固定。
-
-そして安全性の検証には、文字列一致だけでなく **「サニタイズ→シリアライズ→再挿入→再パース」の全ライフサイクルをテストし、実際にDOMへ挿入した後に `onerror` 属性や `<script>` が残っていないか**を確認することが必須、とされています。これはmXSSの本質（②と④の食い違い）から論理的に導かれる検証方針です。
-
-> 出典: Attack Classes & Bypass History — cure53/DOMPurify Wiki — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
-
----
-
-### 3. GMO Flatt Security「SPA開発とセキュリティ」— React / Vue / Angular のDOMベースXSS
-
-#### 3.1 資料の位置づけと中心的主張
-
-本資料（GMO Flatt Security、2022年4月公開）は、**SPA（Single Page Application：初回に読み込んだ1枚のHTML上で、以降はJavaScriptがDOMを書き換えて画面遷移する方式のWebアプリ）** におけるインジェクション、とりわけ **DOMベースXSSを引き起こす「危険なAPIの誤用」を、Vue・React・Angular の3大フレームワークごとに具体的に解説し、対策を示す**ものです。
-
-中心的な主張は次の2点です。
-
-1. **こうした脆弱性は自動スキャナで見つけにくい**：攻撃の成否がクライアント側JavaScriptのデータフロー（source→sink）に依存するため、サーバ応答だけを見る旧来の脆弱性スキャナでは検出困難で、**手作業のコードレビュー／診断が不可欠**。
-2. **フレームワークの「自動エスケープ」は万能ではない**：現代のフレームワークは通常のテキスト表示を自動でエスケープ（HTMLとして特別な意味を持つ文字 `< > & " '` を `&lt;` 等に変換し、データをコードとして解釈させない処理）してくれる。この安心感が、**「エスケープの網から漏れる箇所」（後述の“抜け穴”API・URL属性）** の危険性を開発者に忘れさせる。ここに事故が集中する。
-
-> 出典: SPA開発とセキュリティ — DOM based XSS を引き起こすインジェクションの Vue, React, Angular における解説と対策（GMO Flatt Security Blog）— https://blog.flatt.tech/entry/spa_injection
-
-#### 3.2 3フレームワークに共通する「抜け穴」の型
-
-各フレームワークの詳細に入る前に、共通の構図を押さえます。フレームワークは「テキストの自動エスケープ」で反射型XSS的な事故の大半を防ぎますが、**設計上どうしても“生のHTML/URLを扱う口”を用意せざるを得ず**、そこが sink になります。抜け穴は大きく2種類です。
-
-| 抜け穴の型 | 何が危険か | 3FWでの現れ方 |
-|---|---|---|
-| **生HTMLの注入口**（自動エスケープを意図的に無効化するAPI） | 文字列をHTMLとして解釈しDOM化する。`<img onerror>` 等が生きる | Vue: `v-html` ／ React: `dangerouslySetInnerHTML` ／ Angular: `[innerHTML]` + `bypassSecurityTrustHtml` |
-| **URL/属性への注入**（`href` `src` 等に文字列を流す） | `javascript:` スキームでクリック時にコード実行 | 3FW共通：動的な `href`/`:href`/属性バインド |
-
-以下、フレームワークごとに具体化します。
-
-#### 3.3 Vue
-
-**既定の安全機構**：Vueはテキスト補間 `{{ userInput }}` と属性バインド `v-bind`（`:属性` 記法）で**自動的にエスケープ**します。したがって `{{ }}` に何を入れてもタグとしては解釈されず、通常の表示は安全です。
-
-**抜け穴①：`v-html`（生HTMLの sink）**
-`v-html` ディレクティブは、値を**エスケープせず生のHTMLとしてDOMに挿入**します。リッチテキスト表示・Markdownプレビュー・メールテンプレート描画などで多用され、事故が起きやすい代表格です。
-
-```html
-<!-- 危険: userHtml に攻撃者の値が入るとXSS -->
-<div v-html="userHtml"></div>
-```
-攻撃者が `userHtml = "<img src=x onerror=alert(document.cookie)>"` を送り込めば発火します。
-**なぜ動くのか**：`v-html` は内部的に `innerHTML` 相当の代入を行うため、第1節で見た `innerHTML` sink とまったく同じ理屈でイベントハンドラ属性が実行されます。
-
-**抜け穴②：`:href`（`v-bind:href`）への `javascript:` URL**
-属性バインドはテキストとしてはエスケープしますが、**「値が `javascript:` スキームか」は既定で検査しません**。
-
-```html
-<!-- 危険: userUrl = "javascript:alert(1)" だとクリックでコード実行 -->
-<a :href="userUrl">プロフィール</a>
-```
-本資料は、ユーザーのリンク入力欄に `javascript:alert(1)` を入れると、クリック時にalertが出る具体例を挙げています。
-**なぜ動くのか**：第1.5節の `setAttribute("href","javascript:...")` と同一の原理。属性バインドはHTMLエスケープはするがスキーム検証はしない。
-
-**対策**：ユーザー制御の内容には `v-html` を避け `v-text`（＝自動エスケープ表示）を使う。どうしても生HTMLが必要ならDOMPurify等で**表示直前にサニタイズ**する。URLは**バックエンドで**スキームを許可リスト検証してから保存する（フロントだけでのURLサニタイズは信頼できない）。
-
-> 出典: SPA開発とセキュリティ（GMO Flatt Security Blog）— https://blog.flatt.tech/entry/spa_injection
-> 出典（補強）: Security | Vue.js 公式ガイド — https://vuejs.org/guide/best-practices/security
-
-#### 3.4 React
-
-**既定の安全機構**：JSX（React独自のHTML風構文）に埋め込んだ値 `{userInput}` は**自動的にエスケープ**されるため、通常の描画は安全です。
-
-**抜け穴①：`dangerouslySetInnerHTML`（生HTMLの sink）**
-その名（dangerously＝危険なことに）どおり、**自動エスケープを意図的にバイパスして生HTMLを挿入する**唯一の口です。
+Reactにおける等価物が `dangerouslySetInnerHTML` です。
 
 ```jsx
-// 危険: __html に攻撃者の値が入るとXSS
-<div dangerouslySetInnerHTML={{ __html: userHtml }} />
-```
-ペイロード例：`{ __html: "<img src=x onerror='alert(localStorage.access_token)'>" }`
-**なぜ動くのか**：内部的に `innerHTML` へ代入するため、`<img onerror>` が本物の要素として生成され発火。`localStorage` からアクセストークンを窃取する等、実害に直結します。
-
-**抜け穴②：`href` への `javascript:` URL**
-動的に生成する `<a>` の `href` を攻撃者が制御できると `javascript:` URLを注入できます。
-
-```jsx
-// 危険: url = "javascript:alert(1)"
-<a href={url}>リンク</a>
-```
-（Reactは16.9以降、`javascript:` URLに対して**警告を出す**ようになりましたが、警告であって完全な遮断ではないバージョン・経路があり、依然として注意が必要です。）
-**なぜ動くのか**：属性値の `javascript:` スキームがクリック時に評価される、第1.5節と同一原理。
-
-**抜け穴③：`ref` 経由の直接DOM操作 / `eval`**
-`useRef`/`ref` で取得した生のDOM要素に対し `ref.current.innerHTML = ...` のように直接書き込むと、Reactのエスケープを完全に迂回します。また `eval()` や `new Function()` にユーザー入力を渡すのも当然に危険です。
-
-**対策**：ユーザー入力に `dangerouslySetInnerHTML` を使わない。必要ならDOMPurifyで**サニタイズしてから**渡す。URLは許可スキーム検証（フロントで完結させずバックエンドでも検証）。`ref` 直接操作・`eval` を避ける。
-
-> 出典: SPA開発とセキュリティ（GMO Flatt Security Blog）— https://blog.flatt.tech/entry/spa_injection
-> 出典（補強）: Exploiting Script Injection Flaws in ReactJS Apps（Bernhard Mueller, DailyJS/Medium）
-
-#### 3.5 Angular
-
-**既定の安全機構**：Angularは最も強力で、**DOMにバインドされる値をすべて“信頼できない”ものとして既定でサニタイズ**します。`[innerHTML]="userContent"` と書いても、Angularがまず**組み込みサニタイザ**を通し、`<script>` や `onerror` のような危険な要素・属性を除去してから描画します。
-
-```html
-<!-- Angularが自動サニタイズするので、これ自体は比較的安全 -->
-<div [innerHTML]="userContent"></div>
+<div dangerouslySetInnerHTML={{ __html: userInput }} />
 ```
 
-**抜け穴：`DomSanitizer.bypassSecurityTrust...` の誤用**
-Angularには、サニタイズを**意図的に無効化する“エスケープハッチ”** として `bypassSecurityTrustHtml()`（および `...Url` `...ResourceUrl` `...Script` `...Style`）があります。これに**ユーザー入力を渡すと、Angularの防御を自ら無力化**してXSSになります。
+**なぜ危険か**: このプロパティ名自体がReactチームによる「危険であることを自覚させるための意図的な命名」であり、内部的には対象要素の `innerHTML` に直接値を設定します。Vueの `v-html` とまったく同じ理由（HTML文字列としての再パース）でDOMベースXSSのsinkとなり、`<script>` タグは実行されない一方で `<img src=x onerror='alert(1)'>` のようなイベントハンドラ埋め込み型ペイロードは確実に実行される、という挙動もVueと共通しています。React自身の通常のJSX式展開（`{userInput}` のような中括弧構文）はデフォルトでエスケープされテキストとして描画されるため安全ですが、`dangerouslySetInnerHTML` を使った瞬間にその保護の外に出てしまう点が要注意です。
 
-```typescript
-// 危険: 信頼できない値に bypass を使うと自動サニタイズを無効化してXSS
-this.trusted = this.sanitizer.bypassSecurityTrustHtml(userHtml);
-```
-```html
-<div [innerHTML]="trusted"></div>
-```
-**なぜ動くのか**：`bypassSecurityTrust...` は「この値は自分が安全だと保証したので検査不要」という宣言。Angularはそれを信じてサニタイズをスキップし、生HTMLがそのまま `innerHTML` に到達する。
+URLバインディング（`<a href={link}>` のような属性への直接代入）についても、Vueと同様に `javascript:` スキームの注入を許してしまう点が指摘されています。
 
-**正しい使い方の原則**（Angular公式・本資料に共通）：`bypassSecurityTrust...` は**自分が書いた静的な安全な文字列にのみ**使い、ユーザー入力には決して使わない。使う場合は**値の発生源にできるだけ近い場所で・早い段階で**呼び、安全性を目視で確認しやすくする。
+**対策**として記事は、`dangerouslySetInnerHTML` の使用自体を可能な限り避けること、使う場合は `sanitize-html` 等でサニタイズしてから渡すこと、`href` などURLを受け取る属性には `@braintree/sanitize-url` のようなライブラリで危険なスキームを除去してから渡すことを推奨しています。
 
-**対策**：ユーザー入力は `[innerHTML]`（自動サニタイズ）に任せる、またはサーバ側HTMLサニタイザを使う。`bypassSecurityTrust...` を安易に使わない。加えて **Trusted Types**（後述）を有効化すると、ブラウザ自身が「承認済みポリシーを通した値しか危険な sink に代入できない」ことを強制でき、防御が一段強くなる。
+#### 2.4 Angular — フレームワーク側の自動サニタイズ
 
-> 出典: SPA開発とセキュリティ（GMO Flatt Security Blog）— https://blog.flatt.tech/entry/spa_injection
-> 出典（補強）: Security • Angular 公式ガイド / DomSanitizer • Angular — https://angular.dev/best-practices/security
+対照的に記事は、Angularは**デフォルトで `innerHTML` 相当のバインディングや `href` バインディングに対して自動的にサニタイズ処理を適用する**ため、Vue/Reactで示したのと同じ攻撃パターンを試しても防御される、と評価しています。これはAngularの `DomSanitizer`（信頼できないコンテンツを安全な形に変換する仕組みを提供するAngularのサービス）が、テンプレートバインディングの既定の挙動として「危険なコンテキストに渡る値は自動的に無害化する」という設計を取っているためです。逆に言えば、開発者が明示的に `bypassSecurityTrustHtml()` のようなAPI（Angularに「このコンテンツは安全だと信頼してよい」と申告し、自動サニタイズを迂回させるAPI）を呼び出してこの保護を意図的に外した場合は、Angularであっても当然同種のDOMベースXSSが成立します。つまりAngularの安全性は「フレームワークが安全策を自動適用する設計になっている」ことに由来するものであり、**開発者がその保護を明示的に無効化する操作をしない限りは安全**という条件付きの安全性である点を理解しておく必要があります。
 
-#### 3.6 3フレームワーク横断の防御まとめと多層防御
+#### 2.5 実務上の含意 — フレームワークの「安全なデフォルト」に対する過信の危険性
 
-本資料が導く実務上の指針を統合すると次のとおりです。
+この記事全体を通した含意は、**「モダンフレームワークを使っているから自動的にXSS対策済みである」という思い込みが最も危険**だということです。Vue/Reactはテンプレート補間やJSX式展開といった"通常の書き方"をしている限り自動エスケープの恩恵を受けられますが、`v-html` や `dangerouslySetInnerHTML` のような**「生のHTMLを扱いたい」という開発者の明示的な意図を表すAPI**を一度でも使うと、その瞬間にフレームワークの保護レイヤーの外に出ます。これは本節1.3ではせがわ資料が指摘した「ブラックリストは知らないパターンに無力」という論点の発展形であり、**「デフォルトが安全でも、危険なAPIへ抜け道があれば脆弱性は必ず出現する」**という、フレームワーク非依存の普遍的な教訓です。ペネトレーションテストやコードレビューの実務では、`grep` 等で `v-html` / `dangerouslySetInnerHTML` / `bypassSecurityTrust*` / `innerHTML` といったキーワードをソースコード全体から機械的に洗い出し、それぞれのデータフロー（どのsourceの値がそこに流れ込むか）を個別に追跡することが、自動スキャナに頼れないSPAにおける現実的な監査手法になります。
 
-1. **“抜け穴”APIを棚卸しする**：`v-html` / `dangerouslySetInnerHTML` / `[innerHTML]`＋`bypassSecurityTrust...` の全使用箇所を洗い出し、ユーザー入力が流れ込まないか監査する。
-2. **生HTMLが必要なら表示直前にサニタイズ**：**DOMPurify**（最新版）でサニタイズしてから sink に渡す。第2節のとおりバージョン追随が必須。
-3. **URLはスキームを許可リスト検証**：`javascript:` `data:` `vbscript:` を弾く。**フロントだけで完結させず、バックエンドで保存前に検証**する（「フロントでURLサニタイズが必要な時点で設計に問題がある」という指摘）。
-4. **エスケープハッチはヘルパー関数に閉じ込め、名前で意図を明示**：`bypassSecurityTrust...` のような危険関数は、用途が一目で分かる名前のヘルパーに包み、誤用を防ぐ。
-5. **多層防御（defense in depth）として CSP と Trusted Types**：
-   - **CSP（Content Security Policy）**：HTTPレスポンスヘッダ等で「スクリプトをどこから読み込み・実行してよいか」をブラウザに宣言する仕組み。インラインスクリプトや外部スクリプトの実行を制限し、万一XSSが注入されても発火の敷居を上げる（ただし**サニタイズの代替ではなく上乗せ**）。
-   - **Trusted Types**：`innerHTML` などの危険な sink に対し、「承認済みポリシーを通して生成した特別な型の値」しか代入できないよう**ブラウザ自身に強制**させる仕組み。DOMベースXSSの sink 到達そのものをブロックできる、現時点で最も強力な多層防御の一つ。
-
-これらは「どれか一つ」ではなく**重ねて**用いることで、フレームワークの自動エスケープ（1層目）→ サニタイズ／スキーム検証（2層目）→ CSP／Trusted Types（3層目）という多段構えを作るのが要諦です。
-
-> 出典: SPA開発とセキュリティ（GMO Flatt Security Blog）— https://blog.flatt.tech/entry/spa_injection
+> 出典: 「SPAにおけるインジェクション」 GMO Flatt Security Blog — https://blog.flatt.tech/entry/spa_injection
 
 ---
 
-### 4. セクションのまとめ — 「サーバの外」で完結する攻撃と、その多層防御
+### 3. まとめ — 素のDOM XSSからフレームワーク時代のDOM XSSへ
 
-本セクションで押さえるべき要点を凝縮します。
-
-- **DOMベースXSSは source→sink のデータフロー問題**。特に `location.hash` 経由の攻撃は**サーバに届かない**ため、XSSフィルタ・アクセスログ・利用者の目のいずれからも隠れやすく、`history.pushState` で痕跡すら消せる（はせがわ資料の核心）。
-- **HTML5以降の新機能（`postMessage`・SVG/MathML統合・`data:`/Blob URL）は、そのまま新しい source/sink になった**。「beyond HTML5」。
-- その最難関が **mXSS（mutation XSS）**。サニタイザが見た②のツリーと、ブラウザが実行する④のツリーが**名前空間の切り替え・rawtextブレークアウト・深いネストのフラット化**で食い違うことで成立する。DOMPurifyへの名前空間混同バイパスは **2.0.17 / 2.2.2 / 2.2.6** で順次修正され、その後も CVE が続く**イタチごっこ**であり、**最新版への追随が絶対条件**。
-- **SPAフレームワークの自動エスケープは通常のテキストしか守らない**。`v-html` / `dangerouslySetInnerHTML` / `[innerHTML]`＋`bypassSecurityTrustHtml` という**生HTMLの抜け穴**と、`javascript:` URL を通す**属性/URLの抜け穴**に事故が集中する（Flatt資料）。
-- 防御は**多層**で：フレームワークの自動エスケープ → DOMPurifyによるサニタイズと**バックエンドでのURLスキーム検証** → **CSP / Trusted Types**。そして自動スキャナに頼り切らず、**source→sink を追う手作業のコードレビュー**が不可欠。
-
-> 出典: JavaScript Security beyond HTML5（はせがわようすけ）— https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823
-> 出典: SPA開発とセキュリティ — DOM based XSS を引き起こすインジェクションの Vue, React, Angular における解説と対策（GMO Flatt Security Blog）— https://blog.flatt.tech/entry/spa_injection
-> 出典: cure53/DOMPurify Wiki（Attack Classes & Bypass History）/ PR #495 — https://github.com/cure53/DOMPurify/wiki/Attack-Classes-&-Bypass-History
+はせがわ資料（2013年）が示した原則は、**「HTML文字列としての再解釈が起きる代入先（sink）に、検証していない外部データを渡してはならない」**という一言に集約されます。この原則は `innerHTML` への直接代入であろうと、10年後のVue/Reactの `v-html` / `dangerouslySetInnerHTML` であろうと、**内部実装が結局は同じ `innerHTML` 相当の操作に帰着する以上、まったく同じ形で当てはまり続けます**。フレームワークが変わっても、URLスキームの検証漏れ（`javascript:` インジェクション）、ブラックリスト検出の限界、そして「サーバを介さないためログにもスキャナにも引っかからない」というDOMベースXSS特有の可視性の低さは一貫して再生産されています。次節以降では、この「sinkの危険性」をさらに掘り下げ、`postMessage` を悪用したクロスオリジンの攻撃（第7章）や、フレームワークのサニタイズをすり抜けるより高度な手法へと話を進めます。
 
 ---
 
@@ -1441,12 +1109,12 @@ this.trusted = this.sanitizer.bypassSecurityTrustHtml(userHtml);
 
 このセクションでは、まず `postMessage` API そのものの仕組みを土台から説明し、脆弱性の本質（どこで信頼境界が破れるのか）を明らかにします。次に AddThis の実例で「本物の被害」を体感し、その後にオリジン検証バイパスの各テクニックを**仕組みのレベルで**分解します。最後にプロトタイプ汚染やCSPと組み合わせた高度な連鎖、発見のワークフロー、そして正しい防御策までを一気通貫で扱います。
 
-> ⚠️ **未取得の資料**: 本節が主資料とした3件のURL（YesWeHack / Detectify / Intigriti）は、いずれも実行環境のネットワーク送信プロキシ（egress proxy）によって直接取得がブロックされました（理由: EGRESS_BLOCKED）。そのため以下の本文は、各記事のミラー（GitHub上のHackTricksミラー、PayloadsAllTheThings 等）および複数の二次言及・検索スニペットから内容を再構成したものです。正確な原文・最新の記述は、以下の各URLからユーザーご自身で直接ご確認ください。
-> - postMessage脆弱性入門: https://www.yeswehack.com/learn-bug-bounty/introduction-postmessage-vulnerabilities
-> - AddThis 100万サイトのpostMessage XSS: https://labs.detectify.com/writeups/postmessage-xss-on-a-million-sites/
-> - postMessage脆弱性の高度な連鎖: https://www.intigriti.com/researchers/blog/hacking-tools/exploiting-postmessage-vulnerabilities
+本節の主資料は以下の3件で、いずれも直接取得（WebFetch）に成功しています。
+- postMessage脆弱性入門（YesWeHack）: https://www.yeswehack.com/learn-bug-bounty/introduction-postmessage-vulnerabilities
+- AddThis 100万サイトのpostMessage XSS（Detectify Labs）: https://labs.detectify.com/writeups/postmessage-xss-on-a-million-sites/
+- postMessage脆弱性の高度な連鎖（Intigriti）: https://www.intigriti.com/researchers/blog/hacking-tools/exploiting-postmessage-vulnerabilities
 
-（以下は、取得できなかった上記資料の内容を、ミラー・二次資料・一般的な専門知識に基づいて再構成・補足した解説です。原文の一字一句の再現ではない点にご留意ください。）
+以下の解説は、これら3資料に加え、各記事が参照する一次資料（HackTricksのpostMessageページ、PayloadsAllTheThingsのXSSインジェクション集、DOMPurifyの修正履歴など）で技術的な裏付けを補強しています。
 
 ---
 

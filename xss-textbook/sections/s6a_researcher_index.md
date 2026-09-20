@@ -1,111 +1,138 @@
 ## リサーチャー索引（Gareth Heyes / Kinugawa）
 
-XSS(クロスサイトスクリプティング)の研究は、ブラウザベンダーの仕様書だけを読んでいても追いつけない。実際には、パーサの実装間の微妙な「解釈のズレ」や、DOMの標準API同士の予期しない相互作用を、日々ブラウザのソースコードと格闘しながら見つけているリサーチャーたちがいる。本節では、この分野で最も継続的かつ体系的に成果を出し続けている2人の第一人者、**Gareth Heyes**(ガレス・ヘイズ、PortSwigger社)と**Masato Kinugawa**(衣川昌人、日本の著名なセキュリティ研究者)の研究領域を索引としてまとめる。個々の攻撃の完全な技術詳細は他章(mXSS章、DOM Clobbering章など)に譲り、ここでは「誰が」「何を」「なぜ重要か」という見取り図を提供し、実際の発表資料へ読者を橋渡しする。
+XSSやブラウザセキュリティの研究は、体系的な教科書よりも個々のリサーチャーが発表するブログ記事やスライドの中で最初に姿を現すことが多い。ここでは、この教科書の随所で参照してきた2人の代表的なリサーチャー — PortSwigger社の Gareth Heyes 氏と、日本のバグバウンティ／XSS研究者である Kinugawa Masato（衣川昌人）氏 — の主要な仕事を、テーマ別に整理した「索引」としてまとめる。個々の技術の詳細は本編の該当章で扱っているため、ここでは「誰が」「いつ」「何を」発表したかを一覧化し、原典に当たる際の道しるべとすることを目的とする。ラボの解答や攻略手順そのものは扱わない。
 
-> ⚠️ **未取得の資料**: 「Gareth Heyes個人サイト」(https://garethheyes.co.uk/) は自動取得できませんでした(理由: 環境のegressプロキシによりこのドメインへのアクセスがブロックされているため)。以下のURLからユーザーご自身で直接ご覧ください: https://garethheyes.co.uk/
->
-> ⚠️ **未取得の資料**: 「Masato Kinugawa Speaker Deckプロフィール」(https://speakerdeck.com/masatokinugawa) は自動取得できませんでした(理由: 環境のegressプロキシによりこのドメインへのアクセスがブロックされているため)。以下のURLからユーザーご自身で直接ご覧ください: https://speakerdeck.com/masatokinugawa
+### Gareth Heyes（PortSwigger / garethheyes.co.uk）
 
-（以下は未取得資料の補足として、公開情報の検索結果と筆者の一般知識に基づく解説です。個々の発表スライドの正確な図版・詳細ペイロードは、上記URLを直接参照してください。）
+Gareth Heyes は PortSwigger Research のリサーチャーであり、mXSS（mutation XSS）の発見者の一人として知られ、HTML/JSパーサの「解釈のズレ」を突く攻撃、DOM Clobbering、CSPバイパス、JavaScriptの難読化・ゴルフ的記法（短く書く技法）など、パーサ層とエンジン層の境界に潜む脆弱性を一貫して掘り続けてきた人物である。個人サイト garethheyes.co.uk には2007年から現在に至るまでの記事がアーカイブされており、本教科書の第3〜5章で扱った mXSS、DOM Clobbering、CSPの死角といったトピックの多くが、この人物の一次資料に遡る。
 
-### なぜ「リサーチャー索引」が必要か
+> ⚠️ **未取得の資料**: garethheyes.co.uk のトップページは記事一覧の要約のみが取得でき、個々の記事本文（2007〜2024年の歴史的記事群）は今回のfetchでは全文を辿れていない。以下は取得できた範囲（主に2024〜2026年の最新研究）と、既知の代表作の整理である。
 
-XSS対策のチートシートやスキャナのルールは、常に「後追い」である。新しいsink(シンク。ユーザー入力が最終的に実行・解釈されてしまう危険な代入先。例: `innerHTML`, `eval()`, `location.href`)や、新しいパーサの挙動は、まずリサーチャーが手作業でブラウザの実装差異を突いて発見し、そのあとでベンダーが修正し、さらにそのあとでOWASPのチートシートやスキャナが追随する、という順序で世に出る。したがって、上級者が実務でゼロデイ級の迂回策を発見・追跡するには、個々のリサーチャーの発表履歴を定点観測することが最も効率のよい情報源になる。Gareth HeyesとMasato Kinugawaは、その代表格である。
+#### 直近の研究テーマ（2025〜2026年）
 
-### Gareth Heyes(PortSwigger社)の研究領域
+**「What's in a tag name? JavaScript, apparently」（2026年）**
 
-Gareth Heyesは、PortSwigger社(Burp Suiteの開発元)のリサーチャーであり、同社が公開している業界標準の「XSS Cheat Sheet」の主著者としても知られる。彼の研究の特徴は、**JavaScriptパーサそのものの奇妙な仕様**を突く点にある。代表的な業績は次の通り。
+これはHTMLのタグ名に関する仕様上の緩さを突いた研究で、ブラウザがタグ名に想定外の文字（記号や制御文字に近いもの）を許容してしまう性質を利用する。仕組みは次の通りである。
 
-#### 1. AngularJSサンドボックスの破壊
+- HTML パーサはタグ名の文字を基本的に小文字化して受け付け、その結果は要素の `localName` プロパティから読み出せる。
+- 「アルファベット・スラッシュ・空白・改行はタグ名の中で変換される」が、「行区切り文字（U+2028）や段落区切り文字（U+2029）は変換されない」。この2つの文字はJavaScriptのソースコード上では改行として扱われる特殊文字であり、この非対称性を利用すると、タグ名の中に事実上のJavaScript文の区切りを埋め込める。
+- `localName` や `getAttributeNode`、`classList`、`part`、`innerHTML`、`contenteditable` といった「タグ名やその一部を文字列として返す/加工するAPI」をイベントハンドラの実行結果に混ぜ込むことで、タグ名自体をJavaScriptコード片として実行させる。
 
-AngularJS(1.x系)は、テンプレート内で任意のJavaScript式が実行されるのを防ぐために「サンドボックス」機構を持っていたが、Heyesは複数回にわたってこのサンドボックスを完全に脱出する式を発見した。例えば、AngularJSのオブジェクトから`constructor`プロパティを辿ってグローバルの`Function`コンストラクタに到達し、任意コードを実行するという手法である。
-
-```html
-{{constructor.constructor('alert(1)')()}}
-```
-
-**なぜ動くか**: JavaScriptでは、あらゆる関数オブジェクトは`constructor`プロパティを通じて自身を生成した`Function`コンストラクタに到達できる(プロトタイプチェーンをたどる、いわゆる「コンストラクタチェーン」)。AngularJSのサンドボックスは「危険な特定のプロパティ名」をブラックリスト方式で禁止していたが、`constructor`という一見無害なプロパティを経由する経路までは塞ぎきれず、結果として任意のJavaScriptコードを文字列から動的生成・実行できてしまう。この「ブラックリストは必ず漏れがある」という教訓は、後述のDOM Clobbering対策やCSPのバイパス研究全般に通底する原理である。
-
-#### 2. mXSS(Mutation XSS)とDOMPurifyのバイパス
-
-Heyesは、業界標準のサニタイザライブラリ「DOMPurify」を繰り返しバイパスする研究を公表している。mXSSとは、「サニタイザがチェックした時点の文字列表現」と「ブラウザがその文字列をパースし直して実際にDOMツリーへ変換した結果」が食い違うことを悪用する攻撃である。
-
-**仕組み(パーサ再解釈の原理)**: HTMLサニタイザの多くは、入力文字列を一度DOMにパースし、危険なノード・属性を除去したあと、**再びHTMLの文字列にシリアライズ(直列化)**して返す。ここで問題になるのは、「除去後の安全なDOM」を文字列化する処理と、その文字列を**呼び出し元のブラウザが再度パースする**処理が、必ずしも同じルールで動くとは限らないという点である。特定のタグのネスト構造(例えば`<style>`や`<noscript>`、名前空間をまたぐSVG/MathMLの要素)は、シリアライズ→再パースの過程で構造が「突然変異(mutation)」し、サニタイズ前には存在しなかった実行可能なコンテキストが生成されてしまう。
+代表的なPoC（原文からの引用）:
 
 ```html
-<svg><style><img src=x onerror=alert(1)></style></svg>
+<alert(1) onfocus="attributes[0].value=localName,new onfocus" autofocus tabindex=1>
 ```
-
-**なぜ動くか(一般的な原理の例)**: `<style>`要素の内部はCSSとしてパースされるべきだが、名前空間の切り替わり(SVGコンテキスト内)やブラウザ実装の差異によって、内部のHTML的なマークアップがテキストとして無害化されずに残存し、サニタイザが一度目のパースで「安全」と判定した構造が、ブラウザの実際のレンダリング時には別のツリー構造として再解釈される。これにより`onerror`属性を持つ`<img>`要素が実DOMに出現し、スクリプトが実行される。
-
-> 出典: Researcher - Gareth Heyes - PortSwigger — https://portswigger.net/research/gareth-heyes (取得不可、検索結果に基づく要約)
-
-#### 3. スクリプトガジェット(Script Gadgets)によるサニタイザ回避
-
-Heyesは、Vue.jsなどのフロントエンドフレームワークが持つ「一見安全なHTML属性」を悪用する「スクリプトガジェット」研究も発表している(2021年)。サニタイザ自体はどの属性も危険とみなさず素通りさせるが、ページ上で実際に使われているJSフレームワークがその属性を「自分向けの指示」として解釈し、結果的にスクリプト実行に至る。
 
 ```html
-<div v-html="'<img src=x onerror=alert(1)>'"></div>
+<JAVASCRIPT:ALERT(1) onfocus=location=localName autofocus tabindex=1>
 ```
 
-**なぜ動くか**: これはサニタイザの脆弱性というより、「サニタイザは汎用的なHTML/DOMの危険性だけを判定しており、そのページで動いている特定のJSライブラリが独自にDOM上の属性・要素を解釈して副作用を起こすこと」までは判定できない、という設計上の死角を突いている。同じマークアップでも、Vue.jsやAngularJSなど特定のフレームワークが読み込まれている環境でだけ発火する「環境依存の攻撃対象面(アタックサーフェス)」がある、という点が本質である。
+なぜ動くか: `<alert(1) ...>` というタグを書くと、ブラウザはこれを「`alert(1)` という(無効な)タグ名を持つ不明な要素」として解釈するが、パースは失敗せずタグ名は保持される。`autofocus` と `tabindex` によってページ読み込み時に自動的にフォーカスが移り、`onfocus` ハンドラが発火する。ハンドラの中で `attributes[0].value=localName` のように自分自身の `localName`（＝`alert(1)` という文字列）を読み出し、それを新しい `onfocus` として再代入することで、文字列だったタグ名が実際のJavaScript式として評価される。2つ目の例は `location=localName` によって `javascript:alert(1)` 相当の擬似プロトコルURLをタグ名から合成し、`location` に代入してnavigateさせる（`javascript:` スキームのナビゲーションはインラインスクリプト実行として扱われる）。原文では「すべてのブラウザで動作する」と記されており、特定バージョン限定の脆弱性ではなく、HTML/DOM仕様が長年許容してきた挙動の組み合わせ悪用である。
 
-#### 4. JavaScript for Hackers(体系書)
+> 出典: What's in a tag name? JavaScript, apparently — https://portswigger.net/research/whats-in-a-tag-name-javascript-apparently
 
-Heyesは自身の研究を集約した書籍『JavaScript for Hackers』(Leanpub/Google Books経由で入手可能)を出版しており、ECMAScript仕様の隅々にある「ハッカー的に有用な奇妙な挙動」(型変換、正規表現の副作用、プロトタイプ汚染など)を体系的に扱っている。
+この研究は、本教科書がこれまで扱ってきた「パーサの再解釈」（第3〜4章のmXSSやDOMベースXSS）と同じ思想の系譜にある。すなわち、HTML構文としては無害に見える文字列が、DOM API経由で文字列として読み出された瞬間に「別の文脈（JavaScriptのソースコード）」として再解釈されてしまう、という多層パーサ特有の危険性である。
 
-> 出典: JavaScript for hackers: Learn to think like a hacker - Gareth Heyes - Google Books — https://books.google.com/books/about/JavaScript_for_hackers.html?id=FVWjEAAAQBAJ
+**「Splitting the email atom: exploiting parsers to bypass access controls」（2024年）**
 
-### Masato Kinugawa(衣川昌人)の研究領域
+メールアドレスのパース処理系統（メールクライアントやメールゲートウェイのパーサ）における仕様差を突き、アクセス制御をバイパスする手法を扱った研究。メールアドレスという一見単純な文字列も、RFCの曖昧な部分やパーサ実装ごとの解釈差（コメント構文、引用符処理など）によって「同じ文字列が別のアドレスとして解釈される」余地があり、これを悪用してアクセス制御（許可リストやドメイン検証）を回避する。mXSSと同じく「複数のパーサ間の解釈の不一致」を武器にする研究であり、Heyes氏の一貫したテーマ（パーサ境界の悪用）を示す一例である。
 
-Masato Kinugawaは、日本発のセキュリティ研究者として世界的に高く評価されており、GoogleやMicrosoftなど主要ベンダーへの脆弱性報告実績を多数持つ。彼の研究の特徴は、**ブラウザの実装差異とHTML/CSS/JSの仕様の境界領域**を極めて精密に検証する点にある。
+> 出典: Splitting the email atom: exploiting parsers to bypass access controls — https://portswigger.net/research（個人サイト経由で参照。詳細な本文は今回未取得）
 
-#### 1. Google検索におけるmXSSの発見(2019年2月)
+**CSS関連の一連の研究（2025〜2026年）**
 
-Kinugawaは2019年2月、Google検索自体に存在するmXSS脆弱性を発見しGoogleへ報告した。これは前述のHeyesのDOMPurify研究と並び、mXSSが「特定のライブラリの実装バグ」ではなく「HTML標準のパース規則そのものに内在する構造的な脆弱性クラス」であることを裏付ける重要な事例である。ブラウザごとにHTMLのパース・シリアライズの解釈が微妙に異なるため、サニタイズ処理を自前で持つ大規模サービスであっても、まったく同じ罠にはまりうるという教訓を示した。
+- 「CSS: the bomb inside your inbox」（2026年）— メールクライアントにおけるCSSベースの脆弱性（データ漏えいや実行コンテキストの悪用）を扱う。
+- 「Pure-CSS 3D world collision detection」（2026年）— CSSのみで3D空間の当たり判定を実装できることを示すデモで、CSSセレクタや `:has()` などの条件付きセレクタがどれほど「計算能力」を持つかを実証する系統の研究。
+- 「Inline Style Exfiltration: leaking data with chained CSS conditionals」（2025年）— インラインスタイル属性に対して連鎖的なCSS条件（属性セレクタなど）を仕込み、ページ内のデータを1文字ずつ外部に持ち出す手法。CSSインジェクションが「見た目の改ざん」に留まらず、条件付きセレクタの評価結果を外部リクエスト（`background: url(...)` など）のトリガーとして使うことで、実質的にデータのサイドチャネル漏えいに使えることを示す。
 
-> 出典: Mutation XSS in Google Search | Acunetix — https://www.acunetix.com/blog/web-security-zone/mutation-xss-in-google-search/ (検索結果に基づく要約)
+これらCSS系の研究に共通するのは、「CSSはJavaScriptを実行できないから安全」という認識への反証であり、CSSセレクタの評価自体が条件分岐・外部リクエストのトリガーとして機能する以上、CSPで `script-src` を絞ってもCSSインジェクションが残っていればデータ漏えいのリスクが消えないという教訓である。
 
-#### 2. DOM Clobberingによる CSP `strict-dynamic` の迂回
+> 出典: CSS: the bomb inside your inbox / Pure-CSS 3D world collision detection / Inline Style Exfiltration — garethheyes.co.uk（本文詳細は個別記事の追加取得が必要、今回はサイト概要からの要約）
 
-Kinugawaは、Content Security Policy(CSP。ブラウザに「このページではこのソース・この方式のスクリプトだけ実行してよい」と指示するHTTPレスポンスヘッダ)の中でも最も強力とされる`strict-dynamic`モードを、DOM Clobbering(DOMクロバリング。HTML要素の`id`属性や`name`属性が、同名のグローバル変数やDOMプロパティを「上書き」してしまう現象)を用いて迂回するシナリオを示した。
+**ツール開発: Hackvertor と AutoVader / Shadow Repeater**
 
-```html
-<a id="currentScript"></a>
-```
+Heyes氏はPortSwigger Burp Suiteの拡張機能開発者としても知られ、以下のツールを継続的に開発・公開している。
 
-**なぜ動くか(CSPソース許可評価との関係)**: `strict-dynamic`を採用したページは、しばしば「信頼されたスクリプトが動的に読み込む後続スクリプトも信頼する」という伝播モデルを実現するために、JavaScript側で`document.currentScript`のようなDOM APIを参照し、その戻り値を使って新しい`<script>`要素を安全に生成しようとする「シム(shim、簡易的な互換実装コード)」を自前で用意することがある。ここでHTML要素のid属性によって`document.currentScript`のようなグローバル参照が、攻撃者の注入した無害な`<a>`要素などに「なりすまし」的に上書きされてしまうと、シムのロジックが想定と異なるオブジェクトを参照し、結果として攻撃者が用意したスクリプトが「信頼されたスクリプトの後続」として誤って実行されてしまう。CSPの許可判定自体はブラウザのネイティブ機構が正しく行っていても、**ページ側のJavaScriptロジックがDOM上の値を無条件に信頼していた場合、CSPの防御思想全体が迂回されうる**という、CSPバイパス研究における重要な原理を示す事例である。
+- **Hackvertor** — ペイロードのエンコード/デコード変換をタグベースで自由に組み合わせられるBurp拡張。「How to write a Hackvertor tag」（2026年）は独自の変換タグを書くための技術ガイドで、任意のエンコーディング処理をプラグイン可能な形で追加する仕組みを解説している。
+- **AutoVader**（2025年）— 自動化されたセキュリティテスト手法/ツール。
+- **Shadow Repeater**（v1.2.3、2025年）— Burp SuiteのRepeater機能をAI支援で拡張し、手動テストを補助する拡張機能のリリースノート。
 
-#### 3. Shadow DOMとセキュリティ境界
+これらは「研究成果を再現可能なツールとして公開する」というHeyes氏のスタイルを示しており、本教科書で紹介した多くのmXSS/DOM Clobberingの検証手順も、こうした自作ツール（DOMPurifyのfuzzer相当のものなど）を通じて発見されたものが多い。
 
-Kinugawaの発表「Shadow DOM & Security - Exploring the boundary between light and shadow」は、Web Componentsの一部であるShadow DOM(要素のサブツリーをカプセル化し、通常のDOM操作やCSSから隔離する仕組み)について、実際のWebアプリケーションを攻撃する中で得られた知見をまとめたものである。Shadow DOMは「隔離されているから安全」と誤解されやすいが、`slot`要素を介したコンテンツの受け渡しや、Shadow Root自体の`mode`(`open`/`closed`)設定の実装差異によって、意図しない情報漏洩やスクリプト実行の経路が生じうることを示している。
+> 出典: Gareth Heyes — https://garethheyes.co.uk/
 
-> 出典: Shadow DOM & Security - Exploring the boundary between light and shadow - Speaker Deck — https://speakerdeck.com/masatokinugawa/shadow-dom-and-security-exploring-the-boundary-between-light-and-shadow (取得不可、検索結果に基づく要約)
+#### 歴史的な代表作（本教科書の各章と対応）
 
-#### 4. JavaScriptによるDoS、Electronのコンテキスト分離欠如、ブラウザのレガシー機能
+サイトのアーカイブには2007年から続く記事群があり、次のようなテーマが含まれる（今回は一覧のみ取得、個別記事本文は未取得）。
 
-その他、Kinugawaは以下のようなテーマでも発表を行っている。
+- mXSS（mutation XSS）の発見に関する一連の記事 — 第3〜4章のmXSS基礎・応用の一次資料。
+- DOM Clobbering に関する記事群 — 第4章 s4h。
+- CSPバイパス・JavaScript難読化・「ゴルフ」的な短縮記法に関する記事群 — 第4章 s4i〜s4l。
 
-- **「JSでDoSる」**(Shibuya.XSS techtalk #11): JavaScriptの言語仕様上の特性(正規表現の破滅的バックトラッキングなど)を悪用したクライアントサイドDoSの手法。
-- **「Electron: Abusing the lack of context isolation」**: Electron製デスクトップアプリで`contextIsolation`が無効(Electron 12未満ではデフォルトが`false`だったが、Electron 12以降はデフォルトが`true`に変更された)な場合に、レンダラープロセスのJavaScriptからNode.js API・特権APIへ到達しリモートコード実行に発展しうる問題。
-- **「ブラウザのレガシー・独自機能を愛でる」**(Browser Crash Club #1): Firefoxに存在した4つの脆弱性を扱った発表で、標準化されていない・忘れられがちなブラウザ独自機能が攻撃対象面になりうることを示す。
-- **「XSS Attacks through PATH」**: URLのパス部分を経由したXSSベクタの研究。
+> ⚠️ **未取得の資料**: 「Gareth Heyes 個人サイトの2007〜2024年の歴史的記事（mXSS発見の経緯、DOM Clobbering詳細、CSPバイパスの個別記事本文）」は取得できませんでした。URL: https://garethheyes.co.uk/ （トップページの一覧要約のみ取得済み、個別記事へのクロールは未実施）
 
-> 出典: Masato Kinugawa (@masatokinugawa) on Speaker Deck — https://speakerdeck.com/masatokinugawa (取得不可、検索結果に基づく要約)
+### Kinugawa Masato（衣川昌人 / Speaker Deck）
 
-### 2人の研究スタイルの対比と学習への活かし方
+Kinugawa Masato氏は、日本のバグバウンティコミュニティ「Shibuya.XSS」の中心的な発表者であり、ブラウザのURLパーサ、Shadow DOM、Service Worker、Electronのcontext isolationなど、Webプラットフォームの各層における脆弱性発見で知られる。Pwn2Own 2021でMicrosoft Teamsをハッキングし15万ドルの賞金を獲得した実績もある。Speaker Deck上に公開されている代表的なスライドは以下の通りである（英語版・日本語版が対になっているものは併記）。
 
-| 観点 | Gareth Heyes | Masato Kinugawa |
+#### 主要スライド一覧
+
+| # | タイトル | 発表 |
 |---|---|---|
-| 主戦場 | JavaScriptパーサ/評価器の仕様の隙間、サニタイザ(DOMPurify等)のバイパス | HTMLパーサの実装差異、DOM API同士の相互作用、フレームワーク/実行環境固有の境界 |
-| 代表的手法 | プロトタイプチェーンの悪用、mXSS、スクリプトガジェット | mXSS(独自発見)、DOM Clobbering、Shadow DOM境界の検証 |
-| 発表媒体 | PortSwigger Research、自身のブログ(garethheyes.co.uk)、書籍 | Speaker Deck、Shibuya.XSS techtalk、各種カンファレンス(CureCon等) |
-| 学習者への示唆 | 「言語仕様のブラックリストは必ず漏れる」という原則をコード実行系で学べる | 「標準仕様の解釈は実装ごとに違う」という原則をパーサ・DOM API系で学べる |
+| 1 | Shadow DOM & Security - Exploring the boundary between light and shadow | （英語版） |
+| 2 | Shadow DOMとセキュリティ - 光と影の境界を探る | Shibuya.XSS techtalk #13 |
+| 3 | ブラウザのレガシー・独自機能を愛でる - Firefoxの脆弱性4選 - | Browser Crash Club #1 |
+| 4 | 注目したいクライアントサイドの脆弱性2選 | Security.Tokyo #3 |
+| 5 | バグハンティングのすゝめ | P3NFEST |
+| 6 | How I Hacked Microsoft Teams and got $150,000 in Pwn2Own | （英語版） |
+| 7 | Pwn2OwnでMicrosoft Teamsをハッキングして2000万円を獲得した方法 | Shibuya.XSS techtalk #12 |
+| 8 | JSでDoSる | Shibuya.XSS techtalk #11 |
+| 9 | Electron: Context Isolationの欠如を利用した任意コード実行 | CureCon |
+| 10 | Electron: Abusing the lack of context isolation | CureCon（英語版） |
+| 11 | バグハンターが見てきたBug Bountyの7年 | LINE Developer Meetup #34 |
+| 12 | 5文字で書くJavaScript | Shibuya.XSS techtalk #10 |
+| 13 | ブラウザのUIのバグを探す | Secusoba PopUnder |
+| 14 | 攻撃者視点で見る Service Worker | PWA Study SW |
+| 15 | USAGE OF XSS FILTER | （英語版） |
+| 16 | XSSフィルターの使い方 | Shibuya.XSS techtalk #9 |
+| 17 | XSS Attacks through PATH | （英語版） |
+| 18 | 明日から使える?! PATHでXSSする技術 | Shibuya.XSS techtalk #7 |
 
-両者に共通するのは、**個別のペイロード集めではなく「なぜその挙動が起きるのか」という仕組みレベルの理解を積み上げている**点である。実務でXSSの新しい迂回策を発見したい場合、この2人が定期的に公開する発表資料・ブログを継続的にウォッチすることが、チートシートの更新を待つよりも早く最前線の知見に触れる最良の方法である。読者は本節で紹介した各URLを直接開き、実際のスライド内のデモやコード片を手元のブラウザで再現しながら学習することを強く推奨する。
+> 出典: Masato Kinugawa Speaker Deck — https://speakerdeck.com/masatokinugawa
 
-### 防御側への示唆
+#### 技術的に特に重要な発表の解説
 
-- **サニタイザは銀の弾丸ではない**: DOMPurifyのような高品質なライブラリであっても、mXSSクラスの脆弱性は「パーサの再解釈」という構造的な問題に起因するため、バージョンアップと最新のバイパス研究の追跡が不可欠である。
-- **CSPは単体で完全ではない**: `strict-dynamic`のような強力なCSPモードでも、ページ側のJavaScriptロジック(DOM Clobberingに対する耐性がないシムコードなど)次第で迂回されうる。DOM上のグローバル参照に依存するコードは、`id`/`name`属性による汚染を防ぐため、`Object.freeze`や名前空間の分離、あるいは`document.getElementById`の結果を信頼する前の型チェックなど、追加の防御が必要である。
-- **フレームワーク固有のアタックサーフェスを意識する**: スクリプトガジェットの研究が示すように、サニタイザが「安全」と判定した出力であっても、同じページで動いている別のJSライブラリがその出力を独自に解釈し直すことで危険な処理に至る場合がある。サニタイズ処理の設定は、実際にページで使用しているフレームワークの挙動を踏まえて個別にチューニングする必要がある。
+**「PATHでXSSする技術」（Shibuya.XSS techtalk #7、2016年3月）**
+
+`location.pathname`（URLのパス部分をJavaScriptから読み書きするプロパティ）を経由したDOMベースXSSを扱った発表。発表内容の骨子は次のようなものである。
+
+- 一部のJavaScriptライブラリ（当時のjQuery Mobile等）が、ページ内のナビゲーション処理で `location.pathname` の値をエスケープせずにHTML文字列へ埋め込み、それを使って要素を生成していた。
+- URLのパス部分は `%2F` や `'` `"` `<` `>` といった一部の文字は使えるが、通常はURLエンコードされる。しかし、ブラウザ間・パーサ間で「どの文字をエンコードすべきか」の解釈にズレがあり、特定の文字（例えばシングルクォートやアングルブラケットに近い記号）がエンコードされずに `pathname` にそのまま反映されるケースが存在した。
+- 攻撃者はリンク先URLのパス部分に「HTML属性やタグ構造を破壊する文字列」を仕込んでおき、被害者がそのURLへ遷移すると、ライブラリが `pathname` の値をそのままHTML文字列に連結してDOM操作するため、意図しないタグ／属性が生成されて実行に至る。
+
+なぜ危険か: 開発者は「URLのpathnameはURLエンコードされているはずだから安全」という前提を置きがちだが、ブラウザのURLパーサ自体の実装差（RFC 3986の曖昧な部分の解釈違い）により、その前提が成り立たない文字が存在する。これは本教科書の第3章で扱った「DOMベースXSSのシンク」の中でも、`location` オブジェクトの各プロパティ（`href`、`search`、`hash`、`pathname`）がそれぞれ異なるエンコーディング規則を持つことの危険性を、実例で裏付けた発表である。
+
+> 出典: XSS Attacks through PATH / 明日から使える?! PATHでXSSする技術 — https://speakerdeck.com/masatokinugawa/xss-attacks-through-path
+
+**「5文字で書くJavaScript」（Shibuya.XSS techtalk #10）**
+
+使用可能な文字種が極端に制限された環境（WAFやフィルタが特定の文字種のみ許可する場合）で、JavaScriptコードをどこまで短い文字集合で構成できるかを追求した発表。JavaScriptの構文糖衣（`[]`、`+`、`!`のみでコードを構成する、いわゆる「JSFuck」的な発想の延長）や、`Function` コンストラクタ、文字コードの暗黙変換などを組み合わせ、限定された文字だけでarbitrary code executionに至る経路を示す。この種の技法は、WAFが「危険な関数名（`eval`, `alert` など）の出現」をブロックする対策の限界を示すものであり、第7章で扱うWAFバイパスの文脈とも接続する。
+
+> 出典: 5文字で書くJavaScript — https://speakerdeck.com/masatokinugawa/shibuya-dot-xss-techtalk-number-10
+
+**「Electron: Context Isolationの欠如を利用した任意コード実行」（CureCon）**
+
+Electronアプリケーション（ChromiumとNode.jsを組み合わせたデスクトップアプリ基盤）において、レンダラープロセス側でNode.js APIへの直接アクセスを許してしまう設定（`contextIsolation: false` や `nodeIntegration: true`）が残っている場合、Webページ内で発生したXSSが単なるブラウザ内の被害に留まらず、Node.jsのファイルシステムAPIや `child_process` を通じたOSコマンド実行にまでエスカレーションできることを示した発表。通常のブラウザではXSSは「同一オリジンのDOM/Cookieへのアクセス」に限定されるが、Electronのcontext isolationが無効化されていると、Webページ内のJavaScriptコンテキストとNode.jsのJavaScriptコンテキストが分離されずに同居してしまい、`require('child_process').exec(...)` のようなAPIがページ内のJavaScriptから直接呼び出せてしまう。これはXSSの「影響範囲（インパクト）」がアプリケーションのプラットフォーム設計によって大きく変わることを示す好例であり、本教科書で繰り返し強調してきた「XSSの深刻度はサンドボックスの強さに依存する」という論点を、Electronという具体的なプラットフォームで裏付けている。
+
+> 出典: Electron: Context Isolationの欠如を利用した任意コード実行 — https://speakerdeck.com/masatokinugawa
+
+**Pwn2Own 2021 Microsoft Teamsハッキング**
+
+Microsoft Teamsのデスクトップアプリ（これもElectronベース）に対し、XSSを起点として最終的に任意コード実行（RCE）にまでチェーンさせ、Pwn2Ownコンペティションで15万ドルの賞金を獲得した事例。単発のXSS脆弱性発見に留まらず、「Webの脆弱性 → デスクトップアプリの権限昇格」という多段階のエクスプロイトチェーンを構築した点で、本教科書第6章（実例ライトアップ）の題材として象徴的である。具体的な攻略手順の詳細は本書では扱わないが、「XSSはブラウザの中だけの問題ではなく、Electron等のハイブリッドアプリではOSレベルの侵害に直結し得る」という一般化可能な教訓として押さえておきたい。
+
+> 出典: How I Hacked Microsoft Teams and got $150,000 in Pwn2Own / Pwn2OwnでMicrosoft Teamsをハッキングして2000万円を獲得した方法 — https://speakerdeck.com/masatokinugawa
+
+### まとめ: 2人の研究者から学ぶ視点
+
+Gareth HeyesとKinugawa Masatoの仕事に共通するのは、「仕様書通りに動いているはずのコンポーネントの間に生じるズレ」を執拗に探すという姿勢である。Heyes氏はHTML/CSS/JavaScriptという単一ブラウザ内の複数パーサ・エンジンの境界（mXSS、タグ名の解釈、CSSセレクタの計算能力）を、Kinugawa氏はブラウザとその上で動くライブラリ、あるいはブラウザとホストOS（Electron）の境界を、それぞれ主戦場としている。どちらも「単体では無害に見える挙動の組み合わせ」から脆弱性を組み立てるスタイルであり、本教科書の随所（特に第3〜5章のDOMベースXSS、mXSS、CSP関連の各節）で参照してきた技法の多くが、この2人の一次資料に行き着く。読者が自分でリサーチを進める際は、両者のブログ・スライドを定点観測することを強く勧める。

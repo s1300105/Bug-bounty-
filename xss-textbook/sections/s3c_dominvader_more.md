@@ -1,261 +1,172 @@
 ## DOM Invader補足（HackTricks / Medium）
 
-本セクションは、第3章で導入した **DOM Invader**（Burp Suite に組み込まれた DOMベースXSS 発見支援ツール）を、より実務的・網羅的に掘り下げる補足です。典拠は次の2資料です。
+DOM Invaderは、Burp Suite Professional/Community 2023年以降のバージョンに同梱されている、DOM Invaderという名の**ブラウザ内蔵型の解析ツール**です。Burpの組み込みブラウザ（Chromiumベース）に拡張機能としてプリインストールされており、DOMベースXSS・クライアントサイドprototype pollution・DOM clobberingという3系統の脆弱性を、手動でJavaScriptコードを1行1行追わなくても発見できるように設計されています。本節では、公式のPortSwiggerドキュメントで機能・操作手順を正確に押さえたうえで、HackTricksとMedium記事が強調している実践的なワークフローを補足します。ラボの具体的な攻略手順（どのペイロードでどのラボを解くか）には立ち入らず、あくまで**ツールの仕組みと使い方**に焦点を当てます。
 
-1. **HackTricks の DOM Invader 解説** — ツールの機能を「攻撃者目線の手順書」として簡潔に列挙した実務系リファレンス。
-2. **Hacksheets（Medium）の実践記事**「DOM Invader — Burp Suite tool to Find DOM Based XSS Easily」 — スクリーンショット付きで「有効化 → カナリア注入 → シンク確認」という基本ワークフローを初学者向けに追体験させる入門記事。
+### DOM Invaderとは何か、なぜ必要か
 
-第3章前半（PortSwigger 系）で **source/sink（ソース/シンク）** の理論と DOM Invader の全体像は説明済みなので、本セクションでは重複を避け、(1) 各機能の**具体的な操作とボタンの挙動**、(2) プロトタイプ汚染・DOM クロバリング・postMessage といった**高度な攻撃タイプの検出メカニズム**、(3) 「なぜその手法で脆弱性が見つかる/成立するのか」という**原理**、を原文なしで理解できるレベルまで詳述します。
+古典的な反射型XSSは「サーバのHTTPレスポンスに攻撃者の入力がそのまま出力される」というモデルで説明できるため、Burp Proxyの履歴やRepeaterで入出力を突き合わせれば発見できます。しかしDOMベースXSSは違います。攻撃者の入力（`location.hash`、`document.referrer`、`postMessage`のデータなど）はサーバを経由せず、**ブラウザ内のJavaScriptが直接読み取り、DOM操作用の危険なAPI（sink）に渡す**ことで初めて脆弱性になります。つまり脆弱性の発生地点はHTTPレスポンスの中ではなく、実行時のJavaScriptの制御フローの中にあります。
 
----
-
-### 0. 本セクションの資料取得状況（透明性のための注記）
-
-- **資料1（HackTricks）** は、執筆環境の下り（egress）プロキシが `hacktricks.wiki` ドメインへの直接アクセスをブロックしたため WebFetch では取得できませんでしたが、**HackTricks の公開ソース（GitHub 上の同一原稿ファイル）から本文全文を復元**できました。したがって本セクションでは資料1を「取得可能」として扱い、原典URLを出典に明記します。内容は原稿に忠実ですが、HackTricks は随時更新されるため細部は原典でご確認ください。
-- **資料2（Hacksheets / Medium）** は、`hacksheets.medium.com` および既知のミラー（Tumblr 版、Medium リーダー系ミラー）がいずれもプロキシによりブロック／名前解決不能で、**記事本文そのものは取得できませんでした**。Web検索のスニペットから記事の骨子（扱っているトピックと手順の概要）は把握できたため、該当箇所に後述の未取得ブロックを挿入したうえで、専門知識で補って解説します。
-
----
-
-### 1. DOM Invader とは何か（位置づけと「解決する課題」の再確認）
-
-**DOM Invader** は、Burp Suite に内蔵された **組み込みブラウザ（Burp's embedded browser: Chromium ベースのブラウザで、Burp のプロキシを最初から経由するよう設定済み）** に、拡張機能としてあらかじめインストールされているツールです。目的は **DOMベースXSS を中心としたクライアント側脆弱性（DOM XSS・Webメッセージ XSS・プロトタイプ汚染・DOM クロバリング）を、JavaScript を手で追わずに発見する**ことです。
-
-なぜ専用ツールが要るのか。DOMベースXSS の判定には、**「攻撃者が操作できる入口（source）」から「危険な代入先（sink）」まで、データがどう流れるか**を追う必要があります。ところが現代のフロントエンドは、圧縮（minify）・難読化された数千〜数万行の JavaScript でできており、この**データフロー（データの流れ）を人間が目で追うのは現実的でない**ことが多い。DOM Invader は、ブラウザ内部の危険な関数・プロパティ（`innerHTML` への代入、`eval()` の呼び出しなど）に**フック（hook: 対象の処理を横取りして、その引数や呼び出しを監視・記録する仕組み）** を仕掛け、「印を付けた入力（後述のカナリア）が、どのシンクに、どんな文脈で到達したか」を自動で報告します。
-
-> HackTricks の要約: DOM Invader は「様々な source と sink を用いて DOM XSS をテストするブラウザ組み込みツール」で、Webメッセージやプロトタイプ汚染ベクタも扱える。Burp の組み込みブラウザ経由でのみ利用でき、拡張として preinstall されている。
+このため、DOMベースXSSを見つけるには本来「ページ内の全JavaScriptを読み、どの変数がユーザ入力に由来し、それがどの危険な関数に渡っているか」をソースコードレベルで追跡する必要があり、難読化されたコードやバンドルされたコードでは非常に手間がかかります。DOM Invaderはこの追跡作業を自動化し、ブラウザが実際にコードを実行する瞬間にsource/sinkの経路を計装（instrument）して捕捉します。
 
 > 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html
 
-#### 1.1 サーバ側スキャナでは見つからない理由（原理）
+### 有効化の手順（公式ドキュメントに基づく正確な操作）
 
-反射型・格納型 XSS は攻撃文字列がサーバを通るため、プロキシ（Burp Scanner など）がリクエスト/レスポンスを観測して検出できます。しかし DOMベースXSS のペイロードは、URL のフラグメント（`#` 以降）や `postMessage`、`localStorage` などを経由して**ブラウザ内で完結し、サーバに届かないことがある**。したがってネットワークを覗くだけのスキャナには原理的に見えません。DOM Invader が「ブラウザの中」で計測するのは、この盲点をふさぐためです。
+DOM InvaderはBurpの組み込みブラウザに標準搭載されていますが、**デフォルトでは無効**になっています。誤って一般サイトの動作を妨げないようにするための安全策です。有効化手順は次の通りです。
 
----
+1. Burp Suiteの「Proxy」タブ内「Intercept」から、組み込みブラウザ（Burpのブラウザ）を起動する。
+2. ブラウザ右上のBurp Suiteロゴ（パズルピースアイコン）をクリックする。ロゴが見えない場合は、拡張機能アイコンからジグソーパズルのアイコンを探してクリックする。これで「Navigation Recorder」と「DOM Invader settings」の2つのパネルが開く。
+3. 「DOM Invader settings」の中の "**DOM Invader is on**" というトグルスイッチをオンにする。
+4. 「Reload」ボタンをクリックして設定変更をページに反映させる（DOM Invaderはページ読み込み時にJavaScriptを計装する仕組みのため、既に開いているページには反映されない）。
+5. ブラウザ上で右クリック→「Inspect」でDevToolsを開くと、新しく「DOM Invader」タブが追加されている。パネルはDevToolsの下部にドッキングしておくと最も使いやすい。
 
-### 2. 有効化と基本操作
+さらに、「Settings > Tools > Burp's browser」で「**Store settings and history after closing**」をオフにしておくと、DOM Invaderの状態（有効化フラグやcanary値など）がブラウザを閉じた際にリセットされる。逆にオンのままにしておけば設定が永続化される。
 
-HackTricks と一般的な手順に基づく、最小の起動フローは次のとおりです。
+> 出典: PortSwigger公式ドキュメント（Enabling DOM Invader） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader/enabling
 
-1. Burp Suite で **Proxy → Intercept → Open Browser**（または「Open Browser」ボタン）を押し、**Burp 組み込みブラウザ**を開く。
-2. ブラウザ右上の **Burp Suite ロゴ（拡張アイコン）** をクリック（隠れている場合はジグソーピースの拡張アイコンを先に押す）。
-3. **DOM Invader タブ**で「**Enable DOM Invader**」をオンにし、ページを**リロード**する（フックはページ読み込み時に仕掛けられるため、有効化後の再読み込みが必須）。
-4. **DevTools（F12）** を開くと、DevTools パネルに **DOM Invader 用のタブ**（および後述の「**Augmented DOM**」タブ）が追加される。
+### canary（カナリア）という中核概念
 
-> ポイント: DOM Invader は「Burp の組み込みブラウザ限定」です。普段使いの Chrome/Firefox には拡張として入れられません（計測フックを安全に注入するために専用ブラウザに限定されている）。
+DOM Invaderの動作原理の核は「**canary**」と呼ばれる、通常の利用者の入力には決して現れないユニークな英数字文字列です。PortSwigger公式は次のように定義しています。
 
-> 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html
+> 「an arbitrary but distinct string of alphanumeric characters that you can inject into different sources to see which sinks they flow into」（さまざまなソースに注入し、それがどのシンクに流れ込むかを観察するための、任意だが他と区別できる英数字文字列）
 
----
+デフォルト値はツールによって`burpdomxss`のような固定文字列が使われることが多く（Medium記事では初期値の例として言及）、設定画面からカスタムの値に変更できます。HackTricksが強調しているポイントとして、**canaryの値は他の一般的な文字列（`test`など）と被らない、十分にユニークな文字列にすべき**という注意があります。理由は単純で、ページ内のJavaScriptやCSSセレクタ、正規表現の中にたまたま`test`という文字列が既に存在していると、DOM Invaderがそれを「注入した入力がsinkに到達した」と誤検知（false positive）してしまうためです。ユニークなcanaryを使うことで、DOMツリー内に出現する箇所は「本当に自分が注入した経路」だけに限定できます。
 
-### 3. Canary（カナリア）— DOM Invader の中核
-
-**カナリア（canary）** とは、DOM Invader が「入力の追跡用マーカー」として使う**一意のランダム文字列**です（**デフォルト値は `burpdomxss`**）。炭鉱のカナリア（危険を知らせる小鳥）が語源で、「この文字列が危険な場所に現れたら警報」という発想です。仕組みはシンプルかつ強力です。
-
-- あなた（またはツール）がカナリアを **source に注入**する（URL パラメータ、フォーム、WebSocket フレーム、Webメッセージなど）。
-- DOM Invader は、フックした各シンクに渡る値の中に**カナリア文字列が含まれていないか**を監視する。
-- カナリアがシンクに到達したら、**どのシンクに・どんな文脈（context）で・どんなサニタイズ（無害化処理）を経て**届いたかを報告する。
-
-これは本格的な**テイント追跡（taint tracking: 汚染源から来たデータに“汚れ”の印を付け、その伝播を追う技術）** の軽量版と考えると分かりやすい。文字列一致という素朴な方法ですが、実運用では十分に強力です。
-
-> HackTricks: DevTools を有効化すると「Canary」と呼ばれるランダムな文字群が現れる。これを Web の様々な箇所（パラメータ・フォーム・URL）に注入し始めると、DOM Invader は「そのカナリアが悪用可能な興味深いシンクに行き着いたか」をチェックする。
-
-#### 3.1 カナリアの注入を自動化する機能
-
-手で全パラメータに貼るのは面倒なので、DOM Invader は自動注入を用意しています。
-
-- **Inject URL params**: 現在の URL のクエリ文字列**全パラメータ**にカナリアを自動で付与し、新しいタブで開く。
-- **Inject forms**: ページ内**フォームの各フィールド**にカナリアを自動入力する。
-- 追跡対象は URL パラメータ・フォーム・**WebSocket フレーム**・**Webメッセージ（postMessage）** に及ぶ。
-
-#### 3.2 「空のカナリア」検索 — レコン（偵察）の裏技
-
-カナリアを**空文字にして検索**すると、DOM Invader は**悪用可能性に関わらず、ページ上のすべてのシンク（に流れ込む値）を列挙**します。実際に脆弱でなくても「どこに危険な代入先があるか」を俯瞰できるため、**攻撃対象面（attack surface）の把握＝レコン**に非常に有効です。
-
-#### 3.3 カナリア設定（Burp 2024.12 以降）— 陳腐化への注意
-
-Burp Suite **2024.12** で**カナリア設定**が追加され、カナリア文字列を**ランダム化**したり**任意のカスタム文字列**に変更できるようになりました。これは次の場面で役立ちます。
-
-- **複数タブ/複数対象を同時テスト**する際に、対象ごとにカナリアを変えて混同を防ぐ。
-- 対象ページに**たまたまデフォルト値 `burpdomxss` が自然に出現**してしまい、誤検知（false positive）が出る場合に別の値へ逃がす。
-
-> バージョン注記: カスタム/ランダムなカナリア設定は **Burp 2024.12（2024年）以降**の機能です。これより古い Burp ではデフォルト `burpdomxss` 固定のため、上記の回避策は使えません。
-
-> 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html ／ DOM Invader canary settings — PortSwigger（Burp 2024.12 のカナリア設定）
-
----
-
-### 4. Augmented DOM — ソース/シンクのツリー表示
-
-**Augmented DOM（拡張DOM）** は、DevTools 内に追加されるビューで、**対象ページの source と sink をツリー表示**します。通常の DOM ツリー（要素の入れ子）に、DOM Invader が観測した「ここがシンクだ」「ここにカナリアが届いた」という情報を**重ね書き（augment）** したものです。
-
-このビューが提供する情報が、DOMベースXSS のエクスプロイト可否を一目で判断させます。
-
-- **どのシンクにカナリアが到達したか**（`innerHTML` / `document.write` / `eval` / `location` / `setAttribute` など）。
-- **文脈（context）**: カナリアが最終的に置かれる場所が **HTML 本体か、属性値（attribute）か、JavaScript 文字列か、URL か**。これが分かると、成立させるべきペイロードの形（タグを直に書けるのか、属性を閉じる `">` が要るのか、`'` でJS文字列を抜けるのか等）が決まる。
-- **適用されたサニタイズ（sanitization: 危険な文字を除去/変換する無害化処理）**: どの文字が生き残り、どれが `&lt;` などにエスケープされたか。ここから「フィルタをどう回避するか」の当たりを付けられる。
-
-DOM Invader はこれらを自動提示するので、**数千行の JavaScript を人力で読む作業（source → sink のトレース）を丸ごと肩代わり**します。これが「DOM XSS が“簡単に”見つかる」と言われる核心です。
-
-#### 4.1 スタックトレースの確認
-
-カナリアがシンクに届いた経路は、**スタックトレース（stack trace: 関数呼び出しの履歴。どの関数がどの順で呼ばれて今に至ったかの記録）** として確認できます。これにより「実際にこのデータフローを引き起こしているコード箇所」を特定でき、実証（PoC）や修正提案に直結します。
+canary文字列はDevToolsのDOM Invaderパネル左上に常に表示されており、これを見ながら「今どの文字列を追跡しているか」を確認する運用になります。
 
 > 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html
+> 出典: DOM Invader: Burp Suite tool to find DOM based XSS easily — Medium (hacksheets) — https://hacksheets.medium.com/dom-invader-burp-suite-tool-to-find-dom-based-xss-easily-3cb09adf4d44
 
----
+### DOM XSS検出の仕組みとワークフロー
 
-### 5. Web メッセージ（postMessage）の検査
+#### 注入方法
 
-`window.postMessage()` は、**異なるオリジン（origin: スキーム＋ホスト＋ポートの組。例 `https://a.com`）間**でも安全にデータをやり取りするための正規APIです。ところが受信側の実装が甘いと、**外部オリジンから送り込んだメッセージが DOM XSS のトリガ**になります。DOM Invader の **Messages サブタブ**はこの検査に特化しています。
+DOM Invaderはcanaryをページに送り込む方法として複数の手段を用意しています。
 
-DOM Invader が提供する3機能:
+- **手動注入**: 開発者自身がURLのクエリパラメータやフォーム入力欄に、DevToolsパネルからコピーしたcanary文字列を貼り付ける。
+- **Inject URL params**: DOM Invaderが自動的にページ内のクエリパラメータ一つひとつにcanaryを注入し、それぞれ別タブで開いて結果を観察する。手動で全パラメータを試す手間を省ける。
+- **Inject forms**: ページ内のHTMLフォームフィールドに自動的にcanaryを注入して送信する。
 
-1. **ロギング**: ページで発生した `window.postMessage()` の呼び出しをすべて記録する。
-2. **編集・再送**: 記録したメッセージを**ダブルクリックして `data` を書き換え、Send で再送**できる。受信ハンドラの挙動を対話的に試せる。
-3. **自動探索（auto-mutate 等）**: メッセージにペイロードを自動注入・再送して XSS を炙り出す。
+#### sinkの自動検出とコンテキスト表示
 
-各メッセージについて、受信側 JavaScript が次のプロパティを**検証しているか/無検証で使っているか**を確認できます。ここが脆弱性判定の勘所です。
+canaryが注入されたページがロードされると、DOM Invaderは**DOMを解析し、canary文字列がどのsink（危険なAPI呼び出し）に流れ込んでいるかを自動的に特定**します。検出結果は関連度順にソートされて一覧表示されます。
 
-- **`origin`**: 送信元オリジン。**検証していなければ、攻撃者の別ドメインからのクロスオリジン送信を受け入れてしまう**（`event.origin` を `if` でチェックしていないケースが典型的な穴）。
-- **`data`**: メッセージ本体。これがサニタイズされずに `innerHTML` 等のシンクへ渡ると DOM XSS になる。
-- **`source`**: 送信元の window 参照。iframe 参照の照合に使われるが、状況次第でバイパス可能。
+各検出結果に対して、DOM Invaderは次のようなコンテキスト情報を提示します。
 
-> なぜ危険か（原理）: `postMessage` は設計上「誰でも送れる」。安全性は**受信側が `event.origin` を厳格に検証し、`event.data` を無害化する**ことに全面的に依存する。この2つが欠けると、攻撃者は自分の用意したページから被害ページの iframe/子ウィンドウへ任意の `data` を送り込み、それが素通しでシンクへ流れる。
+- そのsinkがHTMLコンテキストなのかJavaScriptコンテキストなのか（例えば`innerHTML`に代入されるのか、`eval()`に渡されるのか、で必要なペイロードの形が変わる）。
+- 注入した文字列の前後にどのような特殊文字が存在するか（属性値の中なのか、タグの外なのか、JS文字列リテラルの中なのかを見分けるために重要）。
+- sinkの種類に応じて「Outer HTML」（周辺のHTML構造）、「Frame path」（iframeのネストがある場合の経路）、「Event」（イベントハンドラ経由の場合、どのイベントが引き金か）といった付加情報。
 
-> 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html
+さらに「**Check the Stack Trace in DevTools Console**」の機能により、canaryがsinkに到達する直前のJavaScript呼び出しスタックをそのままDevToolsコンソールに表示させ、**該当するソースコードの行に直接ジャンプ**できます。これにより、脆弱性が「本当にサニタイズされずにsinkへ届いているか」をコード上で確認し、実際に有効なXSSペイロードを組み立てる段階に進めます。
 
----
+> 出典: PortSwigger公式ドキュメント（DOM XSS） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader/dom-xss
+> 出典: DOM Invader: Burp Suite tool to find DOM based XSS easily — Medium (hacksheets) — https://hacksheets.medium.com/dom-invader-burp-suite-tool-to-find-dom-based-xss-easily-3cb09adf4d44
 
-### 6. プロトタイプ汚染（Prototype Pollution）の検出とガジェット探索
+#### Medium記事が示す一連の操作フロー
 
-**プロトタイプ汚染（prototype pollution）** は、DOM Invader が近年もっとも強力に支援する領域です。まず原理から。
+Medium記事（hacksheets）は、初学者向けに以下の6ステップの実践フローとしてまとめています（ラボの解答そのものではなく、汎用的な手順として引用します）。
 
-#### 6.1 なぜ「汚染」が起きるのか（プロトタイプチェーンの仕組み）
+1. Burpの「Proxy」タブから組み込みブラウザを開き、拡張機能設定からDOM Invaderを有効化する。
+2. 必要であればcanary文字列を分かりやすい値（記事の例では`hacksheetsdomxss`のような識別しやすい文字列）に変更し、リロードする。
+3. DevToolsを開き（`Ctrl+Shift+I`）、「DOM Invader」タブ（記事内ではAugmented DOM Tabと呼ばれるDOMビュー）を表示する。
+4. 対象ページを開き、疑わしいクエリパラメータにcanaryを注入する。
+5. DOM Invaderのパネルで、注入したcanaryが何らかのsinkに反映されているかを確認する。
+6. sinkに到達していることが確認できたら、DevToolsコンソール側でスタックトレースを辿り、実行箇所を特定したうえで、実際に動作するXSSペイロードへ組み替えて検証する。
 
-JavaScript のオブジェクトは、あるプロパティを参照されたとき、**自分自身にそれが無ければ「プロトタイプ（原型）」を辿って探しに行く**——この連鎖を **プロトタイプチェーン（prototype chain）** と呼びます。ほぼすべての普通のオブジェクトは、最終的に **`Object.prototype`** を共有の親として持ちます。
+このフローの意義は、「どこに脆弱性があるか」を機械的に絞り込んだうえで、「実際に悪用可能か」の判断と最終的なペイロード作成は引き続き人間が行う、という役割分担にあります。DOM Invaderは発見（discovery）を効率化するツールであり、悪用可能性の最終判定やCSPバイパスの組み立てそのものは代行しません。
+
+> 出典: DOM Invader: Burp Suite tool to find DOM based XSS easily — Medium (hacksheets) — https://hacksheets.medium.com/dom-invader-burp-suite-tool-to-find-dom-based-xss-easily-3cb09adf4d44
+
+### クライアントサイドprototype pollutionの自動検出
+
+DOM InvaderはXSS検出だけでなく、**クライアントサイドprototype pollution**（JavaScriptの`Object.prototype`に任意のプロパティを追加できてしまう脆弱性クラス）の発見も自動化します。これは第4章で扱うmXSS/プロトタイプ汚染の話題とも接続する重要な機能です。
+
+#### ソース検出
+
+有効化するには、DOM Invader設定の「Attack types」セクション内で「**Prototype pollution**」のトグルをオンにし、リロードする必要があります（これもデフォルトでは無効。理由はDOM XSS検出と同様、対象サイトの通常動作に干渉しないようにするためです）。
+
+有効化後、DOM Invaderはページを自動的にスキャンし、「`Object.prototype`に任意のプロパティを追加できる可能性のある経路（ソース）」を探索します。公式ドキュメントが例示する典型例は、URLの`location.hash`（フラグメント識別子）を経由するもので、`__proto__.xxx=yyy`のようなキーをフラグメントに含めたときに、ページ内のマージ処理コード（例えばjQueryの拡張関数や独自実装のdeep-mergeユーティリティ）が`__proto__`という特別なキー名をチェックせずにオブジェクトへ代入してしまうケースです。この種のコードは次のような形になっていることが多いです。
 
 ```javascript
-let obj = {};
-obj.testproperty          // → undefined（自分にもチェーン上にも無い）
-Object.prototype.testproperty = "polluted";
-obj.testproperty          // → "polluted"（自分に無いので親 Object.prototype で発見）
+// 危険なマージ処理の典型例（概念コード）
+function merge(target, source) {
+  for (const key in source) {
+    if (typeof source[key] === 'object') {
+      target[key] = target[key] || {};
+      merge(target[key], source[key]);
+    } else {
+      target[key] = source[key];
+    }
+  }
+  return target;
+}
 ```
 
-つまり **`Object.prototype` に1つプロパティを書き込むと、プログラム中の（ほぼ）すべてのオブジェクトが、そのプロパティを“最初から持っていたかのように”見え始める**。攻撃者が外部入力を通じてこの共有の親を書き換えられる状態が「プロトタイプ汚染」です。書き換えの入口（source）として悪用されるキーが **`__proto__`** と **`constructor.prototype`** です。
+このコードに`source`として`{"__proto__": {"polluted": "yes"}}`のようなオブジェクトを渡すと、`target.__proto__`（すなわち`Object.prototype`そのもの）に`polluted`プロパティが追加され、以降**そのページ内で生成される全てのオブジェクトが`polluted`プロパティを継承してしまいます**。これがプロトタイプ汚染の基本原理です。DOM Invaderはこのような危険なマージ処理をブラウザ実行時に検知します。
 
-```javascript
-// マージ処理などが __proto__ を素直に辿ってしまうと汚染が起きる
-obj["__proto__"]["polluted"] = true;      // Object.prototype.polluted = true と同義
-obj["constructor"]["prototype"]["x"] = 1; // これも Object.prototype.x = 1 に到達
-```
+#### 検証（Test）とgadget探索
 
-`__proto__` はオブジェクトのプロトタイプを指し示すアクセサであり、`constructor.prototype` は「そのオブジェクトを作ったコンストラクタ（＝Object）が持つ prototype」＝やはり `Object.prototype` に行き着くため、どちらも共有の親を書き換える経路になります。
+ソースが検出されると、DOM Invaderは「**Test**」ボタンを提示します。これをクリックすると新しいタブが開き、DOM Invaderが実際に検証用のプロパティ（proof-of-concept property）を`Object.prototype`に追加しようと試みます。ブラウザのコンソールを開いて`Object.prototype`を調べたり、新しいオブジェクトリテラル`{}`を作成してそのプロパティが継承されているかを確認したりすることで、汚染が実際に成立するかを人間の目で確かめられます。
 
-#### 6.2 DOM Invader による自動検出と PoC 確認
+汚染そのものが成立しても、それだけでは「見た目が変わる」以上の実害はまだありません。実際にXSSなどへ昇華させるには、汚染したプロパティを**サニタイズせずに危険なsinkへ渡してしまうコード（gadget）**が別途ページ内に存在する必要があります。DOM Invaderの用語で言う「gadget」とは、公式ドキュメントの定義を借りれば「any user-controllable property that is passed to a sink without being properly sanitized」（サニタイズされずにsinkへ渡される、ユーザーが制御可能なプロパティ）です。
 
-DOM Invader を（設定の **Attack types → Prototype pollution** で）有効化すると、**URL やJSONメッセージなどの中に、`Object.prototype` へ任意プロパティを追加できるソースが無いか自動で探索**します。候補が見つかると **「Test」ボタン**が表示され、押すと**新しいタブで実際に汚染を試みて成否を確認**します。確認は次のような最小コードで行われます。
+DOM Invaderは「**Scan for gadgets**」ボタンにより、この汚染可能なプロパティ経由でsinkに到達しうるgadgetを自動的に探索し、見つかったsinkをDevToolsパネルに一覧表示します。さらに、ソース・gadget・sinkの3点が揃うと、DOM Invaderは「**それらを組み合わせたPoC（概念実証コード）を自動生成**」する機能まで備えています。これにより、手作業でsourceからsinkまでの実行チェーンを1つずつ追跡する必要がなくなり、「汚染可能な入り口はあるが、実際に悪用可能なgadgetが存在するか」という、従来は非常に時間のかかっていた確認作業が大幅に効率化されます。
 
-```javascript
-let b = {};
-b.testproperty;   // 汚染成功なら、注入したプロパティ値（例: 'DOM_INVADER_PP_POC'）が返る
-```
+HackTricksでは2023年6月版（v2023.6）のBurp Suiteで、専用の「Prototype-pollution」タブが追加され、`__proto__`や`constructor.prototype`といった典型的なプロトタイプ汚染用キー名をパラメータ名に対して自動的に変異（mutate）させ、sink地点での汚染発生を検出する機能が実装されたと説明されています。これはDOM Invaderが単なる「文字列追跡ツール」ではなく、JavaScriptのオブジェクトモデル（プロトタイプチェーン）の挙動そのものを実行時に監視する設計になっていることを示しています。
 
-`b` は空オブジェクトなのに `b.testproperty` が値を返せば、**共有の親 `Object.prototype` が確かに汚染された**証拠、というわけです（プロトタイプチェーンの探索挙動をそのまま実証に使っている）。
+> 出典: PortSwigger公式ドキュメント（Prototype pollution） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader/prototype-pollution
+> 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html
 
-#### 6.3 Scan for gadgets（ガジェット探索）— 汚染を“実害”に変える
+### web message（postMessage）の解析機能
 
-プロトタイプ汚染は、それ単体では「変なプロパティが増える」だけのこともあります。実害（XSS やコード実行）にするには、**汚染したプロパティを読み取って危険なシンクに渡してしまうコード＝ガジェット（gadget）** が必要です。
+第3章の他節で扱う`postMessage`ベースのDOM XSSについて、DOM Invaderは専用の解析パネルを持ちます。設定の「Attack types」内の「**Postmessage interception**」をオンにしてリロードすると、以下の機能が有効になります。
 
-DOM Invader は、検出したプロトタイプ汚染ソースの隣に **「Scan for gadgets」ボタン**を用意します。押すと**新しいタブでガジェット探索が始まり**、汚染したプロパティ経由で到達できる危険なシンク（例: 値がそのまま `innerHTML` や `<script src>`、`eval` に渡るもの）を洗い出し、**Augmented DOM ビューに「このガジェット→このシンク」のチェーンを表示**します。必要に応じて **`Object.prototype` を実際に汚染して PoC とする**こともできます。
+- **ロギング**: ページ上で`postMessage()`メソッドにより送信された全てのweb messageを記録する。
+- **手動編集・再送信**: Burp Repeaterのように、記録したメッセージの内容を書き換えて再送信できる。具体的には「Messages」ビューで対象メッセージを選択し、「Data」フィールドの中身を書き換えたうえで「Send」をクリックする。
+- **自動解析**: DOM Invaderは2つの方法で自動的にメッセージを改変し、脆弱性の兆候を探る。
+  1. **canaryをメッセージの`data`プロパティに注入**し、脆弱なsinkに到達するかを調べる。
+  2. **メッセージの送信元origin情報を偽のoriginに置き換え**、受信側の`postMessage`イベントリスナーが`event.origin`の検証をきちんと行っているか（バリデーションの不備）を検出する。
 
-> なぜ強力か（原理）: ガジェットは「未設定なら `undefined` のはず」のプロパティを、値チェックせず設定パラメータや HTML 断片として使うコードに潜む。攻撃者はプロトタイプ汚染でその“空欄”を自分の値で埋め、正規コードに危険な動作を実行させる。DOM Invader はこの2段構え（汚染ソース＋ガジェット）を自動でつなぐため、手作業では極めて根気の要る探索が現実的になる。
+脆弱性が確認できた場合は、「**Build PoC**」をクリックすることで、悪用可能なHTMLコードが自動生成されクリップボードにコピーされます。これは、攻撃者が用意した悪意あるページから被害者のタブへ偽装メッセージを送りつける、という典型的なpostMessage攻撃の雛形を素早く作るための機能です。
 
-> バージョン注記: DOM Invader のクライアント側プロトタイプ汚染サポート（自動検出＋ガジェットスキャン）は、PortSwigger が2022年に導入した機能です。古い Burp では利用できません。
+> 出典: PortSwigger公式ドキュメント（Web messages） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader/web-messages
 
-> 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html ／ Finding client-side prototype pollution with DOM Invader — PortSwigger Blog（2022）
+### DOM clobberingの自動検出
 
----
+DOM Invaderはさらに、DOM clobbering（HTMLタグのid属性やname属性を利用して、ページ内のJavaScript変数を意図せず上書き・偽装する手法。第4章で詳述）の自動検出にも対応しています。公式ドキュメントの定義は簡潔に「DOM clobbering is a technique in which you inject HTML into a page to manipulate the DOM」（ページにHTMLを注入することでDOMを操作する手法）としています。
 
-### 7. DOM Clobbering（DOM クロバリング）の検出
+有効化するには、設定の「Attack types」内で「**DOM clobbering**」のトグルをオンにし、ブラウザをリロードします。有効化後は、通常のブラウジング中に自動的にDOM clobberingの脆弱性パターンをスキャンします。これも他の攻撃タイプ同様デフォルトでは無効であり、対象サイトの挙動を不用意に変えないための配慮です。
 
-**DOM クロバリング（DOM clobbering）** は、スクリプトを直接注入できない（例: 強力なサニタイザで `<script>` や `on*` 属性が落とされる）状況でも、**HTML 要素の `id`／`name` 属性だけで JavaScript の変数を上書きして誤動作させる**手法です。DOM Invader は設定の **Attack types → DOM clobbering** で自動スキャンできます。
+> 出典: PortSwigger公式ドキュメント（DOM Clobbering） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader/dom-clobbering
 
-#### 7.1 なぜ HTML だけで変数が壊せるのか（原理）
+### 設定項目の全体像
 
-HTML には歴史的経緯から、**`id` や `name` を持つ要素が、`window`（グローバル）や `document` のプロパティとして自動的にアクセス可能になる**という「名前付きアクセス（named access）」の挙動があります。
+PortSwigger公式ドキュメントによれば、DOM Invaderの設定パネル（ブラウザ右上のBurp Suiteロゴをクリックして開く「DOM Invader」タブ）は次の6カテゴリに整理されています。
 
-```html
-<a id="x"></a>
-<script>
-  // 上の要素があるだけで、以下がその <a> 要素を指してしまう
-  x;             // → <a id="x"> 要素
-  window.x;      // → 同上
-</script>
-```
+1. **Main settings** — DOM Invader全体のオン/オフなど基本設定。
+2. **Attack types** — DOM XSS、Prototype pollution、DOM clobbering、Postmessage interceptionなど、どの検出機能を有効にするかを個別に切り替える。
+3. **Web message settings** — postMessage解析に関する詳細オプション。
+4. **Prototype pollution settings** — プロトタイプ汚染検出に関する詳細オプション（対象プロパティ名の絞り込みなど）。
+5. **Misc settings** — その他雑多な設定。
+6. **Canary settings** — canary文字列のカスタマイズや、注入対象とするソース・パラメータのアローリスト（許可リスト）設定。
 
-したがって、コードが `if (window.config) { ... }` のように**「未定義なら安全」を前提にしたグローバル変数**を参照していると、攻撃者は `<a id="config">` を注入するだけでその変数を“実在する要素”に化けさせ（＝**clobber: 上書きして壊す**）、想定外の分岐やプロパティ参照を引き起こせます。`<form>` と入れ子の要素名を組み合わせると、`window.x.y` のような**多段のプロパティ**まで攻撃者が構築でき、より深いガジェットに到達できます。DOM Invader はこうした「ユーザー制御下の `id`/`name` がグローバルを上書きし得る箇所」を検出します。
+HackTricksの解説では、canary設定において「全ソースへの自動注入」を有効にできる一方で、**注入対象のソースやパラメータ名をアローリストで絞り込む設定も可能**であると触れられています。大規模なSPA（Single Page Application）など、あらゆるパラメータに自動注入すると誤検知やノイズが増えすぎる場合、対象を絞ることで実務上のシグナル/ノイズ比を改善できます。
 
-> 補足: DOM クロバリングは「スクリプト注入禁止でも成立し得る XSS への足場」であり、プロトタイプ汚染と同様に**ガジェット（上書きされた値を危険に使うコード）** とセットで初めて実害になります。
+> 出典: PortSwigger公式ドキュメント（DOM Invader Settings） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader/settings
+> 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html
+
+### Burp Repeater/Proxyとの連携という実務上の勘所
+
+HackTricksが指摘している実務上重要なポイントとして、DOM Invaderは単体で完結するツールではなく、**Burp RepeaterやProxyと組み合わせて使う**ことで真価を発揮します。DOM Invaderのブラウザ内での検出は「ブラウザの実行時状態」に基づくものであり、それを引き起こした「HTTPリクエスト/レスポンスの組」を再現できなければ、報告書やチーム内共有のための再現手順が書けません。そのため実際のワークフローでは、
+
+1. Burpの組み込みブラウザ上でDOM Invaderにより脆弱なsinkを特定する。
+2. Burp Proxyの履歴から、そのページ・パラメータに対応するHTTPリクエストを特定する。
+3. Burp Repeaterでそのリクエストを再現し、微修正しながら最終的なペイロードを固める。
+
+という一連の流れが推奨されます。DOM Invaderは「どこに脆弱性がありそうか」を高速に絞り込む探索ツールであり、最終的な悪用可能性の確認と報告用の再現手順の確立は、従来通りBurpの他の機能と組み合わせて行う、という位置づけを正しく理解しておくことが重要です。
 
 > 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html
 
----
+### まとめ
 
-### 8. オープンリダイレクト検出とその他の設定
-
-- **リダイレクトの抑止**: DOM Invader は設定（Misc 系）で**クライアント側リダイレクトをブロック**できます。`location`/`location.href` へのカナリア到達（＝**オープンリダイレクト**: 任意の外部URLへ飛ばされる脆弱性。フィッシングや OAuth トークン奪取の踏み台になる）を、実際に遷移させずに観測・検証するのに使います。
-- **イベントの自動発火（auto fire events）**: クリックや入力などの**イベントを自動的に発火**させ、イベントハンドラ内でしか動かないコードパスも計測対象に含める（＝到達できるシンクを増やす）。
-- **ブレークポイント**: 特定のシンク到達時に処理を止めて、その瞬間の状態やスタックを詳しく調べられます。
-
-> 出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html
-
----
-
-### 9. 実践ワークフロー（Hacksheets / Medium の入門記事より）
-
-このトピック（初学者向けの「有効化 → カナリア注入 → シンク確認」の手取り足取り手順）は、担当資料2（Hacksheets の Medium 記事）が正面から扱っています。ただし記事本文は自動取得できなかったため、以下に未取得ブロックを置き、続けて専門知識で補います。
-
-> ⚠️ **未取得の資料**: 「Dom Invader — Burp Suite tool to Find DOM Based XSS Easily（Hacksheets, Medium）」は自動取得できませんでした（理由: 執筆環境の egress プロキシが `hacksheets.medium.com` および既知のミラー（Tumblr 版・Medium リーダー系ミラー）へのアクセスをブロック／名前解決不能だったため）。以下のURLからユーザーご自身で直接ご覧ください: https://hacksheets.medium.com/dom-invader-burp-suite-tool-to-find-dom-based-xss-easily-3cb09adf4d44
-
-（以下は取得できなかった資料の補足として、一般的な知識および検索スニペットに基づく解説です）
-
-この Hacksheets 記事が示している基本ワークフローは、実質的に次の流れです。DOM Invader を初めて触る読者は、この順になぞれば最短で1件の DOM XSS を見つけられます。
-
-1. **組み込みブラウザを開く**: Burp の Proxy → Open Browser で Burp 組み込みブラウザを起動する（普通のブラウザではなくこれを使うのが前提）。
-2. **DOM Invader を有効化**: 右上の Burp ロゴ → DOM Invader タブ → **Enable DOM Invader** をオン → ページをリロード。
-3. **カナリアを確認**: DevTools を開くと、追跡用の一意文字列**カナリア（既定 `burpdomxss`）** が表示される。記事はこの既定値を明示的に紹介している。
-4. **カナリアを source に注入**: URL のクエリパラメータやフォーム入力にカナリアを入れる（`?q=burpdomxss` のように）。「Inject URL params」で一括注入すると速い。
-5. **Augmented DOM でシンクを確認**: DevTools の **Augmented DOM** タブに、カナリアが到達したシンクと**文脈（HTML/属性/JS/URL）** が並ぶ。ここでカナリアが `innerHTML` などに素通しで届いていれば、それが DOM XSS 候補。
-6. **文脈に合わせてペイロード化**: 例えばカナリアが HTML 本体にそのまま入るなら、カナリアの代わりに実際のペイロードを注入して成立を確認する。
-
-上記手順で「まず動く1件」を体験するのに使える最小ペイロードの考え方を、原理付きで示します（記事の趣旨に沿った一般例）。
-
-```
-https://victim.example/page?search=<img src=x onerror=alert(document.domain)>
-```
-
-- **なぜ動くのか**: ページの JavaScript が `location.search`（source）から検索語を読み、それを `element.innerHTML`（sink）へ無害化せず代入している場合、この文字列は「データ」ではなく **HTML** として解釈される。`<img>` は読み込みに失敗（`src=x` は存在しない）するため `onerror` が発火し、中の `alert(document.domain)` が実行される。`<script>` タグは `innerHTML` 代入では実行されない（HTML 仕様で、後から innerHTML で挿入された script は実行対象外）ため、**`onerror` のようなイベントハンドラ経由**が定石になる、という点が学習上の勘所。
-
-Augmented DOM が「文脈は属性値」と示した場合は、まず属性を閉じてから要素を作る必要があります。
-
-```
-"><img src=x onerror=alert(1)>
-```
-
-- **なぜ動くのか**: カナリアが `<input value="ここ">` のように**属性値の中**へ入るなら、先頭の `">` で「value 属性」と「input タグ」を閉じ、その直後に新しい `<img ... onerror=...>` を書き足す。ブラウザの HTML パーサは閉じられたタグの後続を新しいタグとして解釈するため、注入した要素が有効化される。DOM Invader の文脈表示は、この「どこまで閉じる必要があるか」を判断する材料になる。
-
-> 補足（サニタイザとバージョン依存）: Augmented DOM が「サニタイズあり」と示しても、サニタイザの**バージョンによってはバイパス可能**な場合があります。代表例として、HTMLサニタイザ **DOMPurify** には過去に**変異型XSS（mutation XSS / mXSS: ブラウザが一度受理したHTMLを内部で再解釈・書き換える過程で、無害だったはずの断片が実行可能な形に“変異”する現象）** によるバイパスが複数あり、たとえば **DOMPurify 2.0.17（2021年リリース）** で修正されたバイパスなどが知られています。したがって「サニタイザがあるから安全」と即断せず、**対象が使うライブラリ名とバージョンを特定し、そのバージョンに既知のバイパスがないか**を必ず確認してください（古いバージョンを使い続けている実サイトは珍しくありません）。
-
-> 出典（一次情報が取得できなかったため位置づけを明記）: Dom Invader — Burp Suite tool to Find DOM Based XSS Easily（Hacksheets, Medium, 本文未取得・検索スニペットにより補完） — https://hacksheets.medium.com/dom-invader-burp-suite-tool-to-find-dom-based-xss-easily-3cb09adf4d44
-
----
-
-### 10. まとめ — DOM Invader を「体系」で使う
-
-- DOM Invader は **Burp 組み込みブラウザ専用**の DOM 脆弱性ハンター。手作業では非現実的な **source → sink のデータフロー追跡**を、ブラウザ内フックとカナリアで自動化する。
-- **カナリア（既定 `burpdomxss`）** が全機能の中核。**空カナリアでレコン**、**Inject URL params/forms で一括注入**、**2024.12 以降はカスタム/ランダム化**で誤検知回避。
-- **Augmented DOM** が到達シンク・**文脈（HTML/属性/JS/URL）**・**適用サニタイズ**・**スタックトレース**を提示し、そのままエクスプロイト可否と必要ペイロード形状の判断材料になる。
-- 高度な攻撃タイプも自動化: **postMessage**（origin 無検証＋data 素通しを Messages タブで検査・改変・再送）、**プロトタイプ汚染**（`__proto__`/`constructor.prototype` を入口に `Object.prototype` を汚染 → Test で確認 → Scan for gadgets でシンクへ連結）、**DOM クロバリング**（`id`/`name` の名前付きアクセスでグローバルを上書き）、**オープンリダイレクト**（リダイレクト抑止で安全に観測）。
-- 判断の勘所は常に**原理**にある。プロトタイプチェーンの探索、HTML パーサのタグ再解釈、名前付きアクセス、mXSS による再解釈——これらを理解していれば、DOM Invader の出力を「なぜそうなるか」まで読み解き、確実な PoC に落とし込める。
-
-> 総合出典: DOM Invader — HackTricks — https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html ／ Dom Invader — Burp Suite tool to Find DOM Based XSS Easily（Hacksheets, Medium, 本文未取得・補完） — https://hacksheets.medium.com/dom-invader-burp-suite-tool-to-find-dom-based-xss-easily-3cb09adf4d44
+DOM Invaderは、DOMベースXSS・クライアントサイドprototype pollution・DOM clobbering・postMessage関連の脆弱性という、いずれも「ブラウザの実行時にしか観測できない」タイプの脆弱性クラスに対して、canaryという追跡可能な文字列を軸に、ソースからsinkまでの実行経路を自動計測・可視化するツールです。有効化はデフォルトでオフになっており、Attack typesごとに個別にオン/オフを切り替え、そのたびにブラウザのリロードが必要という運用上の癖があります。canaryは他の文字列と衝突しないユニークな値を選ぶことが誤検知を避けるうえで重要であり、prototype pollutionについては「汚染可能なソースの発見」と「実害につながるgadgetの発見」が別工程として提供されている点、postMessageについては「ロギング・改変再送・自動解析・PoC生成」までが一気通貫でサポートされている点が実務上の強みです。最終的な悪用可能性の判断とレポーティングのための再現手順は、引き続きBurp Repeater/Proxyとの連携によって固めることになります。

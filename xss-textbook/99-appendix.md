@@ -135,17 +135,23 @@
 
 ## 付録B：自動取得できなかった資料のまとめ
 
-本教科書の生成はサンドボックス環境（クラウド上のコンテナ）で行われました。この環境の**egress（送信）プロキシは、XSSドキュメントを提供する主要ドメインのほぼ全て**（portswigger.net、owasp.org、medium.com、speakerdeck.com、flatt.tech、research.securitum.com、sonarsource.com、hacktricks.wiki、web.dev、research.google、blackhat.com、cure53.de、blog.tokumaru.org など）への直接アクセスをブロックしました。
+本教科書は2段階で作られました。第1段階はクラウド上のサンドボックス環境で、この環境の egress（送信）プロキシが XSS ドキュメントを提供する主要ドメインのほぼ全てをブロックしたため、指定資料89件のうち61件は「ページ本体を直接取得できない」状態でした。
 
-そのため、以下の **61 件の資料は「ページ本体を直接取得できませんでした」**。各セクションでは、次の方法で内容を復元しています。
+第2段階として、**ネットワーク制限のないローカル環境で第3章〜第8章の全セクション（および第4章のmXSS節）を原典から再生成**しました。その結果、portswigger.net、speakerdeck.com、flatt.tech、research.google、blackhat.com、acmccs.github.io、sonarsource.com、web.dev、docswell.com などへの直接アクセスが回復し、**これらの章の記述は原典本文の直接取得（WebFetch）に基づくもの**に置き換わっています。
+
+一方、**第1章・第2章は再生成の対象外**であり、これらの章の記述は引き続き WebSearch の要約・スニペットと執筆モデルの専門知識による復元に基づきます。
+
+以下は、再生成後もなお**ページ本体を直接取得できなかった 17 件**（うち2件は部分取得）の一覧です。各セクションでは、次の方法で内容を補っています。
 
 - WebSearch（検索エンジン）の要約・スニペット
-- 到達可能だった一次ソース（例: GitHub 上の DOMPurify 公式Wiki/回帰テスト、`aemkei/jsfuck` リポジトリ、CVE 登録情報、各PR）
+- 到達可能だった一次ソース・二次解説（例: GitHub 上のペイロード集・公式Wiki、CVE 登録情報、同内容を精緻に再現している解説記事）
 - 執筆モデルの専門知識による補足（その旨は本文中に明記）
 
-> ⚠️ **重要**: このため、本教科書（特に第4〜8章）の記述は、**原典そのものではなく「復元・要約」に基づく部分が多く含まれます**。技術的な正確性には最大限配慮していますが、**必ず下記の原典URLをご自身で開いて、一次情報を確認してください**。特に mXSS・サニタイザバイパス・CSPガジェットなどのバージョン依存が激しい分野では、原典の確認が不可欠です。
+> ⚠️ **重要**: 下記17件については、**原典そのものではなく「復元・要約」に基づく記述**が含まれます。技術的な正確性には最大限配慮していますが、**下記の原典URLをご自身で開いて一次情報を確認してください**。特に mXSS・サニタイザバイパス・CSPガジェットなどバージョン依存が激しい分野では、原典の確認が不可欠です。
 
-（この一覧は自動生成です。本文中の各「⚠️ 未取得の資料」注記と対応しています。）
+（本文中の各「⚠️ 未取得の資料」注記と対応しています。）
+
+### B-1. 第1章・第2章（再生成の対象外／egressブロック時のまま）
 
 | 章 | 資料URL | 状況 |
 |----|---------|------|
@@ -153,63 +159,37 @@
 | 第1章 | https://blog.flatt.tech/entry/still_xss | WebSearch要約＋専門知識で内容を復元・補完 |
 | 第1章 | https://blog.flatt.tech/entry/xss_risk | WebSearch要約＋専門知識で内容を復元・補完 |
 | 第1章 | https://blog.tokumaru.org/ | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第2章 | https://speakerdeck.com/masatokinugawa/shibuya-dot-xss-techtalk-number-10 | WebSearch要約＋専門知識で内容を復元・補完 |
 | 第2章 | https://speakerdeck.com/masatokinugawa/shibuya-dot-xss-techtalk-number-9 | WebSearch要約＋専門知識で内容を復元・補完 |
+| 第2章 | https://speakerdeck.com/masatokinugawa/shibuya-dot-xss-techtalk-number-10 | WebSearch要約＋専門知識で内容を復元・補完 |
 | 第2章 | https://www.docswell.com/s/hasegawa/K9VW8M-jsobfus | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第2章 | https://leanpub.com/javascriptforhackers | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第3章 | https://hacksheets.medium.com/dom-invader-burp-suite-tool-to-find-dom-based-xss-easily-3cb09adf4d44 | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第3章 | https://blog.flatt.tech/entry/spa_injection | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第3章 | https://www.docswell.com/s/hasegawa/ZDWWWK-2022-03-14-212823 | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第3章 | https://labs.detectify.com/writeups/postmessage-xss-on-a-million-sites/ | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第3章 | https://www.intigriti.com/researchers/blog/hacking-tools/exploiting-postmessage-vulnerabilities | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第3章 | https://www.yeswehack.com/learn-bug-bounty/introduction-postmessage-vulnerabilities | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://cure53.de/fp170.pdf | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://research.securitum.com/authors/michal-bentkowski/ | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://research.securitum.com/mutation-xss-via-mathml-mutation-dompurify-2-0-17-bypass/ | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://www.bentkowski.info/research/ | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://portswigger.net/research/bypassing-dompurify-again-with-mutation-xss | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://vovohelo.medium.com/from-svg-and-back-yet-another-mutation-xss-via-namespace-confusion-for-dompurify-2-2-2-bypass-5d9ae8b1878f | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://github.com/SonarSource/mxss-cheatsheet | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://www.sonarsource.com/blog/mxss-the-vulnerability-hiding-in-your-code/ | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://aszx87410.github.io/beyond-xss/en/ch2/mutation-xss/ | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://flatt.tech/research/posts/bypassing-dompurify-with-good-old-xml/ | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://hackerone.com/reports/1024734 | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://blog.s1r1us.ninja/research/PP | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://aszx87410.github.io/beyond-xss/en/ch3/prototype-pollution/ | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://www.sonarsource.com/blog/blitzjs-prototype-pollution/ | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://research.securitum.com/xss-in-amp4email-dom-clobbering/ | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://deepsec.net/docs/Slides/2016/CSP_Is_Dead,_Long_Live_Strict_CSP!_Lukas_Weichselbaum.pdf | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://research.google/pubs/csp-is-dead-long-live-csp-on-the-insecurity-of-whitelists-and-the-future-of-content-security-policy/ | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://blackhat.com/docs/us-17/thursday/us-17-Lekies-Dont-Trust-The-DOM-Bypassing-XSS-Mitigations-Via-Script-Gadgets.pdf | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://csp-evaluator.withgoogle.com/ | 直接取得不可 |
-| 第4章 | https://acmccs.github.io/papers/p1709-lekiesA.pdf | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://portswigger.net/research/hunting-nonce-based-csp-bypasses-with-dynamic-analysis | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://www.truesec.com/hub/blog/bypassing-modern-xss-mitigations-with-code-reuse-attacks | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://aszx87410.github.io/beyond-xss/en/ch2/csp-bypass/ | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第4章 | https://joaxcar.com/blog/2024/02/19/csp-bypass-on-portswigger-net-using-google-script-resources/ | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第5章 | https://portswigger.net/research/xss-without-html-client-side-template-injection-with-angularjs | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第5章 | https://portswigger.net/web-security/cross-site-scripting/contexts/client-side-template-injection | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第5章 | https://aszx87410.github.io/beyond-xss/en/ch3/csti/ | 直接取得不可 |
-| 第5章 | https://pragmaticwebsecurity.com/articles/spasecurity/react-xss-part2.html | 直接取得不可 |
-| 第5章 | https://web-security-react.readthedocs.io/en/latest/pages/xss_in_react.html | 直接取得不可 |
-| 第6章 | https://garethheyes.co.uk/ | 直接取得不可 |
-| 第6章 | https://speakerdeck.com/masatokinugawa | 直接取得不可 |
-| 第6章 | https://speakerdeck.com/masatokinugawa/how-i-hacked-microsoft-teams-and-got-150000-dollars-in-pwn2own | 直接取得不可 |
-| 第6章 | https://speakerdeck.com/masatokinugawa/shibuya-dot-xss-techtalk-number-12 | 直接取得不可 |
-| 第6章 | https://speakerdeck.com/masatokinugawa/shibuya-dot-xss-techtalk-number-13 | 直接取得不可 |
-| 第6章 | https://hackerone.com/reports/271007 | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第6章 | https://www.sonarsource.com/blog/reply-to-calc-the-attack-chain-to-compromise-mailspring/ | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第6章 | https://infosecwriteups.com/postmessage-misconfiguration-ai-prompt-injection-sandbox-escape-xss-data-exfiltration-d1d29821a2de | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第6章 | https://www.hackerone.com/blog/how-find-xss-techniques-security-researchers-use-real-environments | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第7章 | https://portswigger.net/web-security | 直接取得不可 |
-| 第7章 | https://portswigger.net/web-security/all-labs | 直接取得不可 |
-| 第7章 | https://medium.com/@awes0me.writes/portswigger-labs-prototype-pollution-writeup-all-labs-9a2534bc8e07 | 直接取得不可 |
-| 第7章 | https://medium.com/@thanujthilakarathne/portswigger-xss-labs-a-complete-guide-to-all-9-apprentice-level-challenges-6fba56da8635 | 直接取得不可 |
-| 第8章 | https://developer.chrome.com/docs/lighthouse/best-practices/trusted-types-xss | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第8章 | https://web.dev/articles/trusted-types | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第8章 | https://medium.com/taptuit/exploiting-xss-via-markdown-72a61e774bf8 | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第8章 | https://blog.tokumaru.org/2007/12/image-xss-summary.html | WebSearch要約＋専門知識で内容を復元・補完 |
-| 第8章 | https://www.bugcrowd.com/blog/the-guide-to-blind-xss-advanced-techniques-for-bug-bounty-hunters-worth-250000/ | WebSearch要約＋専門知識で内容を復元・補完 |
+| 第2章 | https://leanpub.com/javascriptforhackers | WebSearch要約＋専門知識で内容を復元・補完（書籍の販売ページ） |
+
+### B-2. 第3章〜第8章（再生成後もなお取得できなかったもの）
+
+いずれも**こちら側のネットワーク制限ではなく、配信元サイト自身のアクセス制御**（有料プロキシへのリダイレクト、403、クライアントサイドレンダリング等）が原因です。
+
+| 章 | 資料URL | 取得できなかった理由 | 補完方法 |
+|----|---------|---------------------|---------|
+| 第3章 | https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/dom-invader.html | 302リダイレクトで有料プロキシ `tollbit.hacktricks.wiki` に転送され HTTP 402 Payment Required | WebSearchスニペット＋取得済みのBurp公式ドキュメントで裏付け |
+| 第4章 | https://hacktricks.wiki/en/pentesting-web/deserialization/nodejs-proto-prototype-pollution/client-side-prototype-pollution.html | 同上（HTTP 402 Payment Required） | 取得済みの Beyond XSS・PortSwigger Research／DOM Invader公式ドキュメントで同内容を裏付け |
+| 第4章 | https://research.securitum.com/xss-in-amp4email-dom-clobbering/ | 302リダイレクトで `securitum.com` のランディングページへ転送され記事本文に到達できず（web.archive.org も不可） | Beyond XSS（Huli）・SecurityAffairs・SecurityWeek から復元（本文に注記あり） |
+| 第6章 | https://garethheyes.co.uk/ | **部分取得**。トップページの記事一覧・要約は取得できたが、個別記事本文（2007〜2024年の歴史的記事群）までは辿れず | 取得できた一覧要約＋既知の代表作の整理（本文に注記あり） |
+| 第6章 | https://speakerdeck.com/masatokinugawa/shibuya-dot-xss-techtalk-number-12 | **部分取得**。スライド本文テキストは取得できたが、スライド画像内のコードスニペット（正確な行番号・変数名）は機械的なテキスト抽出の制約で再現できず | 取得できた本文テキスト＋公開情報（本文に注記あり） |
+| 第6章 | https://hackerone.com/reports/271007 | ページがクライアントサイドレンダリングのため、WebFetchではタイトル／外枠のみでレポート本文を取得できず | WebSearchによる複数独立ソース（HackerOne検索結果、Vulnersミラー等）で相互検証して復元 |
+| 第7章 | https://medium.com/@thanujthilakarathne/portswigger-xss-labs-a-complete-guide-to-all-9-apprentice-level-challenges-6fba56da8635 | HTTP 403 Forbidden | WebSearch要約（本文に注記あり） |
+| 第7章 | https://medium.com/@awes0me.writes/portswigger-labs-prototype-pollution-writeup-all-labs-9a2534bc8e07 | HTTP 403 Forbidden | WebSearch要約（本文に注記あり） |
+| 第8章 | https://hacktricks.wiki/en/pentesting-web/xss-cross-site-scripting/xss-in-markdown.html | 302リダイレクトで `tollbit.hacktricks.wiki` に転送され HTTP 402（`book.hacktricks.xyz` ミラーも同様） | 公開ペイロード集（`cujanovic/Markdown-XSS-Payloads`）と検索スニペットから合成（本文に注記あり） |
+
+### B-3. 再生成によって直接取得できるようになった主な資料
+
+第2段階の再生成で、以下を含む多数の資料が**原典から直接取得**できました。付録Aの一覧のうち B-1／B-2 に挙がっていないものは、原則として直接取得に基づいています（第4章のmXSS節 s4a〜s4e は先行の再生成コミットによるもので、その実行時に取得できた内容に基づきます）。
+
+- PortSwigger: DOM-based XSS、Introducing DOM Invader、DOM Invader公式ドキュメント（機能一覧・DOM XSS検出手順・web message）、CSTI、XSS without HTML、nonceベースCSPバイパス、SVGラボページ、Web Security Academy／全ラボ一覧
+- Cure53 fp170（mXSS原典PDF）、Securitum（MathML名前空間混同）、PortSwigger Research（DOMPurify再バイパス）、Sonar mXSSチートシート／解説、Flatt Security（XMLパーサ差分によるDOMPurifyバイパス）
+- Google Research「CSP Is Dead」論文、DeepSecスライド、Black Hat US-17「Don't Trust The DOM」、ACM CCS'17「Code-Reuse Attacks for the Web」論文PDF、CSP Evaluator、Google security-research-pocs
+- Beyond XSS（プロトタイプ汚染／CSTI／CSPバイパス）、s1r1us PP研究、BlackFan／jackfromeast のガジェット集、OWASP DOM Clobbering Cheat Sheet
+- Speaker Deck（Kinugawa: Teams Pwn2Own $150,000、渋谷.XSS #12／#13）、docswell（はせがわ）、Flatt Security（SPAインジェクション）
+- web.dev Trusted Types、Chrome Lighthouse Trusted Types、Sonar Mailspring、Detectify AddThis、YesWeHack／Intigriti postMessage、Bugcrowd Blind XSS、徳丸ブログ（画像XSS）
 
 ---
 

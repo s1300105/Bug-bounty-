@@ -1,139 +1,143 @@
 ## CSTI補足（HackTricks / Beyond XSS）
 
-本節では、フロントエンドのテンプレートインジェクション（CSTI: Client Side Template Injection）を、HackTricksの整理を軸に補足する。CSTIは第5章で扱う各フレームワーク固有のXSS（Angular/Vue/Alpineなど）に共通する「なぜテンプレート構文がJavaScript実行に化けるのか」という根本原理を横断的にまとめる位置づけであり、個々のフレームワーク別の詳細な回避策・最新CVEは各節に譲る。
+前節でCSTI（Client Side Template Injection、クライアントサイド・テンプレートインジェクション）の基本を見た。本節では、HackTricksの技術資料とBeyond XSSの実例をもとに、AngularJSを中心とした攻撃の「仕組み」をもう一段深く掘り下げる。具体的には、なぜテンプレート構文がXSSサニタイズをすり抜けるのか、AngularJSのサンドボックスがどのように作られどのように破られたのか、CSPが張られていてもコード実行できてしまうのはなぜか、という3点を中心に整理する。
 
-### CSTIとは何か
+### CSTIとSSTI・通常のXSSとの違い
 
-CSTIは、サーバーサイドテンプレートインジェクション（SSTI）のクライアント版にあたる脆弱性である。SSTIが「サーバー側のテンプレートエンジンにユーザー入力がコードとして評価され、サーバー上で任意コード実行（RCE）に至る」のに対し、CSTIは「ブラウザ上で動作するフロントエンドフレームワーク（AngularJS、Vue、Alpine.js、Mavoなど）のテンプレートコンパイラがユーザー入力をテンプレート式として評価し、被害者のブラウザ内で任意のJavaScriptが実行される」という違いがある。到達点はサーバーではなく「被害者のブラウザ」であるため、実害としては通常のXSSと同種（Cookie窃取、セッションハイジャック、フィッシングDOM書き換えなど）だが、発火のメカニズムがまったく異なる。
+まず用語を整理する。SSTI（Server Side Template Injection）はサーバー側のテンプレートエンジン（Jinja2、Twigなど）にユーザー入力がテンプレート文字列として渡り、サーバー上で任意コード実行に至る脆弱性である。CSTIはその「クライアント版」で、AngularJSやVue.jsのようなフロントエンドのテンプレートエンジンに、データではなく**テンプレートそのもの**としてユーザー入力が渡ってしまうことで、ブラウザ内で任意のJavaScriptが実行される。
 
-CSTIが成立するsink（入力が最終的に実行・解釈される危険な代入先。ここでは「テンプレートとしてコンパイルされる場所」）は、通常のXSSにおける`innerHTML`のような「HTMLとして解釈される場所」とは別物である。通常のXSSはブラウザのHTMLパーサ／JSエンジンが直接コードを実行するのに対し、CSTIは「フレームワーク自身が持つ独自のテンプレート言語のインタプリタ（あるいはコンパイラ）」が入力を式として評価する。この二重構造（ブラウザのパーサ→フレームワークのテンプレートエンジン）を理解することが、CSTIを体系的に捉える鍵になる。
+ここが通常の「素朴な反射型XSS」との決定的な違いだ。素朴なXSSは `<script>` タグや `onerror` 属性など、ブラウザのHTMLパーサ・DOM APIに直接コードを注入する。一方CSTIは、まずアプリケーションが読み込んでいるテンプレートエンジン（AngularJSなど）にとって「これは評価すべき式である」と認識される構文（`{{ ... }}` など）を注入し、テンプレートエンジン自身の評価器にコードを解釈させる。つまり攻撃者はブラウザのHTMLパーサではなく、**アプリケーションが信頼している別のインタプリタ**を乗っ取っているという点で、mXSS（第4章）とよく似た「二重解釈」の構造を持つ。
 
-### 発生条件（3つの条件）
+HackTricksの記述を借りれば、"Angular templates are considered trusted by default, and should be treated as executable code."（Angularのテンプレートはデフォルトで信頼されるものとして扱われ、実行可能コードとして扱うべきである）という前提がある。つまりAngularJSの設計思想として「テンプレート＝開発者が書くもの＝信頼できるもの」という切り分けがあり、ユーザー入力がテンプレート文字列そのものに混入するケースは想定されていない。この前提が崩れたときにCSTIが発生する。
 
-HackTricksは、CSTIが成立するために揃うべき条件を次のように整理している。
+> 出典: Client Side Template Injection (CSTI) - HackTricks — https://hacktricks.wiki/en/pentesting-web/client-side-template-injection-csti.html
 
-1. ユーザーが制御できる入力が、最終的に**テンプレート構文の一部**としてDOMやフレームワークのコンパイル対象に組み込まれる。
-2. フレームワークがその文字列を「静的なプレーンHTML／プレーンテキスト」ではなく「実行対象のテンプレート式」として認識・コンパイルする。
-3. ディレクティブ（`ng-*`, `v-*`, `x-*`など）やバインディング構文（`{{ }}`, `[( )]`など）が、その反映位置で有効化された状態になっている。
+### 脆弱なコードの具体例（AngularJS）
 
-つまり、単に入力がHTML中に反映されるだけではCSTIにはならない。反映された場所が「フレームワークのテンプレートコンパイラが再帰的にスキャンする範囲」に含まれていることが決定的に重要である。たとえば`v-html`で挿入されたHTML断片の中にさらに`{{...}}`のようなAngular/Vue構文を含む文字列を注入できても、多くの場合その断片は「テンプレートとして再コンパイル」されず、単なる静的HTMLとしてレンダリングされるだけで終わる。CSTIが機能するのは、あくまで**フレームワークのテンプレートエンジンが通過する経路**に入力が乗ったときだけである。
+Beyond XSSが示す最小構成の脆弱コードは以下のようなものである。
 
-### 検出フロー
-
-実務上の発見手順は次の通り。
-
-1. **反映確認**: ユニークな文字列（例: `testmarker123`）を入力し、レスポンスにそのまま出力されるか確認する。
-2. **テンプレート評価の有無を確認**: 数式ペイロードを入れてみる。
-
-```text
-{{7*7}}
-{{7-7}}
-{{1+1}}
+```html
+<!DOCTYPE html>
+<html>
+<body>
+  <div ng-app>
+    Hello, <?php echo htmlspecialchars($_GET['name']) ?>
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/angular.js/1.8.3/angular.min.js"></script>
+</body>
+</html>
 ```
 
-計算結果（`49`, `0`, `2`）がレンダリングされればテンプレートとして評価されている証拠であり、`{{7*7}}`という文字列がそのまま表示される場合は評価されていない（通常のHTMLエスケープや静的表示にとどまっている）。これは、SSTIの検出における`${7*7}`テストと発想は同じだが、評価が行われるのがサーバーではなくブラウザ内のJSエンジンである点が異なる。
+一見すると `htmlspecialchars()` でエスケープしているため、`<script>alert(1)</script>` のような入力は `&lt;script&gt;...` に変換され安全に見える。しかし `htmlspecialchars()` が変換対象とするのは `<`, `>`, `&`, `"` などのHTML特殊文字であり、`{`、`}`、`(`、`)` は変換対象外である。したがって `name` パラメータに
 
-3. **フレームワーク特定**: HTMLソース中の`ng-app`, `ng-controller`, `v-`属性、`x-data`（Alpine.js）、`data-mv-*`（Mavo）といったマーカー、あるいはブラウザコンソールでの`window.angular`, `window.Vue`, `window.Alpine`などのグローバル変数の有無を確認する。
-4. **sinkの特定**: プレーンにHTMLへ差し込まれるだけの場所か、実際にテンプレートコンパイラを通る場所かを区別する。特に`v-html`（Vue）や`ng-bind-html`（Angular）は、HTMLとしての解釈に加えてテンプレート再評価のリスクを併せ持つ危険なsinkとして優先的に確認する。
-5. フレームワーク固有のペイロードを段階的に試す。
-
-### フレームワーク別ペイロードと「なぜ動くか」
-
-#### AngularJS（1.6未満・サンドボックスあり）
-
-```javascript
-{{$on.constructor('alert(1)')()}}
+```
 {{constructor.constructor('alert(1)')()}}
 ```
 
-AngularJSの式評価エンジンは、テンプレート内の`{{ }}`をJavaScript式として評価する。バージョン1.6未満には「危険なグローバルオブジェクトへのアクセスを遮断するサンドボックス」が実装されていたが、`constructor`プロパティを辿ってFunctionコンストラクタに到達する経路が繰り返し発見され、サンドボックスは事実上ザル状態になっていた。`constructor.constructor('alert(1)')()`は、任意のオブジェクトの`constructor`（＝`Function`型のコンストラクタ）から、さらにその`constructor`（＝`Function`コンストラクタ自身）を取得し、文字列`'alert(1)'`をボディとする新しい関数を動的生成して即時実行する、という「プロトタイプチェーンを遡ってFunctionコンストラクタに到達し、文字列からコードを生成する」古典的な脱出パターンである。
+を渡すと、HTMLエスケープを通過したままページに出力される。ここが `<div ng-app>` の内部であるため、AngularJSがページをスキャンした際にこの `{{ ... }}` を「評価すべきAngular式」として認識し、内部のJavaScript式を実行してしまう。
 
-#### AngularJS（1.6以上・サンドボックス撤廃後）
+**なぜ動くか**: AngularJSは `ng-app` が指定された要素の配下をコンパイルする際、テキストノードやバインディング対象の中から `{{ 式 }}` という区切り文字（デフォルトのinterpolation記号）を探索し、その中身をAngular式パーサに渡して評価・監視（watch）する。これはHTMLエスケープの後工程、つまりDOMに文字列がテキストとして挿入された**後**に、AngularJS自身のフレームワークコードが行う処理である。よって「HTMLタグとして解釈されないようにエスケープする」という通常のXSS対策は、そもそもこの攻撃経路には無関係であり、防御として機能しない。ここがCSTIの本質的な怖さであり、「入力をエンコードしたから安全」という思い込みを裏切る典型例である。
 
-Angularチームは度重なるサンドボックス回避の発見を受け、AngularJS 1.6でサンドボックスそのものを廃止した（2017年公開）。これにより、`{{ }}`式内では素直にFunctionコンストラクタへ到達できるようになった。
+> 出典: Template Injection in Frontend: CSTI | Beyond XSS — https://aszx87410.github.io/beyond-xss/en/ch3/csti/
 
-```javascript
-{{constructor.constructor('alert(1)')()}}
+### `constructor.constructor` はなぜ`alert`を呼び出せるのか
+
+ペイロード `{{constructor.constructor('alert(1)')()}}` の仕組みをJavaScriptの言語仕様レベルで説明する。
+
+- 任意のオブジェクトの `.constructor` はそのオブジェクトを作った関数（多くの場合 `Object` や `Function` の派生）を指す。
+- 関数オブジェクト自身の `.constructor` は `Function` コンストラクタそのものである。つまり `x.constructor.constructor` は最終的に `Function` に到達する。
+- `Function('alert(1)')` は、文字列 `'alert(1)'` をボディとする新しい関数を動的に生成する。これは `eval` と同様に任意の文字列をコードとして実行できる強力な機能である。
+- 生成された関数の末尾に `()` を付けて即座に呼び出すことで `alert(1)` が実行される。
+
+つまりこのペイロードは「どんな値からでもたどり着ける `Function` コンストラクタを使い、文字列を実行可能コードに変える」という、JavaScriptのプロトタイプチェーンを利用したサンドボックスエスケープの定石パターンである。AngularJSの式パーサはこの式全体を通常のJavaScriptプロパティアクセス・関数呼び出しとして解釈し、内部で実質的に `Function('alert(1)')()` を実行してしまう。
+
+### AngularJSサンドボックスの歴史とバージョン依存性
+
+AngularJS 1.2.0〜1.5.xの時代には、上記のような `window` や `Function` への到達を防ぐための「式サンドボックス（expression sandbox）」が実装されていた。PortSwigger Web Security Academyの解説によれば、このサンドボックスは主に3つの防御関数から構成されていた。
+
+- **`ensureSafeObject()`**: 自己参照するオブジェクト（`window` はプロパティの中に自分自身への参照を持つ）を検出してブロックする。
+- **`ensureSafeMemberName()`**: `__proto__` や `__lookupGetter__` のような危険なプロパティ名へのアクセスをブロックする。
+- **`ensureSafeFunction()`**: `call()`、`apply()`、`bind()`、`constructor()` の呼び出しをブロックする。
+
+しかし、これらは「既知の危険パターンをブロックするブラックリスト方式」であったため、セキュリティ研究者による回避策の発見が続いた。代表的な回避手法の一つが、グローバルな `String.prototype.charAt`（正確には研究例では `'a'.constructor.prototype.charAt`）を書き換える手法である。
+
+```
+'a'.constructor.prototype.charAt=[].join
 ```
 
-またCSPで`unsafe-eval`相当を禁止していても、ディレクティブ経由でイベントハンドラ的に式を評価させる手口が使われる。
+**なぜ動くか**: これは `String.prototype.charAt` メソッドを配列の `join` メソッドで上書きしてしまう式である。AngularJSの式パーサ内部では、字句解析の過程で `isIdent()` のような関数が文字列を1文字ずつ `charAt()` で読み取り、識別子（変数名として妥当な文字列）かどうかを判定していた。`charAt` の挙動を `join`（引数を無視してすべての要素を連結して返す）にすり替えることで、本来1文字を返すべき箇所で文字列全体が返るようになり、`isIdent()` の判定ロジックが壊れる。その結果、本来なら危険と判定されるはずの式が「安全な識別子」として通過してしまい、後続で `$eval('x=alert(1)')` のようなコードを注入できるようになる。
+
+さらに引用符がフィルタされている状況では、`String.fromCharCode()` を使って文字コードから文字列を組み立て、`$eval` が使えない文脈では `orderBy` フィルタ（`|` 記法でパイプ処理される、配列の並び替えを行う組み込みフィルタ）を式評価のトリガーとして悪用する手法も報告されている。
+
+```
+[123]|orderBy:'Some string'
+```
+
+このように、AngularJSサンドボックスとの攻防は「フレームワーク側がブラックリストを強化する→研究者が新しい迂回路を見つける」といういたちごっこが続いた。最終的にAngularJS開発チームは、"the sandbox is not actually a security feature"（このサンドボックスは実際にはセキュリティ機能ではない）という立場を取り、**AngularJS 1.6以降でサンドボックス自体を完全に撤廃**した。1.6以降では最初からサンドボックスによる保護がないため、`{{constructor.constructor('alert(1)')()}}` のような最も単純な形のペイロードがそのまま通る。逆に1.2.x〜1.5.x系の古いAngularJSアプリケーションを診断する場合は、対象バージョンごとに有効なサンドボックス回避ペイロードが異なる点に注意が必要で、バグバウンティやペネトレーションテストの実務では、まずAngularJSのバージョンを特定し、そのバージョンで報告済みの回避策を辞書的に試すというアプローチが取られる。
+
+> 出典: Client-Side Template Injection: AngularJS - PortSwigger Web Security Academy — https://portswigger.net/web-security/cross-site-scripting/contexts/client-side-template-injection
+
+### CSPが有効でもコード実行できてしまう仕組み
+
+CSTIが特に危険視される理由の一つが、CSP（Content Security Policy）による `unsafe-eval` や `unsafe-inline` の禁止が防御にならないケースがある点である。
+
+AngularJSには `ng-csp` という属性があり、これを指定すると「CSPに準拠したモード」で動作する。このモードでは `Function` コンストラクタや `eval` を直接使わずに式を評価するよう内部実装が切り替わる。つまり `ng-csp` モードで動いているAngularJSは、CSPの `script-src` に `unsafe-eval` がなくても、独自のインタプリタ（式パーサ／評価器）でテンプレート式を解釈・実行できてしまう。これはCSPが制限しているのは「ブラウザネイティブの `eval`/`Function` の呼び出し」であって、「JavaScriptで書かれた自作インタプリタが文字列をパースして処理を分岐させること」自体はCSPの制御対象外だからである。第4章で扱ったCSPバイパスの一般原則（「CSPは特定のAPI呼び出し経路を塞ぐものであり、アプリケーションロジックそのものは検閲できない」）がここでも当てはまる。
+
+具体的なCSPバイパスの一つが `$event` オブジェクトを利用する手法である。AngularJSはイベントハンドラ式の中で特殊な `$event` 変数（ブラウザのネイティブイベントオブジェクトへの参照）を提供する。Chromeでは、イベントオブジェクトの `path` プロパティ（バブリングの経路を表す配列）の末尾に `window` オブジェクトが含まれることを利用し、以下のようなペイロードで `window` への参照をサンドボックス検知に引っかからない形で取り出せる。
 
 ```html
-<input ng-focus=$event.view.alert('XSS')>
+<input autofocus ng-focus="$event.path|orderBy:'[].constructor.from([1],alert)'">
 ```
 
-`ng-focus`はAngularの式パーサでイベントハンドラ属性値を評価するディレクティブで、`$event.view`はイベント発生元の`window`オブジェクトを指す。CSP上`eval`が使えない場面でも、Angular自体の式評価器（AST解釈であって`eval`ではない）を使うことで、CSPの「script-src」制限をすり抜けて任意コード実行に近い動作を得られる、というのがこのペイロードの核心である。
+**なぜ動くか**: `$event.path` から `window` を含む配列を取得し、`orderBy` フィルタの引数として `[].constructor.from([1], alert)` を渡している。`[].constructor` は `Array` であり、`Array.from(iterable, mapFn)` は第2引数の関数を各要素に適用しながら配列を生成するAPIである。つまりここでは `Array.from([1], alert)` として `alert` を要素 `1` に適用する形で呼び出し、明示的に `window.alert(...)` や `alert(...)` という危険な字面を式中に書かずに、間接的に `alert` 関数を実行させている。ブラックリスト型のフィルタは「危険な識別子やパターンの字面」を検出しようとするため、このように処理を細かく分解して間接呼び出しにすることで検出をすり抜けられる。
 
-`ng-csp`モード（CSP互換モードでAngularの一部機能を無効化する設定）下でも、`orderBy`フィルタのようなAngular組み込みフィルタをオブジェクトのメソッド呼び出しに悪用する回避策が知られている。
+HackTricksが挙げるもう一つのCSP回避例は次のようなものである。
 
 ```html
-<input id=x ng-focus=$event.path|orderBy:'(z=alert)(document.cookie)'>#x
+<div ng-app ng-csp><textarea autofocus ng-focus="d=$event.view.document;
+d.location.hash.match('x1') ? '' : d.location='//localhost/mH/'">
+</textarea></div>
 ```
 
-これは「フィルタのパイプ構文の中に代入式や関数呼び出しを紛れ込ませ、Angularの式インタプリタにそれを式として解釈・実行させる」パターンで、`ng-csp`が塞いだ経路とは別の式評価経路を突く点がポイントである。
+これは `$event.view`（イベント発生元のウィンドウオブジェクト）経由で `document` を取得し、`location` を書き換えて外部ホストへリダイレクトさせる、より実戦的な悪用例である。`ng-csp` が指定されていても、これらは通常のJavaScript実行としてではなく、AngularJSの式評価器の中で完結する処理として実行されるため、CSPの `script-src` 制限では止められない。
 
-#### Vue.js
+さらに、CSPの `script-src` に `https://cdnjs.cloudflare.com` のような一般的なCDNドメインがホワイトリスト登録されている場合、そのドメインから配信されているAngularJS自体を読み込むタグ（`<script src="https://cdnjs.cloudflare.com/ajax/libs/angular.js/1.x.x/angular.min.js">`）もCSP的には「許可されたスクリプト」として通ってしまう。つまり攻撃者は、ページに元々AngularJSが使われていなくても、CSPで許可されたCDN経由でAngularJS自体を注入し、その上でCSTIペイロードを実行するという合わせ技が成立し得る。これは第4章で扱った「JSONP/ホワイトリストされたスクリプトホストを踏み台にしたCSPバイパス」と同じ発想であり、CSPの `script-src` にライブラリ配信用CDNを緩く許可することの危険性を示す典型例である。
 
-```javascript
-{{constructor.constructor('alert(1)')()}}
+> 出典: Client Side Template Injection (CSTI) - HackTricks — https://hacktricks.wiki/en/pentesting-web/client-side-template-injection-csti.html
+
+### VueJS・他フレームワークでのCSTI
+
+CSTIはAngularJS特有の問題ではなく、「テンプレート文字列をエンジンに評価させる」設計を持つフレームワーク全般に潜在する。HackTricksはVue.jsについても以下のような等価ペイロードを挙げている。
+
+- Vue 2系: `{{constructor.constructor('alert(1)')()}}`（AngularJSと同じ `Function` コンストラクタ到達パターン）
+- Vue 3系: `{{_openBlock.constructor('alert(1)')()}}`（Vue 3の内部APIである `_openBlock` を起点に同様のプロトタイプチェーンをたどる）
+- 属性経由: `"><div v-html="''.constructor.constructor('...')()"> aaa</div>`（`v-html` ディレクティブの式評価を悪用する例）
+
+Vue.jsは通常、テンプレートのコンパイルをビルド時（Single File Component）に行うため実運用でのCSTIは限定的だが、`v-html` に生の文字列テンプレートを動的に渡す実装や、ランタイムコンパイラを使う構成（CDN版Vueなど）では同種のリスクが生じる。
+
+また、より小規模なテンプレートライブラリであるMavo（宣言的なデータバインディングを提供するフレームワーク）についても、`[7*7]`（`49` に評価されるかで検出）、`[(1,alert)(1)]`（カンマ演算子を使い `alert(1)` を評価させる）、`[self.alert(1)]`、属性ベースの `<a data-mv-if='1 or self.alert(1)'>test</a>` といったペイロードが報告されている。
+
+> 出典: Client Side Template Injection (CSTI) - HackTricks — https://hacktricks.wiki/en/pentesting-web/client-side-template-injection-csti.html
+
+### 検出方法（診断時のプローブ）
+
+実際の診断では、まず副作用のない算術式を注入し、評価結果が反映されるかを確認する。
+
+```
+{{ 7-7 }}
 ```
 
-Vue 2でも、テンプレート式の評価がJavaScriptの`with`文＋関数生成で行われる実装上、AngularJSと同様のconstructorチェーンでFunctionコンストラクタへ到達できる場合がある。ただしVueはデフォルトでテンプレートを事前コンパイルする設計であり、実行時に任意の文字列をテンプレートとしてコンパイルする経路は限定的である。CSTIが成立するのは、典型的には`v-html`のようなsinkに「Vueが後から評価する式」を紛れ込ませられる特殊な実装や、テンプレート文字列をユーザー入力から動的に生成してマウントするアンチパターンがある場合である。
+脆弱なテンプレートエンジンがこれを処理すると出力に `0` が表示され、安全な実装ではそのまま `{{ 7-7 }}` という文字列がエスケープされて表示される。これはSSTI診断で `${7*7}` のような式を使うのと全く同じ発想であり、まず「テンプレートとして評価されているか」を無害な形で確認し、確認できてから `constructor.constructor(...)` のような実害あるペイロードに進む、という手順を踏む。
 
-```html
-<div v-html="''.constructor.constructor(
-  'd=document;d.location.hash.match(\'x1\') ? `` : d.location=`//localhost/mH`'
-)()">
-</div>
-```
+### 防御策
 
-Vue 3ではテンプレートコンパイラの内部実装が変わり、レンダー関数内で使われるヘルパー関数名（`_openBlock`, `_createBlock`, `_toDisplayString`, `_createVNode`など）が新設されたため、Vue 2用のペイロードがそのまま通用しないことがある。診断時にはVue 2用・Vue 3用の両方の変種を用意して試す必要がある。
+HackTricksとBeyond XSS双方が強調する最も重要な防御原則は次の一点に尽きる。
 
-```javascript
-{{_openBlock.constructor('alert(1)')()}}
-{{_createBlock.constructor('alert(1)')()}}
-```
+- **ユーザー入力をテンプレート文字列そのものとして扱わない**。テンプレートは開発者が記述する「コード」であり、ユーザー入力は常に「データ」としてバインディング変数経由でテンプレートに渡す。文字列連結でテンプレートHTML自体を組み立てる実装（前述の脆弱コード例のように `Hello, <?php echo ... ?>` をAngularJSのコンパイル対象領域に出力する）を避ける。
+- HTMLエスケープ（`htmlspecialchars` など）はCSTIの防御にならない。エスケープ対象外の文字（`{`、`}` など）だけでテンプレート構文が成立してしまうため、XSS対策としてのエスケープとCSTI対策は別軸で考える必要がある。
+- フレームワークが提供するテンプレートサンドボックス機能がある場合はそれを有効にする。ただしAngularJSの事例が示す通り、ブラックリスト型のサンドボックスは回避策の発見によって陳腐化するため、根本対策にはならない。
+- 可能であればAngularJS 1.x系のような、サンドボックスが撤廃済み・保守が終了したフレームワークからの移行を検討する。
 
-#### Mavo（独自テンプレート構文）
+### まとめ
 
-Mavoは標準のJavaScript式とは異なる独自の式言語を採用しているフレームワークで、`[ ]`が式の区切りとなる。
-
-```text
-[7*7]
-[(1,alert)(1)]
-[self.alert(1)]
-```
-
-```html
-<div data-mv-expressions="lolx lolx">
-  lolxself.alert('lol')lolx
-</div>
-<a data-mv-if='1 or self.alert(1)'>test</a>
-```
-
-`data-mv-if`のような属性はMavo独自の条件式評価を行うため、標準のJS構文チェックやサニタイズをすり抜けた独自構文の式インジェクションが起こりうる、という点が一般的なCSTI対策（`v-html`回避など）だけでは防ぎきれない例として重要である。
-
-### 防御
-
-- ユーザー入力を**テンプレートコンパイラに直接渡さない**（テキストとして扱い、式として再解釈させない）。これが最も本質的な対策であり、後述の個別APIはすべてこの原則の実装である。
-- フレームワークの安全なAPIを使う。Angularでは`innerHTML`ではなく`textContent`、Vueでは`v-html`ではなく`v-text`（テキストのみを描画し、式再評価やHTML解釈を行わない）を使う。
-- ユーザー入力から動的にテンプレート文字列を生成してコンパイル・マウントする実装（`new Function`相当のテンプレートコンパイルAPIにユーザー入力を渡す設計）を避ける。
-- 古いAngularJS（1.6未満のサンドボックス依存）やレガシーのMavoなど、既知の回避策が公開されているバージョンは速やかに更新する。サンドボックスは「防御層の一つ」であって信頼できる境界ではないため、バージョンに関わらず入力をテンプレート経路に乗せない設計が前提になる。
-- CSPは「evalベースの実行」は防げても、AngularJSの式インタプリタのようにASTベースで評価するフレームワーク自身の機構までは防げない場合がある点に留意する（`ng-focus`の例）。
-
-> 出典: Client Side Template Injection (CSTI) — https://hacktricks.wiki/en/pentesting-web/client-side-template-injection-csti.html
-
-### Beyond XSS: フロントエンドのテンプレートインジェクション
-
-> ⚠️ **未取得の資料**: 「Beyond XSS — Client Side Template Injection (ch3)」は自動取得できませんでした（理由: 対象ドメイン aszx87410.github.io がこの環境のegressプロキシでブロックされており、GitHubリポジトリ内の該当Markdownファイルも該当パスが404で見つからなかったため）。以下のURLからユーザーご自身で直接ご覧ください: https://aszx87410.github.io/beyond-xss/en/ch3/csti/
-
-（以下は未取得資料の補足として一般知識に基づく解説です）
-
-著者のaszx87410氏はVue.js関連のCSTI／CTF実例を多く公開しており、Beyond XSSのCSTI章もその延長線上にあると考えられる。特に有名な事例として、Intigritiの月例XSSチャレンジ（Vue.jsアプリを題材にしたもの）では、アプリ側が`{{`や`}}`といったVueのデリミタ文字列そのものをフィルタしてサニタイズを試みていたが、Vueのデリミタは**設定変更（`delimiters`オプション）で変更可能**であり、かつ入力自体をテンプレートとしてコンパイルする実装だったため、フィルタされていない別の構文（あるいはUnicodeエスケープや別表現での`{{`の再構成）を使うことでフィルタを回避し、テンプレート式評価に到達できた、という趣旨の内容が知られている。
-
-この種のバイパスが示す一般原則は次の通りである。
-
-- **文字列フィルタ（`{{`/`}}`のブラックリスト）は、テンプレートエンジンという「もう一段深いパーサ」の前段にしか効かない**。フレームワークが受け取った文字列を再度パースし直す限り、パーサの入力表現は一意ではなく（エンコーディング違い、設定変更、別構文での代替表現など）、単純な文字列一致フィルタは容易に迂回される。これは通常のXSS対策における「HTMLエスケープ漏れ」と同型の問題が、テンプレート言語の階層でも再現される、という点で、本教科書が繰り返し強調する「パーサの多重性・再解釈」の一例である。
-- Vueのようにテンプレートのデリミタ自体をアプリケーション側で設定変更できるフレームワークでは、対策としてデリミタのブラックリストではなく、「ユーザー入力をテンプレートとしてコンパイルする経路自体を排除する」ことが唯一の根本対策になる。これはHackTricks側の記述とも一致する結論である。
-
-なお本節の記述は未取得資料の代替として一般知識に基づくものであり、具体的なペイロード文字列やコード全文、CTF問題の詳細な手順は公式ページを参照されたい。
+CSTIは「エスケープしたのに実行される」という、通常のXSS対策の常識を裏切る脆弱性クラスである。その本質は、ブラウザのHTMLパーサとは別に、アプリケーションが信頼して読み込んでいるテンプレートエンジン自身の式評価器が第二の攻撃対象になるという点にあり、mXSS（パーサの二重解釈）やDOM Clobbering（信頼された変数名の乗っ取り）と並んで、「一次防御であるHTMLエンコード／サニタイズをすり抜けて、別のレイヤーで信頼が崩れる」パターンの一つとして理解しておくと、他の脆弱性クラスとの位置づけが整理しやすい。AngularJSのサンドボックス撤廃（1.6以降）という歴史的経緯は、ブラックリスト型の緩和策がいずれ限界を迎え、設計自体の変更（信頼境界の見直し）に行き着くという、Webセキュリティ全般に通じる教訓でもある。

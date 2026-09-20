@@ -2,16 +2,7 @@
 
 反射型・格納型のXSS（Cross-Site Scripting: 攻撃者が仕込んだ文字列が、ブラウザによって「データ」ではなく「コード」として解釈・実行されてしまう脆弱性）では、悪意ある入力は**必ず一度サーバを通り、サーバが組み立てたHTMLに載って**ブラウザへ返ってきます。ところがWebアプリケーションの主戦場がサーバ側テンプレートから**クライアント側のJavaScript**へと移った結果、「サーバは一切関与していないのに、ブラウザ内でだけXSSが成立する」という第三の類型が主役級の重要度を持つようになりました。これが本章のテーマ **DOMベースXSS（DOM-based XSS）** です。
 
-本セクションは、この分野の事実上の標準教材である PortSwigger（Burp Suite の開発元）の2つの資料を精読・統合し、(1) DOMベースXSSの原理と source/sink の体系、(2) 手作業での発見がなぜ困難か、(3) その困難を一変させたツール **DOM Invader** の全体像、を初学者が原文なしで完全に理解できるところまで解説します。単なる用語集ではなく、「**なぜブラウザはその代入先で入力をコードとして実行してしまうのか**」という仕組みのレベルまで掘り下げることが本セクションの価値の中心です。
-
----
-
-### 0. 本セクションの資料取得状況（透明性のための注記）
-
-本セクションが典拠とする PortSwigger の2ページ（下記URL）は、執筆環境のネットワーク下り（egress）プロキシによって `portswigger.net` ドメインへの直接アクセスがブロックされ、ページ本文を直接取得（WebFetch）できませんでした。そこで **Web検索を通じて同一ページ・公式ドキュメント・多数の二次解説から本文テキスト・ソース/シンク一覧・具体例・DOM Invader の機能説明を復元**し、Webセキュリティの専門知識で補完・体系化しています。復元内容は原典に忠実になるよう努めていますが、PortSwigger の資料は継続的に更新されるため、最新版の細部（例文の値やブラウザ対応など）は必ず各出典URLでご確認ください。**2資料とも実質的内容を復元できたため、本セクションでは「取得不可」としては扱っていません。**
-
-- 資料1（DOMベースXSSの source/sink 体系）: `https://portswigger.net/web-security/cross-site-scripting/dom-based`
-- 資料2（DOM Invader の登場背景）: `https://portswigger.net/blog/introducing-dom-invader`
+本セクションは、この分野の事実上の標準教材である PortSwigger（Burp Suite の開発元）の2つの資料——「What is DOM-based XSS?」と「Introducing DOM Invader」——を直接取得（WebFetch）した上で精読・統合し、(1) DOMベースXSSの原理と source/sink の体系、(2) 手作業での発見がなぜ困難か、(3) その困難を一変させたツール **DOM Invader** の全体像、を初学者が原文なしで完全に理解できるところまで解説します。単なる用語集ではなく、「**なぜブラウザはその代入先で入力をコードとして実行してしまうのか**」という仕組みのレベルまで掘り下げることが本セクションの価値の中心です。
 
 ---
 
@@ -19,9 +10,9 @@
 
 #### 1.1 定義
 
-**DOMベースXSS**とは、**ページ内で動くJavaScript（クライアント側スクリプト）が、攻撃者の操作できるデータを読み取り、それを無防備な形で「危険な代入先」に渡してしまう**ことで発生するXSSです。PortSwigger の定義を平易に言い換えると次のようになります。
+**DOMベースXSS**とは、**ページ内で動くJavaScript（クライアント側スクリプト）が、攻撃者の操作できるデータを読み取り、それを無防備な形で「危険な代入先」に渡してしまう**ことで発生するXSSです。PortSwigger の定義を直接引用すると次のとおりです。
 
-> DOMベースXSS脆弱性は、JavaScript が「攻撃者が制御できる入力元（source）」からデータを取り、それを**動的なコード実行をサポートする代入先（sink）**——例えば `eval()` や `innerHTML`——に渡したときに発生する。
+> "DOM-based vulnerabilities arise when a website contains JavaScript that takes an attacker-controllable value, known as a **source**, and passes it into a dangerous function, known as a **sink**."
 
 ここで登場する2語が本章を貫く最重要概念です。
 
@@ -98,12 +89,10 @@ URL系ソースは、**「被害者に踏ませる一本のリンク」だけで
 | `postMessage` の `message` イベント（`event.data`） | 別ウィンドウ/iframe から送られてきたメッセージ本文 | 攻撃者のページから `postMessage()` で任意のデータを送り込める（第7章の Web メッセージ攻撃で詳述） |
 | `history.pushState` / `history.replaceState` の引数 | 履歴に積んだ状態やURL | スクリプトが履歴に書いた値を読み戻す場合に間接的に制御されうる |
 | `localStorage` / `sessionStorage` | ブラウザ内の永続/セッションストレージ | 別の脆弱性やスクリプトで書き込めれば汚染源になる（HTML5-storage manipulation） |
-| Web SQL / IndexedDB | クライアント側DB | 同上 |
-
-> 出典: What is DOM-based XSS? — https://portswigger.net/web-security/cross-site-scripting/dom-based
-> 出典: DOM-based vulnerabilities — https://portswigger.net/web-security/dom-based
 
 > **重要な原則**: ソースそのものは「危険」ではありません。危険なのは、**ソースの値がサニタイズ（入力に含まれる危険な文字列を無害な形へ変換・除去する処理）されないまま sink に届く**ことです。ソースを見つけたら、その値がコード中でどこへ流れるか（＝どの sink に到達するか）を追跡するのが分析の本質です。
+
+> 出典: What is DOM-based XSS? — https://portswigger.net/web-security/cross-site-scripting/dom-based
 
 ---
 
@@ -113,19 +102,30 @@ sink は「攻撃者データが渡ると望ましくない効果を引き起こ
 
 #### 3.1 系統A: HTMLとして再解釈される sink（HTMLパース系）
 
-代入した文字列を、ブラウザの **HTMLパーサ（HTML構文解析器: 文字列を読んでDOMツリーへ変換する部品）が「新しいHTML」として解釈し直す** sink です。ここが最頻出です。
+代入した文字列を、ブラウザの **HTMLパーサ（HTML構文解析器: 文字列を読んでDOMツリーへ変換する部品）が「新しいHTML」として解釈し直す** sink です。ここが最頻出です。PortSwigger が挙げる代表的な実行系sinkは次のとおりです。
 
 | sink | 挙動 |
 |---|---|
+| `document.write()` / `document.writeln()` | ドキュメントストリームへ文字列を書き出し、HTMLとして解析させる |
 | `element.innerHTML` | 要素の中身を、渡された文字列を**HTMLとして解析**して置き換える |
 | `element.outerHTML` | 要素自身を含めてHTMLとして置き換える |
 | `element.insertAdjacentHTML()` | 指定位置に文字列をHTMLとして挿入する |
-| `document.write()` / `document.writeln()` | ドキュメントストリームへ文字列を書き出し、HTMLとして解析させる |
-| `element.setAttribute()` の一部 / `srcdoc` など | 属性値・埋め込みドキュメントとして解釈される |
+| `document.domain` | ドキュメントのドメインを変更する（同一オリジンポリシーの境界に関わる） |
+| `element.onevent` | イベントハンドラ属性・プロパティへの代入（文字列がコードとして扱われる経路がある） |
 
 **発火の仕組み（最重要）**: `innerHTML = '<b>x</b>'` のように文字列を代入すると、ブラウザはその文字列を単なるテキストではなく**HTMLソースコードとして読み直し**、`<b>` を要素ノードに変換してDOMツリーへ組み込みます。この「文字列 → DOM要素」の再解釈の過程で、攻撃者が仕込んだイベントハンドラ属性（`onerror` など）や危険なタグが**正規のHTML要素として生成され、ブラウザのイベント機構に登録される**ため、コードとして動き出すのです。
 
-> **落とし穴（試験に出る仕組み）**: `innerHTML` に `<script>alert(1)</script>` を入れても**スクリプトは実行されません**。これはHTML仕様で「パーサ挿入以外の経路で後から挿入された `<script>` 要素は実行しない」と定められているためです。だからこそ攻撃者は `<script>` を使わず、**`<img src=1 onerror=alert(1)>` のように「読み込み失敗イベントで発火するタグ」**を使います。存在しない画像 `src=1` の読み込みは必ず失敗し、`onerror` ハンドラが呼ばれる——この「必ず失敗する」性質を逆手に取るのが定石です。
+> **落とし穴（試験に出る仕組み）**: `innerHTML` に `<script>alert(1)</script>` を入れても**スクリプトは実行されません**。これはHTML仕様で「パーサ挿入以外の経路で後から挿入された `<script>` 要素は実行しない」と定められているためです。だからこそ攻撃者は `<script>` を使わず、**`<img src=1 onerror=alert(document.domain)>` のように「読み込み失敗イベントで発火するタグ」**を使います。存在しない画像 `src=1` の読み込みは必ず失敗し、`onerror` ハンドラが呼ばれる——この「必ず失敗する」性質を逆手に取るのが定石です。実際にPortSwigger が示す典型的な脆弱コードと攻撃はこうなります。
+
+```javascript
+// 脆弱なコード
+document.write('... <script>alert(document.domain)</script> ...');
+```
+
+```html
+<!-- innerHTML経由での等価な攻撃 -->
+element.innerHTML='... <img src=1 onerror=alert(document.domain)> ...'
+```
 
 #### 3.2 系統B: 文字列をコードとして実行する sink（JavaScript実行系）
 
@@ -135,44 +135,65 @@ sink は「攻撃者データが渡ると望ましくない効果を引き起こ
 |---|---|
 | `eval()` | 引数の文字列をJavaScriptとして実行 |
 | `Function()`（`new Function(...)`） | 文字列から関数を生成して実行可能にする |
-| `setTimeout()` / `setInterval()` / `setImmediate()` | **第1引数が文字列だと**、それをコードとして評価して実行する |
-| `execCommand` / `execScript` / `msSetImmediate` | レガシー環境でのコード実行経路 |
-| `range.createContextualFragment()` | 文字列をHTML断片としてDOM化（HTMLパース系の性質も併せ持つ） |
+| `setTimeout()` / `setInterval()` | **第1引数が文字列だと**、それをコードとして評価して実行する |
 
 **発火の仕組み**: `eval("alert(1)")` は、JavaScriptエンジンが引数の文字列を新しいソースコードとしてコンパイルし、その場のスコープで走らせます。`setTimeout("alert(1)", 100)` のように**関数ではなく文字列を渡すと、内部的に `eval` 相当の評価が起きる**点が盲点です（関数を渡せば安全）。
 
 #### 3.3 系統C: ナビゲーション/URL系 sink（`javascript:` スキーム）
 
-| sink | 挙動 |
-|---|---|
-| `location` / `location.href` / `location.assign()` / `location.replace()` | 遷移先URLとして解釈。`javascript:alert(1)` のような**擬似スキーム**を入れられるとコード実行 |
-| `a.href`, `iframe.src`, `form.action` などのURL属性 | 同上（`javascript:` URLで発火しうる） |
+`location` / `location.href` / `location.assign()` / `location.replace()`、あるいは `a.href` や `iframe.src` などのURL属性は、遷移先URLとして解釈されます。ブラウザは `javascript:` で始まるURLへの遷移を「そのコードを実行せよ」という命令として扱うため、攻撃者が遷移先URLを制御できれば、`javascript:` スキームでコード実行に持ち込めます。
 
-**発火の仕組み**: ブラウザは `javascript:` で始まるURLへの遷移を「そのコードを実行せよ」という命令として扱います。攻撃者が遷移先URLを制御できれば、`javascript:` スキームでコード実行に持ち込めます（DOM-based JavaScript injection や open redirection と地続きの領域）。
+具体例として、PortSwigger が示す実例を見てみましょう。
+
+```javascript
+$('#backLink').attr("href", (new URLSearchParams(window.location.search)).get('returnUrl'));
+```
+
+このコードは、URLパラメータ `returnUrl` の値をそのまま `<a>` タグの `href` 属性に設定しています。攻撃者が次のようなURLを踏ませれば、
+
+```
+?returnUrl=javascript:alert(document.domain)
+```
+
+被害者が「戻る」リンクをクリックした瞬間に `javascript:` スキームが実行されます。**なぜ動くのか**: `href` 属性は本来「移動先URL」を保持するだけですが、ブラウザは `javascript:` プレフィックスを特別扱いし、リンククリック時にプレフィックス以降をコードとしてそのまま実行する、というブラウザの仕様そのものが悪用されています。
 
 #### 3.4 系統D: jQuery など JavaScript ライブラリの sink
 
-ライブラリの便利関数が、内部で `innerHTML` 相当の処理を呼ぶために sink になります。PortSwigger が挙げる jQuery の代表的な sink:
+ライブラリの便利関数が、内部で `innerHTML` 相当の処理を呼ぶために sink になります。PortSwigger が挙げる jQuery の代表的な sink 一覧は次のとおりです。
 
 ```
-$() / jQuery()（セレクタにHTML文字列を渡した場合）
-.html()
-.append() / .prepend() / .after() / .before() / .replaceWith() / .replaceAll()
-.wrap() / .wrapInner() / .wrapAll()
-.add() / .insertAfter() / .insertBefore()
-$.parseHTML() / jQuery.parseHTML()
+add(), after(), append(), animate(), insertAfter(), insertBefore(),
+before(), html(), prepend(), replaceAll(), replaceWith(), wrap(),
+wrapInner(), wrapAll(), has(), constructor(), init(), index(),
+jQuery.parseHTML(), $.parseHTML()
 ```
 
-**jQuery `$()` の危険な仕組み（頻出）**: `$(x)` は通常「CSSセレクタで要素を探す」関数ですが、jQuery は**引数の文字列が `<` で始まると「これはHTMLだ」と判断してその場でHTML要素を生成**します。したがって `$(location.hash)` のようなコードは、`#<img src=1 onerror=alert(1)>` というフラグメントを与えられると、セレクタ検索のつもりが**新しい要素の生成＝コード実行**に化けます。
+**jQuery `$()` の危険な仕組み（頻出）**: `$(x)` は通常「CSSセレクタで要素を探す」関数ですが、jQuery は**引数の文字列が `<` で始まると「これはHTMLだ」と判断してその場でHTML要素を生成**します。PortSwigger が挙げる典型パターンはこうです。
 
-> 出典: DOM-based JavaScript injection（sink一覧） — https://portswigger.net/web-security/dom-based/javascript-injection
-> 出典: What is DOM-based XSS? — https://portswigger.net/web-security/cross-site-scripting/dom-based
+```javascript
+$(window).on('hashchange', function() {
+    var element = $(location.hash);
+    element[0].scrollIntoView();
+});
+```
+
+このコードでは、URLフラグメント（`location.hash`）の値がそのまま `$()` へ渡されています。フラグメントが `#<img src=1 onerror=alert(1)>` のように `<` を含む文字列であれば、jQuery はセレクタ検索のつもりが**新しい要素の生成＝コード実行**に化けます。ただし通常は被害者にリンクをクリックさせる（＝`hashchange` を発火させる）操作が必要になるため、PortSwigger は次のように**iframeを使って被害者の操作なしに `hashchange` を起こす**実戦的な悪用例も示しています。
+
+```html
+<iframe src="https://vulnerable-website.com#" onload="this.src+='<img src=1 onerror=alert(1)>'"></iframe>
+```
+
+**なぜ動くのか**: iframeを空のフラグメント（`#`）付きでまず読み込み、`onload` イベントでフラグメントに攻撃文字列を追記する。フラグメントの変更は `hashchange` イベントを発火させるため、脆弱なハンドラが**被害者の一切の操作なしに**起動し、`$(location.hash)` がペイロードをHTML化します。
+
+> **バージョン依存の注意（陳腐化への警戒）**: この種の `$()` 悪用は、jQuery のバージョンによって成立条件が変わります。**jQuery 1.9.0（2013年公開）より前**は `$()` が `#` を含む文字列でもHTMLとして扱いやすく、より緩い条件で発火しました。それ以降のバージョンでは、入力が `#` で始まる場合にHTML注入を防ぐよう挙動が厳格化されています。現場で古いjQueryを見たら、この差を必ず意識してください。
+
+> 出典: What is DOM-based XSS (cross-site scripting)? Tutorial & Examples — https://portswigger.net/web-security/cross-site-scripting/dom-based
 
 ---
 
 ### 4. 具体的なコード例・ペイロード例（原理つき）
 
-ここまでの source/sink を、PortSwigger の代表例で具体化します。各例に「**なぜ動くのか**」を必ず添えます。
+ここまでの source/sink を、追加の代表例で具体化します。各例に「**なぜ動くのか**」を必ず添えます。
 
 #### 4.1 `innerHTML` sink（最も基本的なDOM XSS）
 
@@ -202,30 +223,9 @@ document.write('<p>検索結果: ' + location.search.slice(3) + '</p>');
 
 URLを `?q=<img src=1 onerror=alert(1)>` のようにして誘導すると、`document.write` が組み立てたHTML文字列がそのままパースされ、`onerror` が発火します。
 
-**なぜ動くのか**: `document.write()` は引数をドキュメントストリームへ流し込み、HTMLパーサに解析させる。ソース `location.search` の値が無検証で連結されているため、攻撃者のタグがそのままDOM化して実行される。`document.write` が `<select>` 要素の内側など「特定の親要素の中」で使われている場合は、まず `</select>` などで文脈（コンテキスト）を抜けてからペイロードを置く、という**コンテキスト脱出**が必要になる（PortSwigger の該当ラボはこの一手間を学ばせる設計）。
+**なぜ動くのか**: `document.write()` は引数をドキュメントストリームへ流し込み、HTMLパーサに解析させる。ソース `location.search` の値が無検証で連結されているため、攻撃者のタグがそのままDOM化して実行される。`document.write` が `<select>` 要素の内側など「特定の親要素の中」で使われている場合は、まず `</select>` などで文脈（コンテキスト）を抜けてからペイロードを置く、という**コンテキスト脱出**が必要になることもあります。
 
-#### 4.3 jQuery セレクタ `$()` を悪用する例
-
-古典的な脆弱パターン:
-
-```javascript
-$(window).on('hashchange', function() {
-    var element = $(location.hash);
-    element.scrollIntoView();
-});
-```
-
-攻撃URL:
-
-```
-https://vulnerable-website.com/#<img src=1 onerror=alert(document.cookie)>
-```
-
-**なぜ動くのか**: フラグメントが変わると `hashchange` が発火し、`$(location.hash)` が呼ばれる。`location.hash` の値が `<` で始まるため、jQuery はセレクタ検索ではなく**HTML要素生成**を行い、`<img onerror>` が実行される。
-
-> **バージョン依存の注意（陳腐化への警戒）**: この攻撃が「被害者の操作なしで自動発火」するかは jQuery のバージョンに依存する。**jQuery 1.9.0（2013年公開）より前**は `$()` が `#` を含む文字列でもHTMLとして扱いやすく、ページを開くだけで発火しえた。1.9.0以降は挙動が厳格化され、多くの場合ワンクリック等のユーザー操作を要する。現場で古い jQuery を見たら、この差を必ず意識すること。
-
-#### 4.4 `eval()` / `JSON.parse` 周辺の例
+#### 4.3 `eval()` 周辺の例
 
 脆弱なコード（クエリからJSONを読もうとして `eval` を使ってしまう悪例）:
 
@@ -239,40 +239,9 @@ var data = eval('(' + location.search.slice(3) + ')');
 
 ---
 
-### 5. DOMベースXSS以外の「DOM系脆弱性」全体像
+### 5. どうやって見つけるか — 手作業の限界と、ツールが必要な理由
 
-PortSwigger は、DOM XSS を「攻撃者データが source → sink へ流れて悪影響を及ぼす」という同じ枠組みで捉えられる**DOM系脆弱性ファミリー**の一員として位置づけています。sink が変われば影響も変わる、という発想です。学習者はこの地図を押さえておくと、実務で「XSSにはならないが別の被害が出る」ケースを見逃さずに済みます。
-
-| 脆弱性の種類 | 典型的な sink | 何が起きるか（影響） |
-|---|---|---|
-| **DOM-based XSS** | `innerHTML`, `eval`, `document.write`, jQuery `html()` 等 | 任意のJavaScript実行 |
-| **DOM-based open redirection**（オープンリダイレクト） | `location`, `location.href`, `location.assign()`, `location.replace()`, `open()`, `element.srcdoc`, `XMLHttpRequest.open()`, `$.ajax()` | 攻撃者サイトへ強制遷移（フィッシング等） |
-| **DOM-based cookie manipulation**（Cookie操作） | `document.cookie` | Cookie を攻撃者値で上書き。セッション固定や他攻撃の足場 |
-| **DOM-based JavaScript injection** | `eval`, `Function`, `setTimeout`（文字列）等 | コード実行（XSSと重なる） |
-| **DOM-based document-domain manipulation** | `document.domain` | 同一オリジンポリシーの境界を緩めさせられる |
-| **DOM-based WebSocket-URL poisoning** | `WebSocket` コンストラクタ | WebSocket接続先を攻撃者サーバへ差し替え |
-| **DOM-based link manipulation**（リンク操作） | `a.href`, `element.src` 等 | 正規リンクを差し替え |
-| **DOM-based web-message manipulation** | `postMessage()` の宛先 | 別ウィンドウへ悪意あるメッセージ送信 |
-| **DOM-based Ajax request-header manipulation** | `setRequestHeader()` | リクエストヘッダを汚染 |
-| **DOM-based local file-path manipulation** | `FileReader.readAsText()` 等 | 読み込むファイルパスを操作 |
-| **DOM-based client-side SQL injection** | Web SQL の `executeSql()` | クライアント側DBへSQLi |
-| **DOM-based HTML5-storage manipulation** | `localStorage.setItem()`, `sessionStorage.setItem()` | ストレージ汚染（後続のDOM XSSの source になりうる） |
-| **DOM-based client-side XPath injection** | `document.evaluate()`, `element.evaluate()` | XPathクエリ改ざん |
-| **DOM-based client-side JSON injection** | `JSON.parse()` 等（生成側） | JSON構造の改ざん |
-| **DOM-based DOM-data manipulation** | フォームフィールドの値やリンク等 | 表示データやフォーム挙動の改変 |
-| **DOM-based denial of service**（DoS） | `RegExp`（ReDoS）, `requestFileSystem` 等 | クライアント側のリソース枯渇・機能停止 |
-
-> 出典: DOM-based vulnerabilities（種類とsink一覧） — https://portswigger.net/web-security/dom-based
-> 出典: DOM-based open redirection — https://portswigger.net/web-security/dom-based/open-redirection
-> 出典: DOM-based WebSocket-URL poisoning — https://portswigger.net/web-security/dom-based/websocket-url-poisoning
-
-このファミリー観の実務的な含意は明快です。**「その sink はコード実行に至るか？」を毎回問う**こと。至るなら XSS、至らないなら別カテゴリの被害を評価する、という切り分けができるようになります。
-
----
-
-### 6. どうやって見つけるか — 手作業の限界と、ツールが必要な理由
-
-#### 6.1 手作業のアプローチ
+#### 5.1 手作業のアプローチ
 
 原理的には、DOM XSS の探索は次の手順です。
 
@@ -281,46 +250,47 @@ PortSwigger は、DOM XSS を「攻撃者データが source → sink へ流れ�
 3. 途中でサニタイズされずに**危険な sink に到達していれば脆弱**。
 4. sink に届く形に合わせてペイロードを組み立て、コンテキスト脱出などを施して発火させる。
 
-#### 6.2 なぜ DOM XSS は「3類型で最も難しい」のか
+PortSwigger 自身、DOM XSS の検出方法として、Burp の Web脆弱性スキャナによる自動検出に加え、**ブラウザ開発者ツール上での検索**（DOM内の注入文字列を `Ctrl+F`/`Cmd+F` で探す、JavaScriptコードを `Ctrl+Shift+F`/`Cmd+Alt+F` で横断検索する）という手作業の手段を挙げています。
 
-PortSwigger は DOM XSS を **「反射型・格納型・DOM型のうち、発見と攻撃が飛び抜けて難しい」** と明言しています。その理由が、次のツール登場の必然性を説明します。
+#### 5.2 なぜ DOM XSS は難しいのか
 
 - **コードが人間可読でない**。本番のJavaScriptは**ミニファイ（minify: 空白・改行・意味のある変数名を削って圧縮した状態）**され、しばしば**難読化**されている。ソースからsinkへの流れが**数千行**に散らばり、変数名も `a`, `b`, `c` のように潰れている。
 - **フレームワークが sink を隠す**。jQuery や各種SPA（Single Page Application）フレームワークの内部で `innerHTML` 相当が呼ばれるため、表面のコードを見ても sink が見えない。
 - **サーバに痕跡が残らない**（§1.3）。したがってプロキシでリクエスト/レスポンスを眺める従来型の手法だけでは、ブラウザ内で完結するフローを捉えきれない。
 
-結果として、DOM XSS の手作業探索は「複雑なJavaScriptの中で入力の流れを延々と手で追う、退屈で骨の折れる作業」になります。**この作業を、あたかも反射型XSSを探すかのように簡単にする**ために作られたのが DOM Invader です。
+結果として、DOM XSS の手作業探索は「複雑なJavaScriptの中で入力の流れを延々と手で追う、退屈で骨の折れる作業」になります。実際、PortSwigger のブログ記事「Introducing DOM Invader」は、現代のサイトが「複数のJavaScriptライブラリを使い、大量の複雑で難読化されたコードを持つ（multiple JavaScript libraries, and have many lines of complex, minified code）」ため、手動テストが極めて困難であると述べています。**この作業を、あたかも反射型XSSを探すかのように簡単にする**ために作られたのが DOM Invader です。
 
+> 出典: What is DOM-based XSS? — https://portswigger.net/web-security/cross-site-scripting/dom-based
 > 出典: Introducing DOM Invader: DOM XSS just got a whole lot easier to find — https://portswigger.net/blog/introducing-dom-invader
 
 ---
 
-### 7. DOM Invader 導入 — DOM XSS 探索を一変させたツール
+### 6. DOM Invader 導入 — DOM XSS 探索を一変させたツール
 
-#### 7.1 DOM Invader とは何か・登場の背景
+#### 6.1 DOM Invader とは何か・登場の背景
 
-**DOM Invader** は、PortSwigger が **2021年6月30日** に発表した、Burp Suite 向けの新ツールです。ブログ記事のタイトルそのものが主張になっています——「**DOM XSS just got a whole lot easier to find（DOM XSS の発見が一気に簡単になった）**」。
+**DOM Invader** は、PortSwigger が **2021年6月30日** に発表した、Burp Suite 向けの新ツールです。ブログ記事のタイトルそのものが主張になっています——「**DOM XSS just got a whole lot easier to find（DOM XSS の発見が一気に簡単になった）**」。開発は **Gareth Heyes** を中心に、PortSwigger のスキャナ開発チーム（James Kettle、Patrick Albinson、Alex、Paul Wilshaw ほか）が携わりました。同チームは公開前に DOM Invader を実戦投入し、**PayPal の DOM XSS 脆弱性**を実際に発見したことをブログで紹介しています。
 
-背景にあるのは §6.2 で見た「DOM XSS は手作業では非常に見つけにくい」という長年の問題です。従来もブラウザの開発者ツール（DevTools）でブレークポイントを張って追う、あるいは古い専用ツールを使う、といった方法はありましたが、いずれも熟練と根気を要しました。DOM Invader はこの探索を、**Burp に組み込まれたブラウザ（Burp's embedded browser: Chromium ベースの内蔵ブラウザ）に載る拡張機能**として実装し、探索の大部分を自動化・可視化します。
+背景にあるのは §5.2 で見た「DOM XSS は手作業では非常に見つけにくい」という長年の問題です。従来もブラウザの開発者ツール（DevTools）でブレークポイントを張って追う、あるいは古い専用ツールを使う、といった方法はありましたが、いずれも熟練と根気を要しました。DOM Invader はこの探索を、**Burp に組み込まれたブラウザ（Burp's embedded browser: Chromium ベースの内蔵ブラウザ）に載る拡張機能**として実装し、「ターゲットのDOMを計装（instrument）し、遭遇するJavaScriptのソースとシンクを片っ端から傍受する（instruments your target's DOM, intercepting any JavaScript sources and sinks it might come across）」ことで、探索の大部分を自動化・可視化します。ソースは `location.search` や `document.URL`、`window.name` のようにユーザー入力を受け取るJavaScriptオブジェクト、シンクは `eval`、`innerHTML`、`setTimeout` のようにコード実行を可能にする関数、という位置づけです。
 
-**重要な特徴**: DOM Invader は **Burp Suite Professional（有償版）だけでなく Community Edition（無償版）でも利用できる**、内蔵ブラウザの標準機能です。高価なライセンスがなくても DOM XSS の体系的探索ができる、という点が学習者にとって大きな意味を持ちます。
+**重要な特徴**: DOM Invader は **2021.7 リリース（Early Adopter チャンネル）**で登場し、**Burp Suite Professional（有償版）だけでなく Community Edition（無償版）でも利用できる**、内蔵ブラウザの標準機能です。高価なライセンスがなくても DOM XSS の体系的探索ができる、という点が学習者にとって大きな意味を持ちます。利用するには、**Burp の内蔵ブラウザ右上のアイコンをクリックして有効化**します。
 
 > 出典: Introducing DOM Invader — https://portswigger.net/blog/introducing-dom-invader
 > 出典: DOM Invader（Burp ドキュメント） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader
 
-#### 7.2 中核機能1: canary（カナリア）
+#### 6.2 中核機能1: canary（カナリア）
 
-**canary（カナリア）** とは、**ユーザー入力が sink まで届いているかを追跡するための、目印になるユニークな文字列**です（炭鉱のカナリア＝危険の察知役、が語源）。
+**canary（カナリア）** とは、**ユーザー入力が sink まで届いているかを追跡するための、目印になるユニークな文字列（"a unique string that's used to see where your user input is reflected inside a sink"）**です（炭鉱のカナリア＝危険の察知役、が語源）。
 
-使い方の原理はこうです。攻撃者（テスター）は canary（例: ランダムな `dom0invader1234` のような文字列。既定ではランダム生成だが任意の値に変更可能）を、テストしたいソース——URLのクエリパラメータやフラグメントなど——に入れます。DOM Invader は**この canary がページ内でどの sink に到達したかを検出**し、「あなたの入力はこの危険な代入先まで届いています」と教えてくれます。
+使い方の原理はこうです。テスターは canary（既定ではランダム生成される文字列だが、任意の値に変更もできる）を、テストしたいソース——URLのクエリパラメータやフラグメントなど——に入れます。DOM Invader は**この canary がページ内でどの sink に到達したかを検出**し、DevTools 上で該当箇所を**自動的にハイライト**して教えてくれます。
 
 **なぜ有効か**: 反射型XSSでは「入力した目印文字列がレスポンスHTMLのどこに出るか」を見て反射点を探します。canary はこの発想を DOM の世界へ持ち込むもので、**数千行のJSを手で追う代わりに、目印が sink に着いたかどうかを機械に判定させる**ことができます。
 
 > 出典: Introducing DOM Invader — https://portswigger.net/blog/introducing-dom-invader
 
-#### 7.3 中核機能2: Augmented DOM（拡張DOM）
+#### 6.3 中核機能2: Augmented DOM（拡張DOM）
 
-**Augmented DOM（拡張DOM）** は、Burp 内蔵ブラウザの DevTools に追加される専用タブで、**そのページに存在する source と sink をツリー状に一覧表示**します。canary を含む source/sink はハイライトされ、どのソースがどの sink につながっているかを俯瞰できます。
+**Augmented DOM（拡張DOM）** は、Burp 内蔵ブラウザの DevTools に追加される専用タブで、**そのページに存在する source と sink をツリー状に一覧表示**します。DOM Invader が検出できる source と sink の一覧は非常に網羅的で、それぞれに**重要度に基づく数値ランク**（1に近いほど優先度が高い）が付与されています。ブログでは「**最も興味深いものが最初に表示される（the most interesting ones appearing first）**」と説明されており、たとえば `eval` はランク2、`innerHTML` はランク21、`location` 関連の sink は20番台といった具合に、危険度の高いものから並びます（ランクの総数はドキュメント時点でおよそ80台に及びます）。
 
 PortSwigger 自身がこの機能の意義を次のように表現しています。
 
@@ -330,54 +300,71 @@ PortSwigger 自身がこの機能の意義を次のように表現していま�
 
 > 出典: Introducing DOM Invader — https://portswigger.net/blog/introducing-dom-invader
 
-#### 7.4 中核機能3: Web メッセージ（postMessage）のテスト
+#### 6.4 中核機能3: Web メッセージ（postMessage）のテスト
 
-DOM Invader は、ページ上で `postMessage()` により送受信される **Web メッセージ**を**記録・改変・再送**できます。専用のメッセージタブで、飛び交うメッセージを観測し、内容を書き換えて送り直すことで、**Web メッセージ由来の DOM XSS**（送られてきた `event.data` が sink に流れるパターン。第7章で詳述）を効率的に検証できます。
+DOM Invader は、専用の **Postmessage タブ**で、ページ上で `postMessage()` により送受信される **Web メッセージ**を**傍受・改変**できます。特に注目すべき機能として、「**'Spoof origin' チェックボックスをクリックするだけで、Web メッセージの送信元（origin）を偽装できる（you can spoof the origin of a web message, simply by clicking the 'Spoof origin' check box）**」ことが挙げられます。これにより、Web メッセージの送信元検証が不十分な実装（送信元を確認せず `event.data` を信頼してしまうコード）を素早く突くことができ、**Web メッセージ由来の DOM XSS**（送られてきた `event.data` が sink に流れるパターン。第7章で詳述）を効率的に検証できます。DOM Invader はまた、検出結果から**PoC（Proof of Concept: 脆弱性の実証コード）を自動生成**する機能も持ちます。
 
 > 出典: Introducing DOM Invader — https://portswigger.net/blog/introducing-dom-invader
-> 出典: Testing for DOM XSS using web messages — https://portswigger.net/burp/documentation/desktop/tools/dom-invader/web-messages
 
-#### 7.5 実際の使い方（基本フロー）
+#### 6.5 実際の使い方（基本フロー）
 
-1. Burp を起動し、**内蔵ブラウザ**を開く。DevTools（開発者ツール）から DOM Invader を有効化する。
-2. canary を設定する（既定のランダム値でよい）。
+1. Burp を起動し、**内蔵ブラウザ**を開く。ブラウザ右上のアイコンをクリックして DOM Invader を有効化する。
+2. canary を設定する（既定のランダム値でよい。任意の文字列に変更も可）。
 3. テスト対象サイトを開き、**canary を URL のクエリやフラグメント等のソースに差し込む**。
-4. DevTools の **Augmented DOM タブ**を開き、canary が到達した source/sink を確認する。危険な sink（`innerHTML`, `eval` 等）に届いていれば有望。
+4. DevTools の **Augmented DOM タブ**を開き、canary が到達した source/sink を確認する。ランク順に表示されるため、危険な sink（`eval`, `innerHTML` 等）に届いていれば有望。
 5. sink アクセスのスタックトレースで、脆弱なコード箇所を特定する。
-6. その sink の性質に合わせてペイロード（`<img src=1 onerror=...>` 等）を組み立て、発火を確認する。ページ遷移（リダイレクト）が絡む場合も DOM Invader が状態を追随する。
+6. Web メッセージが絡む場合は Postmessage タブでメッセージを観察し、必要なら「Spoof origin」で送信元検証をすり抜けてテストする。
+7. その sink の性質に合わせてペイロードを組み立て、発火を確認する。
 
-#### 7.6 その後の進化（バージョン注記 — 陳腐化への注意）
+#### 6.6 その後の進化（バージョン注記 — 陳腐化への注意）
 
-2021年の初版ブログが扱った中核は **canary / Augmented DOM / Web メッセージ**の3本柱でした。その後 DOM Invader は継続的に強化され、**プロトタイプ汚染（prototype pollution: JavaScript のオブジェクトの“親テンプレート”を汚染して挙動を乗っ取る攻撃。第4章で詳述）の自動検出**（Burp 2022 系のリリースで追加）や、クライアント側の各種検査機能が加わりました。本セクションの主眼である「登場背景と基礎機能」は初版ブログに基づきますが、**実際にツールを使う際は必ず最新版のドキュメントで現行機能を確認**してください（ツールは頻繁に更新されます）。
+2021年の初版ブログが扱った中核は **canary / Augmented DOM / Web メッセージ**の3本柱でした。その後 DOM Invader は継続的に強化され、**プロトタイプ汚染（prototype pollution: JavaScript のオブジェクトの“親テンプレート”を汚染して挙動を乗っ取る攻撃。第4章で詳述）の自動検出**などの機能が加わっています。本セクションの主眼である「登場背景と基礎機能」は初版ブログに基づきますが、**実際にツールを使う際は必ず最新版のドキュメントで現行機能を確認**してください（ツールは頻繁に更新されます）。DOM Invader の詳細なオプション設定・Web メッセージテストの手順は、PortSwigger の公式ドキュメント `https://portswigger.net/burp/documentation/desktop/tools/dom-invader` に継続的に反映されています。
 
 > 出典: DOM Invader（Burp ドキュメント、最新機能一覧） — https://portswigger.net/burp/documentation/desktop/tools/dom-invader
-> 出典: Testing for prototype pollution with DOM Invader — https://portswigger.net/burp/documentation/desktop/testing-workflow/vulnerabilities/input-validation/prototype-pollution
+
+---
+
+### 7. DOMベースXSS以外の「DOM系脆弱性」全体像
+
+PortSwigger は、DOM XSS を「攻撃者データが source → sink へ流れて悪影響を及ぼす」という同じ枠組みで捉えられる**DOM系脆弱性ファミリー**の一員として位置づけています。sink が変われば影響も変わる、という発想です。学習者はこの地図を押さえておくと、実務で「XSSにはならないが別の被害が出る」ケースを見逃さずに済みます。
+
+| 脆弱性の種類 | 典型的な sink | 何が起きるか（影響） |
+|---|---|---|
+| **DOM-based XSS** | `innerHTML`, `eval`, `document.write`, jQuery `html()` 等 | 任意のJavaScript実行 |
+| **DOM-based open redirection**（オープンリダイレクト） | `location`, `location.href`, `location.assign()`, `location.replace()` | 攻撃者サイトへ強制遷移（フィッシング等） |
+| **DOM-based cookie manipulation**（Cookie操作） | `document.cookie` | Cookie を攻撃者値で上書き。セッション固定や他攻撃の足場 |
+| **DOM-based JavaScript injection** | `eval`, `Function`, `setTimeout`（文字列）等 | コード実行（XSSと重なる） |
+| **DOM-based document-domain manipulation** | `document.domain` | 同一オリジンポリシーの境界を緩めさせられる |
+| **DOM-based link manipulation**（リンク操作） | `a.href`, `element.src` 等 | 正規リンクを差し替え |
+| **DOM-based web-message manipulation** | `postMessage()` の宛先 | 別ウィンドウへ悪意あるメッセージ送信 |
+| **DOM-based HTML5-storage manipulation** | `localStorage.setItem()`, `sessionStorage.setItem()` | ストレージ汚染（後続のDOM XSSの source になりうる） |
+
+このファミリー観の実務的な含意は明快です。**「その sink はコード実行に至るか？」を毎回問う**こと。至るなら XSS、至らないなら別カテゴリの被害を評価する、という切り分けができるようになります。
 
 ---
 
 ### 8. 防御 — クライアント側でしか守れない
 
-DOM XSS の防御は、§1.3 で述べたとおり**サーバ側では完結できません**（サーバに届かない攻撃があるため）。防御はJavaScriptコードの内側で行う必要があります。PortSwigger の原則と実務のベストプラクティスをまとめます。
+DOM XSS の防御は、§1.3 で述べたとおり**サーバ側では完結できません**（サーバに届かない攻撃があるため）。防御はJavaScriptコードの内側で行う必要があります。PortSwigger は「**信頼できないソースから来たデータを、動的にHTMLドキュメントへ書き込むことを避ける（avoid allowing data from any untrusted source to be dynamically written to the HTML document）**」ことを基本原則として掲げています。この原則と実務のベストプラクティスをまとめます。
 
 1. **そもそも危険な sink に、攻撃者制御データを渡さない**。これが最上位の原則。動的にHTMLを組み立てる必要が本当にあるかを問い直す。
 2. **安全な代替 sink を使う**。テキストを表示したいだけなら `innerHTML` ではなく **`textContent`**（渡した文字列を必ずプレーンテキストとして扱い、HTMLとして解釈しない）を使う。これだけで大多数の innerHTML 由来 DOM XSS は消える。
-3. **どうしてもHTMLを動的生成するなら、コンテキストに応じたエスケープ／サニタイズを施す**。HTML文脈・属性文脈・JavaScript文脈・URL文脈で必要な処理は異なる（詳細は第2章のコンテキスト別対策を参照）。
+3. **どうしてもHTMLを動的生成するなら、コンテキストに応じたエスケープ／サニタイズを施す**。HTML文脈・属性文脈・JavaScript文脈・URL文脈で必要な処理は異なる（詳細は第2章のコンテキスト別対策を参照）。**HTML用のサニタイズとJavaScript用のサニタイズは別物**であり、PortSwigger も「HTML sink とJavaScript実行 sink を区別して対策を実装すべき」と述べています。
 4. **信頼できるサニタイズライブラリを使う（自作しない）**。事実上の標準は **DOMPurify** で、HTMLをパースして危険な要素・属性を除去する。
-   > **バージョン依存の注意（重要）**: DOMPurify は繰り返しバイパス（回避手法）が発見され、その都度修正されてきた。例えば **DOMPurify 2.0.17（2020年公開）より前**のバージョンには既知のバイパスが存在し、古いバージョンをそのまま使い続けると防御が破られる。特に **mXSS（mutation XSS: ブラウザがDOMを再シリアライズ／再パースする際にHTMLが“変異”して、サニタイズ後に危険な形へ化ける現象。名前空間の切り替え〔HTML/SVG/MathML〕を悪用するものが有名）** による名前空間混同バイパスは近年も複数報告されている。**DOMPurify は必ず最新版に追従し、更新を怠らないこと**。（mXSS の仕組みは第5章で詳述。）
-5. **Trusted Types を導入する**。**Trusted Types** は、`innerHTML` などの危険な sink へ渡せる値を「検証済みの特別な型（TrustedHTML など）」に限定するブラウザ機構で、CSP（Content Security Policy）ヘッダ `require-trusted-types-for 'script'` で有効化する。**生の文字列を sink に渡すこと自体をブラウザレベルで禁止**できるため、DOM XSS を構造的に封じる強力な多層防御になる（対応ブラウザは Chromium 系が中心。詳細は防御の章を参照）。
+   > **バージョン依存の注意（重要）**: DOMPurify は繰り返しバイパス（回避手法）が発見され、その都度修正されてきた。例えば **DOMPurify 2.0.17（2020年公開）より前**のバージョンには既知のバイパスが存在し、古いバージョンをそのまま使い続けると防御が破られる。特に **mXSS（mutation XSS: ブラウザがDOMを再シリアライズ／再パースする際にHTMLが“変異”して、サニタイズ後に危険な形へ化ける現象。名前空間の切り替え〔HTML/SVG/MathML〕を悪用するものが有名）** による名前空間混同バイパスは近年も複数報告されている。**DOMPurify は必ず最新版に追従し、更新を怠らないこと**。（mXSS の仕組みは第4章で詳述。）
+5. **Trusted Types を導入する**。**Trusted Types** は、`innerHTML` などの危険な sink へ渡せる値を「検証済みの特別な型（TrustedHTML など）」に限定するブラウザ機構で、CSP（Content Security Policy）ヘッダ `require-trusted-types-for 'script'` で有効化する。**生の文字列を sink に渡すこと自体をブラウザレベルで禁止**できるため、DOM XSS を構造的に封じる強力な多層防御になる（対応ブラウザは Chromium 系が中心）。
 6. **`eval` / `Function` / 文字列引数の `setTimeout` を使わない**。JSONは必ず `JSON.parse()` で扱う。
 
 > 出典: What is DOM-based XSS?（防御セクション） — https://portswigger.net/web-security/cross-site-scripting/dom-based
-> 出典: DOM-based vulnerabilities（防御の一般原則） — https://portswigger.net/web-security/dom-based
 
 ---
 
 ### 9. 本セクションのまとめ
 
-- **DOMベースXSS**は、サーバではなく**ブラウザ内のJavaScript**が、攻撃者制御データ（**source**）を危険な代入先（**sink**）へ無検証で渡すことで起きる。`location.hash` を使う型は**サーバに届かず**、WASやサーバ側エスケープが原理的に無力になる点が決定的な特徴。
+- **DOMベースXSS**は、サーバではなく**ブラウザ内のJavaScript**が、攻撃者制御データ（**source**）を危険な代入先（**sink**）へ無検証で渡すことで起きる。`location.hash` を使う型は**サーバに届かず**、WAFやサーバ側エスケープが原理的に無力になる点が決定的な特徴。
 - **source** はURL系（`location.*`, `document.URL`）を筆頭に、`document.referrer`, `window.name`, `postMessage`, ストレージなど多岐にわたる。**sink** はHTMLパース系（`innerHTML`, `document.write`）、コード実行系（`eval`, 文字列 `setTimeout`）、URL系（`javascript:`）、ライブラリ系（jQuery `$()`, `.html()`）に大別できる。
 - 発火の核心は**ブラウザによる再解釈**——文字列をHTMLパーサがDOM要素に変換する（`onerror` 発火）、あるいはJSエンジンがソースとしてコンパイルする——という仕組みにある。`innerHTML` 経由の `<script>` が動かない一方 `<img onerror>` が動く理由も、この仕組みから導ける。
-- DOM XSS は3類型で最も発見が難しい。ミニファイ／難読化された数千行のJSでデータフローを手追いする作業を、**DOM Invader**（2021年、Burp 内蔵ブラウザの拡張。Community 版でも利用可）が **canary・Augmented DOM・Web メッセージ**機能で「反射型XSSのように」簡単にした。
+- DOM XSS は3類型の中でも発見が難しい。ミニファイ／難読化された数千行のJSでデータフローを手追いする作業を、**DOM Invader**（2021年6月30日、Gareth Heyes らが開発。Burp 内蔵ブラウザの拡張。Community 版でも利用可）が **canary・Augmented DOM・Web メッセージ（Spoof origin機能付き）**で「反射型XSSのように」簡単にした。
 - 防御はクライアント側でしか完結しない。`textContent` への置き換え、DOMPurify（**最新版必須**）、Trusted Types が主力。`eval` 系は排除する。
 
-次セクション以降では、ここで俯瞰した DOM 系脆弱性の各論——Web メッセージ、プロトタイプ汚染、mXSS——を、それぞれの発火メカニズムまで掘り下げて扱います。
+次セクション以降では、ここで俯瞰した DOM 系脆弱性の各論——DOM Invader のより詳細な設定・Web メッセージ、プロトタイプ汚染、mXSS——を、それぞれの発火メカニズムまで掘り下げて扱います。
