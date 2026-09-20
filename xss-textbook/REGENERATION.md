@@ -68,3 +68,17 @@
 ---
 
 （目次へ: [README.md](./README.md)）
+
+---
+
+## 一括再生成スクリプト（難所だけ Opus 5）
+
+`regen/workflow-full.js` は、残り全セクションを**一気に**忠実版へ再生成するワークフローです。**難所（`s4g, s4h, s4i, s4j, s4k, s4m, s5a`）だけ Opus 5**、それ以外は Sonnet を、セクション単位で割り当ててあります（`s4a`〜`s4e` は再生成済みのため対象外）。
+
+ローカルの Claude Code（開放ネットワーク・サブスク認証）で：
+
+```
+Workflow({ scriptPath: "xss-textbook/regen/workflow-full.js" })
+```
+
+完了後、章ファイル（03〜08）を再結合し、付録B/READMEを更新して、コミット＆プッシュする。モデルのエイリアス `opus`/`sonnet` が解決されない場合は、スクリプト内の定数を `claude-opus-5`/`claude-sonnet-5` に置き換える。
