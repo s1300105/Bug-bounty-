@@ -18,15 +18,7 @@
 //            難所は Opus、それ以外は Sonnet。
 // 実行後、章ファイルへの結合・付録・READMEは呼び出し側（メインループ）が RUNBOOK に従って行う。
 
-const A = (typeof args === 'object' && args) ? args : {}
-const ROADMAP = A.roadmapPath || 'ROADMAP.md'
-const OUTDIR = (A.outDir || 'textbook').replace(/\/+$/, '')
-const TOPIC = A.topic || '（主題未指定）'
-const SCOPE = A.scopeRules || '（追加の制約なし）'
-const BASE = OUTDIR + '/sections/'
-const OPUS = 'opus'      // 難所用。解決しなければ 'claude-opus-5'
-const SONNET = 'sonnet'  // 通常用。解決しなければ 'claude-sonnet-5'
-
+// ※ 下の meta ブロックは【実行コードより前】に置くこと。後ろに置くとワークフローが起動しない。
 export const meta = {
   name: 'build-textbook',
   description: 'Turn a URL roadmap (any format) into a faithful Japanese textbook; Opus for hard sections, Sonnet otherwise',
@@ -35,6 +27,15 @@ export const meta = {
     { title: '執筆', detail: '節ごとに原典fetchで執筆（難所Opus/他Sonnet）' },
   ],
 }
+
+const A = (typeof args === 'object' && args) ? args : {}
+const ROADMAP = A.roadmapPath || 'ROADMAP.md'
+const OUTDIR = (A.outDir || 'textbook').replace(/\/+$/, '')
+const TOPIC = A.topic || '（主題未指定）'
+const SCOPE = A.scopeRules || '（追加の制約なし）'
+const BASE = OUTDIR + '/sections/'
+const OPUS = 'opus'      // 難所用。解決しなければ 'claude-opus-5'
+const SONNET = 'sonnet'  // 通常用。解決しなければ 'claude-sonnet-5'
 
 // ---- フェーズ1: 計画（ロードマップ解析）----
 const PLAN_SCHEMA = {

@@ -91,6 +91,23 @@ GitHubで手軽に読むだけなら `outDir/docs/index.md` から辿れる。
 ### 3.6 スコープ制約は明示的に渡す
 - 「実在サービスへの無許可検証手順は書かない」「解答（ラボの攻略手順）は書かない」等の制約は `scopeRules` で渡す。全節に共通適用される。
 
+### 3.8 スクリプトを改変するときの制約（起動しなくなる罠）
+
+`export const meta = {...}` は**必ず実行コードより前**に置くこと。後ろに置くとワークフローが起動しない（`const A = ...` などが先に来ている状態で実行しようとして実際に失敗した）。**コメントは meta より前にあっても問題ない**ので、冒頭の使い方コメント → `meta` → 本体、の順にする。
+
+また `meta` は**純粋なリテラル**でなければならない。変数参照・関数呼び出し・テンプレート補間を書くと起動しない。`meta.phases` の `title` は `phase()` 呼び出しや `agent({phase})` の文字列と**完全一致**させる。
+
+構文チェックに `node --check` はそのままでは使えない（トップレベル `return` を使っており、ランタイム側が本体を async 関数でラップするため）。確認するなら実行時と同じ形に包んでから:
+
+```bash
+python3 -c "
+import re; s=open('build-textbook.workflow.js',encoding='utf-8').read()
+s=re.sub(r'(?m)^export const meta','const meta',s,count=1)
+print('async function __wf(){'+s+'}')" > /tmp/w.mjs && node --check /tmp/w.mjs
+```
+
+なお本スクリプトは**3箇所にコピーがある**（`textbook-pipeline/`、`textbook-pipeline/skill/textbook-builder/`、`.claude/skills/textbook-builder/`）。1つ直したら残り2つにも必ず反映する。
+
 ### 3.7 品質の型
 - 専門用語は初出でかみ砕く／コード例は「なぜ動くか」付き／原理を仕組みレベルで説明／出典URLを明記／バージョン・年を明記（陳腐化対策）。
 
