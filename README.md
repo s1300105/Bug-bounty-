@@ -9,6 +9,7 @@ URL付きの学習ロードマップから生成した、**原典に忠実な日
 - [クライアントサイド脆弱性ハンティングの基盤技術を極める教科書](./clientside-textbook/docs/index.md) ― 穴の知識ではなく土台（ブラウザ内部／セキュリティモデル／JS深読解／bundle・難読化解析／DevTools・DOM Invaderでのsource→sink追跡）全9章＋序章＋付録
 - [Reconを極める教科書](./recon-textbook/docs/index.md) ― 偵察を「手順」から「武器」へ（資産発見／サブドメイン列挙／Shodan・favicon hash／JS・OSINT・GitHub・クラウド／自動化パイプライン／CT継続監視）全11章＋序章＋付録
 - [SSRFを極める教科書](./ssrf-textbook/docs/index.md) ― サーバサイドリクエストフォージェリを初級〜専門家まで（内部到達・ポートスキャン／Blind・OAST／クラウドメタデータ IMDSv1/v2／URLパーサ・フィルタ回避／gopherプロトコルスマグリング→RCE／防御設計）全10章＋序章＋付録
+- [OAuthを極める教科書](./oauth-textbook/docs/index.md) ― OAuth 2.0／OpenID Connect の脆弱性を初級〜専門家まで（フローとロール／redirect_uri・state・トークン漏洩・mix-up・JWT／dirty dancing・Salt Labs 等の実例／安全な検証演習と方法論／OAuth 2.1・RFC 9700・DPoP・FAPI・MCP）全5章＋序章＋付録
 - （今後追加）XXE, CSRF, SSTI …
 
 ## 読み方
