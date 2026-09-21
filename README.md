@@ -8,7 +8,8 @@ URL付きの学習ロードマップから生成した、**原典に忠実な日
 - [SQLiを極める教科書](./sqli-textbook/docs/index.md) ― SQLインジェクションを初級〜専門家レベルまで（クエリ構文の破壊・UNION/Blind/時間ベース/OOB・WAF回避・自動化・防御ほか）原典に忠実に解説
 - [クライアントサイド脆弱性ハンティングの基盤技術を極める教科書](./clientside-textbook/docs/index.md) ― 穴の知識ではなく土台（ブラウザ内部／セキュリティモデル／JS深読解／bundle・難読化解析／DevTools・DOM Invaderでのsource→sink追跡）全9章＋序章＋付録
 - [Reconを極める教科書](./recon-textbook/docs/index.md) ― 偵察を「手順」から「武器」へ（資産発見／サブドメイン列挙／Shodan・favicon hash／JS・OSINT・GitHub・クラウド／自動化パイプライン／CT継続監視）全11章＋序章＋付録
-- （今後追加）SSRF, XXE, CSRF, SSTI …
+- [SSRFを極める教科書](./ssrf-textbook/docs/index.md) ― サーバサイドリクエストフォージェリを初級〜専門家まで（内部到達・ポートスキャン／Blind・OAST／クラウドメタデータ IMDSv1/v2／URLパーサ・フィルタ回避／gopherプロトコルスマグリング→RCE／防御設計）全10章＋序章＋付録
+- （今後追加）XXE, CSRF, SSTI …
 
 ## 読み方
 
