@@ -15,7 +15,7 @@ URL付きの学習ロードマップから生成した、**原典に忠実な日
 - [認証(Authentication)を極める教科書](./authentication-textbook/docs/index.md) ― Web認証の脆弱性を初級〜専門家まで（学習パス・OWASPテスト観点／JWT alg混同・kid/jku/jwk注入／SAML署名ラッピングXSW・XMLコメント・パーサ差異CVE／WebAuthn・パスキー実装ミスと紐付け不備ATO／MFA・2FAバイパス手法とレート制限回避／パスワードリセットポイズニング／バグ連鎖によるATO統合／jwt_tool・SAML Raider・Burp JWT Editor／HackerOne実報告）全10章＋序章＋付録
 - [XXE & ファイルアップロードを極める教科書](./xxe&fileupload-textbook/docs/index.md) ― XML外部実体注入とファイルアップロードを武器化の核として（XML/DTD基礎／古典的XXE・SSRF／Blind XXE・外部DTD exfil・ローカルDTD再利用／SVG・OOXML・SAML経由XXE／WAF回避・XXE→RCE・XSLT／アップロード検証バイパス・.htaccess・polyglot／Webシェル・ImageTragick・Zip Slip・Stored XSS／Facebook 2事例・TOPXXE／防御）全11章＋序章＋付録
 - [HTTPリクエストスマグリング & Webキャッシュ攻撃を極める教科書](./request-smuggling-textbook/docs/index.md) ― デシンク攻撃を初級〜専門家まで（HTTP前提知識／CL.TE・TE.CL・TE.TE／James Kettle研究系譜 Reborn・HTTP2 Sequel・Browser-Powered・State Machine・HTTP1.1 Must Die／CL.0・クライアントサイドデシンク・single-packet attack／HTTP Request Smuggler・Turbo Intruder／Webキャッシュポイズニング・デセプション／Apple・Slack・ChatGPT ATO 実例・防御）全10章＋序章＋付録
-- （今後追加）SSTI …
+- [安全でないデシリアライゼーション & SSTI → RCEを極める教科書](./insecuredeserialization+SSTI=RCE-textbook/docs/index.md) ― 信頼できない入力がデータからコード実行に化ける2脆弱性を武器化の核（ガジェットチェーン構築／サンドボックス脱出）から（PHP POP・PHAR／Java CommonsCollections1・JNDI/Log4Shell・marshalsec／.NET ViewState・MachineKey・JSON Attacks／Python pickle・AIモデルRCE・Rubyユニバーサルガジェット・Node.js／GadgetInspector・ODDFuzz／Jinja2フィルタ回避・Twig/Smarty・FreeMarker/SpEL／SSTImap・tplmap／Orange Tsai多重チェーン・CVE／safetensors・CodeQL・look-ahead防御）全11章＋序章＋付録
 
 ## 読み方
 
