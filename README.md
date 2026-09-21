@@ -10,6 +10,7 @@ URL付きの学習ロードマップから生成した、**原典に忠実な日
 - [Reconを極める教科書](./recon-textbook/docs/index.md) ― 偵察を「手順」から「武器」へ（資産発見／サブドメイン列挙／Shodan・favicon hash／JS・OSINT・GitHub・クラウド／自動化パイプライン／CT継続監視）全11章＋序章＋付録
 - [SSRFを極める教科書](./ssrf-textbook/docs/index.md) ― サーバサイドリクエストフォージェリを初級〜専門家まで（内部到達・ポートスキャン／Blind・OAST／クラウドメタデータ IMDSv1/v2／URLパーサ・フィルタ回避／gopherプロトコルスマグリング→RCE／防御設計）全10章＋序章＋付録
 - [OAuthを極める教科書](./oauth-textbook/docs/index.md) ― OAuth 2.0／OpenID Connect の脆弱性を初級〜専門家まで（フローとロール／redirect_uri・state・トークン漏洩・mix-up・JWT／dirty dancing・Salt Labs 等の実例／安全な検証演習と方法論／OAuth 2.1・RFC 9700・DPoP・FAPI・MCP）全5章＋序章＋付録
+- [AIセキュリティを極める教科書](./ai-textbook/docs/index.md) ― AI／LLMアプリの脆弱性を初級〜専門家まで（LLM起点の従来型Web脆弱性 Insecure Output Handling→XSS/RCE/SSRF／直接・間接プロンプトインジェクション／エージェント・MCP tool poisoning／RAG・埋め込み／pickle RCE・MLOps・LangChain 実CVE・huntr／Bing・Bard・Copilot・ChatGPT 実例／AIレッドチーミング garak・PyRIT・Promptfoo）全9章＋序章＋付録
 - （今後追加）XXE, CSRF, SSTI …
 
 ## 読み方
